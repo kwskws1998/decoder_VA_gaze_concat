@@ -20,13 +20,14 @@ def _expected_resume_manifest() -> dict[str, object]:
     """Build the architecture-sensitive subset recorded before Trainer resume."""
 
     return {
-        "architecture_manifest_version": 5,
+        "architecture_manifest_version": 6,
         "model": "qwen3.5-0.8b",
         "loss": "mse",
         "output_dim": 2,
         "dtype": "float32",
         "model_id": "Qwen/fake",
         "model_revision": "decoder-commit",
+        "finetuning_mode": "lora",
         "gaze_fusion": "prefix-concat",
         "gaze_features": ["nFix", "TRT"],
         "gaze_feature_indices": [0, 3],
@@ -71,6 +72,7 @@ def test_cli_defaults_to_prefix_and_requires_explicit_training_loss():
 
     assert defaults.gaze_fusion == "prefix-concat"
     assert defaults.gaze_features == ("TRT",)
+    assert defaults.finetuning_mode == "lora"
     assert defaults.group_by_length is True
     assert defaults.loss is None
     with pytest.raises(ValueError, match="must be explicit"):
@@ -80,6 +82,67 @@ def test_cli_defaults_to_prefix_and_requires_explicit_training_loss():
         parser.parse_args(["--gaze-fusion", "postfix-concat"])
     with pytest.raises(SystemExit):
         parser.parse_args(["qwen3.5-0.8b", "heteroscedastic+ccc"])
+    with pytest.raises(SystemExit):
+        parser.parse_args(["--finetuning-mode", "adapter"])
+
+
+def test_cli_resolves_mode_specific_learning_rates():
+    parser = train_model_module._build_parser()
+    lora_args = parser.parse_args(["qwen3.5-0.8b", "mse"])
+    full_args = parser.parse_args(
+        ["qwen3.5-0.8b", "mse", "--finetuning-mode", "full"]
+    )
+    explicit_full_args = parser.parse_args(
+        [
+            "qwen3.5-0.8b",
+            "mse",
+            "--finetuning-mode",
+            "full",
+            "--learning-rate",
+            "2e-6",
+        ]
+    )
+
+    train_model_module._validate_args(lora_args)
+    train_model_module._validate_args(full_args)
+    train_model_module._validate_args(explicit_full_args)
+
+    assert lora_args.learning_rate == pytest.approx(1e-4)
+    assert full_args.learning_rate == pytest.approx(6e-6)
+    assert explicit_full_args.learning_rate == pytest.approx(2e-6)
+    assert full_args.lora_rank is None
+    assert full_args.lora_alpha is None
+    assert full_args.lora_dropout is None
+    train_model_module._validate_args(full_args)
+
+
+def test_cli_rejects_inapplicable_or_invalid_lora_settings():
+    parser = train_model_module._build_parser()
+    full_with_lora_override = parser.parse_args(
+        [
+            "qwen3.5-0.8b",
+            "mse",
+            "--finetuning-mode",
+            "full",
+            "--lora-rank",
+            "8",
+        ]
+    )
+    lora_with_invalid_dropout = parser.parse_args(
+        [
+            "qwen3.5-0.8b",
+            "mse",
+            "--finetuning-mode",
+            "lora",
+            "--lora-dropout",
+            "1.0",
+        ]
+    )
+
+    with pytest.raises(ValueError, match="LoRA-only"):
+        train_model_module._validate_args(full_with_lora_override)
+    with pytest.raises(ValueError, match="lora-dropout"):
+        train_model_module._validate_args(lora_with_invalid_dropout)
 
 
 def test_cli_canonicalizes_named_gaze_subsets_and_rejects_duplicates():
@@ -260,6 +323,37 @@ def test_training_argument_names_inspects_the_runtime_constructor(monkeypatch):
     assert "group_by_length" not in names
 
 
+def test_cuda_memory_reporting_contract(monkeypatch):
+    cuda = train_model_module.torch.cuda
+    calls = []
+    monkeypatch.setattr(cuda, "is_available", lambda: True)
+    monkeypatch.setattr(cuda, "current_device", lambda: 1)
+    monkeypatch.setattr(cuda, "empty_cache", lambda: calls.append("empty_cache"))
+    monkeypatch.setattr(
+        cuda,
+        "reset_peak_memory_stats",
+        lambda device: calls.append(("reset", device)),
+    )
+    monkeypatch.setattr(cuda, "memory_allocated", lambda device: 1 * 1024**3)
+    monkeypatch.setattr(cuda, "memory_reserved", lambda device: 2 * 1024**3)
+    monkeypatch.setattr(cuda, "max_memory_allocated", lambda device: 3 * 1024**3)
+    monkeypatch.setattr(cuda, "max_memory_reserved", lambda device: 4 * 1024**3)
+    monkeypatch.setattr(cuda, "get_device_name", lambda device: "Fake GPU")
+
+    assert train_model_module._reset_cuda_peak_memory(use_cpu=False) is True
+    snapshot = train_model_module._cuda_memory_snapshot(use_cpu=False)
+
+    assert calls == ["empty_cache", ("reset", 1)]
+    assert snapshot["cuda_enabled"] is True
+    assert snapshot["device_index"] == 1
+    assert snapshot["device_name"] == "Fake GPU"
+    assert snapshot["peak_allocated_bytes"] == 3 * 1024**3
+    assert snapshot["peak_reserved_gib"] == pytest.approx(4.0)
+    assert train_model_module._cuda_memory_snapshot(use_cpu=True) == {
+        "cuda_enabled": False
+    }
+
+
 def test_resume_contract_accepts_matching_prefix_checkpoint(tmp_path):
     fold_output = tmp_path / "run" / "heldout_fold1"
     checkpoint = fold_output / "checkpoints" / "checkpoint-10"
@@ -267,6 +361,73 @@ def test_resume_contract_accepts_matching_prefix_checkpoint(tmp_path):
     expected = _expected_resume_manifest()
     (fold_output / "run_manifest.json").write_text(
         json.dumps(expected),
+        encoding="utf-8",
+    )
+    args = SimpleNamespace(resume_from_checkpoint=str(checkpoint))
+
+    train_model_module._validate_resume_contract(args, fold_output, expected)
+
+
+def test_resume_contract_accepts_legacy_v5_lora_checkpoint(tmp_path):
+    fold_output = tmp_path / "run" / "heldout_fold1"
+    checkpoint = fold_output / "checkpoints" / "checkpoint-10"
+    checkpoint.mkdir(parents=True)
+    expected = _expected_resume_manifest()
+    recorded = dict(expected)
+    recorded["architecture_manifest_version"] = 5
+    recorded.pop("finetuning_mode")
+    (fold_output / "run_manifest.json").write_text(
+        json.dumps(recorded),
+        encoding="utf-8",
+    )
+    args = SimpleNamespace(resume_from_checkpoint=str(checkpoint))
+
+    train_model_module._validate_resume_contract(args, fold_output, expected)
+
+
+def test_resume_contract_rejects_finetuning_mode_mismatch(tmp_path):
+    fold_output = tmp_path / "run" / "heldout_fold1"
+    checkpoint = fold_output / "checkpoints" / "checkpoint-10"
+    checkpoint.mkdir(parents=True)
+    recorded = _expected_resume_manifest()
+    recorded["finetuning_mode"] = "lora"
+    (fold_output / "run_manifest.json").write_text(
+        json.dumps(recorded),
+        encoding="utf-8",
+    )
+    expected = _expected_resume_manifest()
+    expected["finetuning_mode"] = "full"
+    expected["learning_rate"] = 6e-6
+    args = SimpleNamespace(resume_from_checkpoint=str(checkpoint))
+
+    with pytest.raises(ValueError, match="finetuning_mode"):
+        train_model_module._validate_resume_contract(args, fold_output, expected)
+
+
+def test_full_resume_contract_ignores_inactive_lora_hyperparameters(tmp_path):
+    fold_output = tmp_path / "run" / "heldout_fold1"
+    checkpoint = fold_output / "checkpoints" / "checkpoint-10"
+    checkpoint.mkdir(parents=True)
+    expected = _expected_resume_manifest()
+    expected.update(
+        {
+            "finetuning_mode": "full",
+            "learning_rate": 6e-6,
+            "lora_rank": None,
+            "lora_alpha": None,
+            "lora_dropout": None,
+        }
+    )
+    recorded = dict(expected)
+    recorded.update(
+        {
+            "lora_rank": 1,
+            "lora_alpha": 1,
+            "lora_dropout": 0.9,
+        }
+    )
+    (fold_output / "run_manifest.json").write_text(
+        json.dumps(recorded),
         encoding="utf-8",
     )
     args = SimpleNamespace(resume_from_checkpoint=str(checkpoint))

@@ -35,6 +35,7 @@ from va_model_code.decoder_va.model import (
     SAFE_WEIGHTS_FILENAME,
     DecoderVARegressor,
     build_qwen_va_model,
+    load_qwen_backbone,
     load_saved_decoder_va_model,
     load_qwen_backbone_with_lora,
 )
@@ -493,10 +494,72 @@ def test_qwen_loader_uses_text_only_class_and_all_linear_lora(monkeypatch):
     assert calls["lora_kwargs"]["task_type"] == "feature-extraction"
 
 
+def test_qwen_loader_full_mode_returns_fully_trainable_raw_backbone(monkeypatch):
+    calls = {}
+    fake_backbone = FakeCausalBackbone()
+    fake_backbone.requires_grad_(False)
+
+    class FakeQwenForCausalLM:
+        def __init__(self):
+            self.model = fake_backbone
+
+        @classmethod
+        def from_pretrained(cls, model_id, **kwargs):
+            calls["model_id"] = model_id
+            calls["load_kwargs"] = kwargs
+            return cls()
+
+    import transformers
+
+    monkeypatch.setattr(
+        transformers,
+        "Qwen3_5ForCausalLM",
+        FakeQwenForCausalLM,
+        raising=False,
+    )
+    monkeypatch.setitem(sys.modules, "peft", None)
+
+    result = load_qwen_backbone(
+        "Qwen/fake",
+        revision="fixed-commit",
+        dtype=torch.bfloat16,
+        finetuning_mode="full",
+    )
+
+    assert result is fake_backbone
+    assert calls["model_id"] == "Qwen/fake"
+    assert calls["load_kwargs"]["revision"] == "fixed-commit"
+    assert calls["load_kwargs"]["trust_remote_code"] is False
+    assert calls["load_kwargs"]["dtype"] is torch.bfloat16
+    assert fake_backbone.config.use_cache is False
+    assert all(parameter.requires_grad for parameter in result.parameters())
+
+
+def test_qwen_lora_mode_checks_peft_before_loading_weights(monkeypatch):
+    backbone_load_called = False
+
+    def fail_if_backbone_loads(*args, **kwargs):
+        nonlocal backbone_load_called
+        backbone_load_called = True
+        return FakeCausalBackbone()
+
+    monkeypatch.setattr(
+        model_module,
+        "_load_qwen_text_backbone",
+        fail_if_backbone_loads,
+    )
+    monkeypatch.setitem(sys.modules, "peft", None)
+
+    with pytest.raises(ImportError, match="requires PEFT"):
+        load_qwen_backbone("Qwen/fake", finetuning_mode="lora")
+
+    assert backbone_load_called is False
+
+
 def test_saved_prefix_model_has_strict_reload_contract(tmp_path, monkeypatch):
     monkeypatch.setattr(
         model_module,
-        "load_qwen_backbone_with_lora",
+        "load_qwen_backbone",
         lambda *args, **kwargs: FakeCausalBackbone(),
     )
     tokenizer = SimpleNamespace(padding_side="left")
@@ -533,6 +596,7 @@ def test_saved_prefix_model_has_strict_reload_contract(tmp_path, monkeypatch):
     )
     assert manifest["schema_version"] == ARCHITECTURE_MANIFEST_VERSION
     assert manifest["decoder_commit"] == "fixed-decoder-commit"
+    assert manifest["finetuning_mode"] == "lora"
     assert manifest["gaze_fusion"] == "prefix-concat"
     assert manifest["gaze_features"] == ["nFix", "TRT"]
     assert manifest["gaze_feature_indices"] == [0, 3]
@@ -546,6 +610,7 @@ def test_saved_prefix_model_has_strict_reload_contract(tmp_path, monkeypatch):
     assert manifest["reconstruction"]["features_used"] == [1, 0, 0, 1, 0]
     assert manifest["reconstruction"]["output_dim"] == 2
     assert manifest["reconstruction"]["output_activation"] == OUTPUT_ACTIVATION
+    assert manifest["reconstruction"]["finetuning_mode"] == "lora"
     assert manifest["reconstruction"]["lora_rank"] == 8
     assert manifest["reconstruction"]["et_revision"] == "fixed-et-commit"
     assert manifest["state_dict"]["strict_loading"] is True
@@ -637,7 +702,7 @@ def test_saved_prefix_model_has_strict_reload_contract(tmp_path, monkeypatch):
 def test_saved_text_only_model_has_no_active_gaze_metadata(tmp_path, monkeypatch):
     monkeypatch.setattr(
         model_module,
-        "load_qwen_backbone_with_lora",
+        "load_qwen_backbone",
         lambda *args, **kwargs: FakeCausalBackbone(),
     )
     tokenizer = SimpleNamespace(padding_side="left")
@@ -673,6 +738,114 @@ def test_saved_text_only_model_has_no_active_gaze_metadata(tmp_path, monkeypatch
     assert manifest["reconstruction"]["features_used"] == [0, 0, 0, 0, 0]
     assert loaded.gaze_provider is None
     assert loaded.gaze_projector is None
+
+
+def test_saved_full_model_round_trip_and_mode_contract(tmp_path, monkeypatch):
+    loader_modes = []
+
+    def fake_loader(*args, **kwargs):
+        loader_modes.append(kwargs["finetuning_mode"])
+        return FakeCausalBackbone()
+
+    monkeypatch.setattr(model_module, "load_qwen_backbone", fake_loader)
+    tokenizer = SimpleNamespace(padding_side="left")
+    source = build_qwen_va_model(
+        tokenizer,
+        model_id="Qwen/fake",
+        model_revision="fixed-decoder-commit",
+        finetuning_mode="full",
+        gaze_fusion="none",
+        dtype=torch.float32,
+    )
+    save_file(
+        source.state_dict(),
+        tmp_path / SAFE_WEIGHTS_FILENAME,
+        metadata={"format": "pt"},
+    )
+    source.save_architecture_manifest(tmp_path)
+
+    loaded, _ = load_saved_decoder_va_model(
+        tmp_path,
+        tokenizer=tokenizer,
+        dtype=torch.float32,
+    )
+    manifest_path = tmp_path / ARCHITECTURE_MANIFEST_FILENAME
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+
+    assert loader_modes == ["full", "full"]
+    assert source.finetuning_mode == "full"
+    assert loaded.finetuning_mode == "full"
+    assert manifest["finetuning_mode"] == "full"
+    assert manifest["reconstruction"]["finetuning_mode"] == "full"
+    assert manifest["reconstruction"]["lora_rank"] is None
+    assert manifest["reconstruction"]["lora_alpha"] is None
+    assert manifest["reconstruction"]["lora_dropout"] is None
+    assert manifest["reconstruction"]["lora_target_modules"] is None
+    assert manifest["reconstruction"]["lora_task_type"] is None
+    assert manifest["trainable_fraction"] == pytest.approx(1.0)
+    for name, expected in source.state_dict().items():
+        assert torch.equal(loaded.state_dict()[name], expected)
+
+    manifest["finetuning_mode"] = "lora"
+    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+    with pytest.raises(ValueError, match="fine-tuning mode disagrees"):
+        load_saved_decoder_va_model(
+            tmp_path,
+            tokenizer=tokenizer,
+            dtype=torch.float32,
+        )
+
+    manifest["finetuning_mode"] = "full"
+    manifest["reconstruction"]["lora_rank"] = 16
+    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+    with pytest.raises(ValueError, match="LoRA metadata to null"):
+        load_saved_decoder_va_model(
+            tmp_path,
+            tokenizer=tokenizer,
+            dtype=torch.float32,
+        )
+
+
+def test_legacy_v5_lora_model_still_reloads(tmp_path, monkeypatch):
+    loader_modes = []
+
+    def fake_loader(*args, **kwargs):
+        loader_modes.append(kwargs["finetuning_mode"])
+        return FakeCausalBackbone()
+
+    monkeypatch.setattr(model_module, "load_qwen_backbone", fake_loader)
+    tokenizer = SimpleNamespace(padding_side="right")
+    source = build_qwen_va_model(
+        tokenizer,
+        model_id="Qwen/fake",
+        model_revision="fixed-decoder-commit",
+        finetuning_mode="lora",
+        gaze_fusion="none",
+        dtype=torch.float32,
+    )
+    save_file(
+        source.state_dict(),
+        tmp_path / SAFE_WEIGHTS_FILENAME,
+        metadata={"format": "pt"},
+    )
+    source.save_architecture_manifest(tmp_path)
+    manifest_path = tmp_path / ARCHITECTURE_MANIFEST_FILENAME
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    manifest["schema_version"] = 5
+    manifest.pop("finetuning_mode")
+    manifest["reconstruction"].pop("finetuning_mode")
+    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+
+    loaded, _ = load_saved_decoder_va_model(
+        tmp_path,
+        tokenizer=tokenizer,
+        dtype=torch.float32,
+    )
+
+    assert loader_modes == ["lora", "lora"]
+    assert loaded.finetuning_mode == "lora"
+    for name, expected in source.state_dict().items():
+        assert torch.equal(loaded.state_dict()[name], expected)
 
 
 def test_blank_text_uses_one_active_eos_token():

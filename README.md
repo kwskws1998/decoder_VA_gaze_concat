@@ -59,6 +59,7 @@ cd va_model_code
 python train_model.py --list-datasets --data-dir data_paper7_seed42
 python train_model.py --dry-run \
   --data-dir data_paper7_seed42 \
+  --finetuning-mode full \
   --gaze-fusion prefix-concat \
   --gaze-features TRT
 ```

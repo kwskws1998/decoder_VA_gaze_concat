@@ -20,8 +20,10 @@ The same card states:
 > “Global Linguistic Coverage: Expanded support to 201 languages and dialects”
 
 This makes the Base checkpoint a better starting point for a regression
-fine-tune than an instruction/chat checkpoint. It is also much safer under a
-24GB VRAM ceiling than moving directly to a multi-billion-parameter decoder.
+fine-tune than an instruction/chat checkpoint. Its sub-billion-parameter size
+also makes both LoRA and carefully measured full fine-tuning plausible on a
+24GB GPU; full fine-tuning still requires the smoke test below rather than a
+memory guarantee.
 The code pins the currently verified model revision
 `dc7cdfe2ee4154fa7e30f5b51ca41bfa40174e68`.
 
@@ -33,11 +35,20 @@ same folds, same exclusions, and same metrics.
 The implementation:
 
 - loads only the Qwen text backbone and discards the LM head and vision tower;
-- applies rank-16 LoRA to all linear layers of the text decoder;
+- exposes an explicit `--finetuning-mode {lora,full}` contract;
+- defaults to rank-16 all-linear LoRA for backward-compatible, lower-memory
+  runs;
+- makes every Qwen text-backbone parameter trainable in `full` mode;
 - trains the gaze projector, boundary embeddings, and VA head fully;
+- keeps ET2 frozen in both fine-tuning modes;
 - uses BF16 on supported NVIDIA GPUs;
 - enables gradient checkpointing;
 - defaults to batch size 4 with four-step gradient accumulation.
+
+The learning-rate default is mode-aware: `1e-4` for LoRA and `6e-6` for full
+fine-tuning. An explicit `--learning-rate` always overrides it. Run manifests
+and saved-model manifests record the selected mode, and checkpoints from
+different modes cannot be resumed or reloaded as one another.
 
 The official
 [`Qwen3.5` Transformers documentation](https://huggingface.co/docs/transformers/model_doc/qwen3_5)
@@ -274,16 +285,25 @@ total: 53,601
 
 ## Training and evaluation
 
-Default Qwen + TRT prefix concat:
+Default Qwen + TRT prefix concat with LoRA:
 
 ```bash
-python train_model.py qwen3.5-0.8b mse
+python train_model.py qwen3.5-0.8b mse \
+  --finetuning-mode lora
+```
+
+The same model with full Qwen text-backbone fine-tuning:
+
+```bash
+python train_model.py qwen3.5-0.8b mse \
+  --finetuning-mode full
 ```
 
 Choose one raw ET2 feature:
 
 ```bash
 python train_model.py qwen3.5-0.8b mse \
+  --finetuning-mode lora \
   --gaze-features FFD
 ```
 
@@ -291,6 +311,7 @@ Choose several features. They are canonicalized to the published ET2 order:
 
 ```bash
 python train_model.py qwen3.5-0.8b mse \
+  --finetuning-mode lora \
   --gaze-features nFix FFD GPT TRT fixProp
 ```
 
@@ -303,6 +324,7 @@ No-IEMOCAP run:
 
 ```bash
 python train_model.py qwen3.5-0.8b mse \
+  --finetuning-mode lora \
   --no-iemocap
 ```
 
@@ -310,6 +332,7 @@ Text-only Qwen ablation:
 
 ```bash
 python train_model.py qwen3.5-0.8b mse \
+  --finetuning-mode lora \
   --gaze-fusion none
 ```
 
@@ -339,6 +362,7 @@ Source: [Mendes and Martins (2023), Section 5](https://arxiv.org/pdf/2302.14021#
 ```bash
 python train_model.py qwen3.5-0.8b mse \
   --data-dir data_paper7_seed42 \
+  --finetuning-mode full \
   --gaze-fusion none \
   --held-out-folds 1 2 \
   --max-length 200 \
@@ -354,7 +378,7 @@ python train_model.py qwen3.5-0.8b mse \
   --save-total-limit 1 \
   --group-by-length \
   --seed 42 \
-  --output-dir Preds/paper7_qwen_baseline_seed42
+  --output-dir Preds/paper7_qwen_full_baseline_seed42
 ```
 
 Run the matching gaze condition, choosing the desired raw feature subset:
@@ -362,6 +386,7 @@ Run the matching gaze condition, choosing the desired raw feature subset:
 ```bash
 python train_model.py qwen3.5-0.8b mse \
   --data-dir data_paper7_seed42 \
+  --finetuning-mode full \
   --gaze-fusion prefix-concat \
   --gaze-features TRT \
   --held-out-folds 1 2 \
@@ -378,13 +403,19 @@ python train_model.py qwen3.5-0.8b mse \
   --save-total-limit 1 \
   --group-by-length \
   --seed 42 \
-  --output-dir Preds/paper7_qwen_gaze_TRT_seed42
+  --output-dir Preds/paper7_qwen_full_gaze_TRT_seed42
 ```
+
+These two commands form the primary full-fine-tuning A/B. To run the matching
+LoRA A/B, use `--finetuning-mode lora --learning-rate 1e-4` in both commands
+and use new output directories. Never compare a full baseline against a LoRA
+gaze condition as the gaze ablation.
 
 The top-level seed is 42. Internally, held-out folds 1 and 2 use fold seeds 42
 and 43 respectively. The same fold seed is reused across baseline and gaze so
-their shared Qwen/LoRA and regression-head initialization is paired. This is an
-ablation-control choice, not a requirement stated by the original paper.
+their shared Qwen and regression-head initialization is paired within the same
+fine-tuning mode. This is an ablation-control choice, not a requirement stated
+by the original paper.
 
 Compare the two root `oof_metrics.json` files, not the arithmetic mean of fold
 metrics. Both must report `n_examples == 63823`. The paper-facing metrics are
@@ -403,15 +434,31 @@ The evaluation protocol remains fixed two-fold out-of-fold:
 Run one held-out fold for recovery or a smoke run:
 
 ```bash
-python train_model.py \
+python train_model.py qwen3.5-0.8b mse \
+  --data-dir data_paper7_seed42 \
+  --finetuning-mode full \
+  --gaze-fusion prefix-concat \
+  --gaze-features TRT \
   --held-out-folds 1 \
-  --max-steps 1 \
-  --epochs 1
+  --max-length 200 \
+  --train-batch-size 16 \
+  --eval-batch-size 16 \
+  --gradient-accumulation-steps 1 \
+  --epochs 1 \
+  --max-steps 3 \
+  --learning-rate 6e-6 \
+  --save-total-limit 1 \
+  --seed 42 \
+  --output-dir Preds/smoke_full_gaze_TRT_seed42_b16
 ```
 
-If the exact machine still runs out of memory, lower
-`--train-batch-size` to 2 or 1 and raise
-`--gradient-accumulation-steps` proportionally.
+Three optimizer steps ensure that AdamW state exists while a later
+forward/backward pass is measured. Inspect
+`heldout_fold1/gpu_memory.json`; it records peak allocated and reserved CUDA
+memory. If batch 16 runs out of memory or peak reserved memory leaves too
+little headroom, use `--train-batch-size 8` and
+`--gradient-accumulation-steps 2` in both baseline and gaze runs. This preserves
+effective batch size 16 for the MSE experiment.
 
 Each run writes:
 
@@ -420,6 +467,7 @@ Preds/<run>/
   heldout_fold1/
     checkpoints/
     final_model/
+    gpu_memory.json
     metrics.json
     predictions.tsv
     run_manifest.json
@@ -432,9 +480,11 @@ Preds/<run>/
 ```
 
 `final_model/` contains a complete safe state dict, the locally saved tokenizer,
-and a versioned architecture manifest with the exact decoder/ET revisions,
-LoRA settings, gaze projector dimensions, and output contract. Reload it
-strictly with:
+and a versioned architecture manifest with the fine-tuning mode, exact
+decoder/ET revisions, conditional LoRA settings, gaze projector dimensions,
+and output contract. Full Trainer checkpoint directories include AdamW state
+and are substantially larger than LoRA checkpoints; retain
+`--save-total-limit 1`. Reload strictly with:
 
 ```python
 import torch
@@ -449,18 +499,19 @@ model.to("cuda")
 ```
 
 The reload path executes no repository-supplied Python. It reconstructs the
-pinned Qwen/LoRA architecture, validates `decoder_va_architecture.json`, and
-loads `model.safetensors` with strict key checking. The pinned Qwen checkpoint
-must be available locally or from Hugging Face during reconstruction; ET2
-weights remain external and are fetched lazily only when gaze inference starts.
+recorded raw-Qwen or Qwen/LoRA architecture, validates
+`decoder_va_architecture.json`, and loads `model.safetensors` with strict key
+checking. The pinned Qwen checkpoint must be available locally or from Hugging
+Face during reconstruction; ET2 weights remain external and are fetched lazily
+only when gaze inference starts.
 
-The selectable-feature, hard-sigmoid two-output head uses architecture manifest
-schema version 5. Version 4 was TRT-only and used a different output activation,
-version 3 allowed the removed four-output uncertainty head, and version 2 used
-the incompatible postfix gaze contract. Older schemas are rejected on strict
-reload rather than silently reinterpreting their weights. Do not resume an
-older Trainer checkpoint. `--resume-from-checkpoint` requires a checkpoint
-under the selected held-out fold and a matching version-5 `run_manifest.json`.
+The selectable-mode, selectable-feature, hard-sigmoid two-output head uses
+architecture manifest schema version 6. Version 5 is accepted only as the
+legacy LoRA-only form and is narrowly migrated to `finetuning_mode=lora`;
+versions 4 and earlier remain incompatible. `--resume-from-checkpoint` requires
+a checkpoint under the selected held-out fold and a matching run manifest.
+Version-5 run manifests without a mode can resume only as LoRA. A LoRA
+checkpoint can never resume as full fine-tuning, or vice versa.
 
 Legacy metric names and semantics are retained:
 

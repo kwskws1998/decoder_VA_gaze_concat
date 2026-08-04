@@ -35,8 +35,13 @@ from decoder_va.model import (
     DEFAULT_DECODER_MODEL_ID,
     DEFAULT_DECODER_REVISION,
     DEFAULT_ET2_REVISION,
+    DEFAULT_LORA_ALPHA,
+    DEFAULT_LORA_DROPOUT,
+    DEFAULT_LORA_RANK,
+    FINETUNING_MODES,
     GAZE_PREFIX_ORDER,
     GAZE_PREFIX_POOLING,
+    LEGACY_LORA_MANIFEST_VERSION,
     OUTPUT_ACTIVATION,
     build_qwen_va_model,
 )
@@ -65,6 +70,15 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--model-id", default=DEFAULT_DECODER_MODEL_ID)
     parser.add_argument("--model-revision", default=DEFAULT_DECODER_REVISION)
+    parser.add_argument(
+        "--finetuning-mode",
+        choices=FINETUNING_MODES,
+        default="lora",
+        help=(
+            "Train all Qwen text-backbone parameters with 'full' or use "
+            "all-linear PEFT adapters with 'lora' (default: lora)."
+        ),
+    )
     parser.add_argument(
         "--gaze-fusion",
         choices=("prefix-concat", "none"),
@@ -112,12 +126,32 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--gradient-accumulation-steps", type=int, default=4)
     parser.add_argument("--epochs", type=float, default=10.0)
     parser.add_argument("--max-steps", type=int, default=-1)
-    parser.add_argument("--learning-rate", type=float, default=1e-4)
+    parser.add_argument(
+        "--learning-rate",
+        type=float,
+        default=None,
+        help="Default: 1e-4 for LoRA and 6e-6 for full fine-tuning.",
+    )
     parser.add_argument("--weight-decay", type=float, default=0.01)
     parser.add_argument("--warmup-ratio", type=float, default=0.1)
-    parser.add_argument("--lora-rank", type=int, default=16)
-    parser.add_argument("--lora-alpha", type=int, default=32)
-    parser.add_argument("--lora-dropout", type=float, default=0.05)
+    parser.add_argument(
+        "--lora-rank",
+        type=int,
+        default=DEFAULT_LORA_RANK,
+        help="LoRA-only adapter rank.",
+    )
+    parser.add_argument(
+        "--lora-alpha",
+        type=int,
+        default=DEFAULT_LORA_ALPHA,
+        help="LoRA-only adapter scaling value.",
+    )
+    parser.add_argument(
+        "--lora-dropout",
+        type=float,
+        default=DEFAULT_LORA_DROPOUT,
+        help="LoRA-only adapter dropout.",
+    )
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--logging-steps", type=int, default=50)
     parser.add_argument("--save-total-limit", type=int, default=1)
@@ -150,14 +184,16 @@ def _validate_args(args: argparse.Namespace) -> None:
             + ", ".join(LOSS_CHOICES)
             + "."
         )
+    if args.learning_rate is None:
+        args.learning_rate = 6e-6 if args.finetuning_mode == "full" else 1e-4
     positive_integers = (
         "max_length",
         "train_batch_size",
         "eval_batch_size",
         "gradient_accumulation_steps",
-        "lora_rank",
-        "lora_alpha",
     )
+    if args.finetuning_mode == "lora":
+        positive_integers += ("lora_rank", "lora_alpha")
     for name in positive_integers:
         if int(getattr(args, name)) <= 0:
             raise ValueError(f"--{name.replace('_', '-')} must be positive.")
@@ -167,6 +203,25 @@ def _validate_args(args: argparse.Namespace) -> None:
         raise ValueError("--max-steps must be -1 or a positive integer.")
     if args.learning_rate <= 0:
         raise ValueError("--learning-rate must be positive.")
+    if args.finetuning_mode == "lora" and not 0.0 <= args.lora_dropout < 1.0:
+        raise ValueError("--lora-dropout must be in the interval [0, 1).")
+    if args.finetuning_mode == "full":
+        non_default_lora_options = []
+        if args.lora_rank not in {None, DEFAULT_LORA_RANK}:
+            non_default_lora_options.append("--lora-rank")
+        if args.lora_alpha not in {None, DEFAULT_LORA_ALPHA}:
+            non_default_lora_options.append("--lora-alpha")
+        if args.lora_dropout not in {None, DEFAULT_LORA_DROPOUT}:
+            non_default_lora_options.append("--lora-dropout")
+        if non_default_lora_options:
+            raise ValueError(
+                "LoRA-only option(s) cannot be changed with "
+                "--finetuning-mode full: "
+                + ", ".join(non_default_lora_options)
+            )
+        args.lora_rank = None
+        args.lora_alpha = None
+        args.lora_dropout = None
     if not 0.0 <= args.warmup_ratio < 1.0:
         raise ValueError("--warmup-ratio must be in the interval [0, 1).")
     if args.et_cache_size < 0:
@@ -214,6 +269,42 @@ def _json_ready(value):
     if isinstance(value, (list, tuple)):
         return [_json_ready(item) for item in value]
     return value
+
+
+def _reset_cuda_peak_memory(use_cpu: bool) -> bool:
+    """Reset per-fold CUDA peaks before model placement and training."""
+
+    if use_cpu or not torch.cuda.is_available():
+        return False
+    device_index = torch.cuda.current_device()
+    torch.cuda.empty_cache()
+    torch.cuda.reset_peak_memory_stats(device_index)
+    return True
+
+
+def _cuda_memory_snapshot(use_cpu: bool) -> dict[str, object]:
+    """Capture current and peak CUDA memory in bytes and GiB."""
+
+    if use_cpu or not torch.cuda.is_available():
+        return {"cuda_enabled": False}
+    device_index = torch.cuda.current_device()
+    byte_values = {
+        "current_allocated_bytes": int(torch.cuda.memory_allocated(device_index)),
+        "current_reserved_bytes": int(torch.cuda.memory_reserved(device_index)),
+        "peak_allocated_bytes": int(torch.cuda.max_memory_allocated(device_index)),
+        "peak_reserved_bytes": int(torch.cuda.max_memory_reserved(device_index)),
+    }
+    gib = float(1024**3)
+    return {
+        "cuda_enabled": True,
+        "device_index": int(device_index),
+        "device_name": torch.cuda.get_device_name(device_index),
+        **byte_values,
+        **{
+            name.replace("_bytes", "_gib"): round(value / gib, 4)
+            for name, value in byte_values.items()
+        },
+    }
 
 
 def _validate_resume_contract(
@@ -268,6 +359,7 @@ def _validate_resume_contract(
         "dtype",
         "model_id",
         "model_revision",
+        "finetuning_mode",
         "gaze_fusion",
         "gaze_features",
         "gaze_feature_indices",
@@ -279,9 +371,6 @@ def _validate_resume_contract(
         "et_model_id",
         "et_revision",
         "et_filename",
-        "lora_rank",
-        "lora_alpha",
-        "lora_dropout",
         "attn_implementation",
         "group_by_length",
         "gradient_checkpointing",
@@ -299,6 +388,18 @@ def _validate_resume_contract(
         "excluded_dataset_names",
         "dataset_counts_after_filter",
     )
+    if (
+        recorded_manifest.get("architecture_manifest_version")
+        == LEGACY_LORA_MANIFEST_VERSION
+        and "finetuning_mode" not in recorded_manifest
+        and expected_manifest.get("finetuning_mode") == "lora"
+    ):
+        recorded_manifest["architecture_manifest_version"] = (
+            ARCHITECTURE_MANIFEST_VERSION
+        )
+        recorded_manifest["finetuning_mode"] = "lora"
+    if expected_manifest.get("finetuning_mode") == "lora":
+        contract_fields += ("lora_rank", "lora_alpha", "lora_dropout")
     mismatches = []
     for field in contract_fields:
         expected_value = _json_ready(expected_manifest[field])
@@ -469,6 +570,10 @@ def run(args: argparse.Namespace) -> Path | None:
         _print_dataset_counts("Validated datasets:", filtered_counts)
         print(f"Excluded: {', '.join(filtered.excluded_names) or '<none>'}")
         print(
+            f"Fine-tuning mode: {args.finetuning_mode}; "
+            f"learning rate: {args.learning_rate:g}"
+        )
+        print(
             "Dry run complete; Trainer arguments are compatible and no tokenizer "
             "or model was downloaded."
         )
@@ -553,6 +658,10 @@ def run(args: argparse.Namespace) -> Path | None:
             "formula": "base_seed + held_out_fold - 1",
             "paper_protocol_requirement": False,
         },
+        "gpu_memory_measurement": {
+            "filename": "gpu_memory.json",
+            "scope": "per-fold current and peak CUDA allocated/reserved memory",
+        },
     }
     fold_predictions = []
 
@@ -581,7 +690,8 @@ def run(args: argparse.Namespace) -> Path | None:
         fold_output.mkdir(parents=True, exist_ok=True)
         print(
             f"Training fold {training_fold} ({len(train_frame):,} rows); "
-            f"evaluating held-out fold {held_out_fold} ({len(eval_frame):,} rows)."
+            f"evaluating held-out fold {held_out_fold} ({len(eval_frame):,} rows); "
+            f"fine-tuning mode: {args.finetuning_mode}."
         )
         train_dataset = TokenizedVADataset(
             train_frame,
@@ -594,10 +704,12 @@ def run(args: argparse.Namespace) -> Path | None:
             max_length=args.max_length,
         )
         set_seed(fold_seed)
+        _reset_cuda_peak_memory(args.use_cpu)
         model = build_qwen_va_model(
             tokenizer,
             model_id=args.model_id,
             model_revision=args.model_revision,
+            finetuning_mode=args.finetuning_mode,
             gaze_fusion=args.gaze_fusion,
             et_repo_id=args.et_model_id,
             et_revision=args.et_revision,
@@ -610,9 +722,16 @@ def run(args: argparse.Namespace) -> Path | None:
             lora_dropout=args.lora_dropout,
             attn_implementation=args.attn_implementation,
         )
+        parameter_summary = model.trainable_parameter_summary()
+        print(
+            "Trainable parameters: "
+            f"{parameter_summary['trainable_parameters']:,} / "
+            f"{parameter_summary['total_parameters']:,} "
+            f"({parameter_summary['trainable_fraction']:.2%})."
+        )
         fold_manifest = {
             **expected_fold_manifest,
-            **model.trainable_parameter_summary(),
+            **parameter_summary,
         }
         with open(fold_output / "run_manifest.json", "w", encoding="utf-8") as output_file:
             json.dump(_json_ready(fold_manifest), output_file, indent=2, sort_keys=True)
@@ -632,6 +751,16 @@ def run(args: argparse.Namespace) -> Path | None:
         trainer.save_model(str(fold_output / "final_model"))
         model.save_architecture_manifest(fold_output / "final_model")
         prediction_output = trainer.predict(eval_dataset)
+        gpu_memory = _cuda_memory_snapshot(args.use_cpu)
+        with open(fold_output / "gpu_memory.json", "w", encoding="utf-8") as output_file:
+            json.dump(_json_ready(gpu_memory), output_file, indent=2, sort_keys=True)
+            output_file.write("\n")
+        if gpu_memory["cuda_enabled"]:
+            print(
+                "CUDA peak memory: "
+                f"{gpu_memory['peak_allocated_gib']:.2f} GiB allocated, "
+                f"{gpu_memory['peak_reserved_gib']:.2f} GiB reserved."
+            )
         fold_frame = prediction_frame(
             eval_frame,
             prediction_output.label_ids,

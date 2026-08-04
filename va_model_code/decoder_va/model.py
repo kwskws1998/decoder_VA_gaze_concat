@@ -27,12 +27,17 @@ from .packing import pack_prefix_gaze
 
 DEFAULT_DECODER_MODEL_ID = "Qwen/Qwen3.5-0.8B-Base"
 DEFAULT_DECODER_REVISION = "dc7cdfe2ee4154fa7e30f5b51ca41bfa40174e68"
+DEFAULT_LORA_RANK = 16
+DEFAULT_LORA_ALPHA = 32
+DEFAULT_LORA_DROPOUT = 0.05
+FINETUNING_MODES = ("lora", "full")
 GAZE_FUSIONS = ("none", "prefix-concat")
 GAZE_PREFIX_ORDER = "eye_start, compact_selected_gaze, eye_end, text"
 GAZE_PREFIX_POOLING = "last_valid_text_token_after_gaze_prefix"
 OUTPUT_ACTIVATION = "hard_sigmoid"
 ARCHITECTURE_MANIFEST_FILENAME = "decoder_va_architecture.json"
-ARCHITECTURE_MANIFEST_VERSION = 5
+ARCHITECTURE_MANIFEST_VERSION = 6
+LEGACY_LORA_MANIFEST_VERSION = 5
 SAFE_WEIGHTS_FILENAME = "model.safetensors"
 
 
@@ -66,6 +71,17 @@ def _normalize_gaze_fusion(value: str) -> str:
     normalized = aliases.get(requested, requested)
     if normalized not in GAZE_FUSIONS:
         raise ValueError(f"Unknown gaze fusion {value!r}; choose one of {GAZE_FUSIONS}.")
+    return normalized
+
+
+def _normalize_finetuning_mode(value: str) -> str:
+    """Normalize the explicit Qwen fine-tuning strategy."""
+
+    normalized = str(value).strip().lower()
+    if normalized not in FINETUNING_MODES:
+        raise ValueError(
+            f"Unknown fine-tuning mode {value!r}; choose one of {FINETUNING_MODES}."
+        )
     return normalized
 
 
@@ -352,6 +368,7 @@ class DecoderVARegressor(nn.Module):
             "decoder_model_id": self._reconstruction_config["decoder_model_id"],
             "decoder_model_type": getattr(self.config, "model_type", None),
             "decoder_commit": self._reconstruction_config["decoder_revision"],
+            "finetuning_mode": self._reconstruction_config["finetuning_mode"],
             "gaze_fusion": self.gaze_fusion,
             "gaze_features": list(active_names),
             "gaze_feature_indices": list(active_indices),
@@ -393,24 +410,20 @@ class DecoderVARegressor(nn.Module):
         return manifest_path
 
 
-def load_qwen_backbone_with_lora(
+def _load_qwen_text_backbone(
     model_id: str = DEFAULT_DECODER_MODEL_ID,
     *,
     revision: str = DEFAULT_DECODER_REVISION,
     dtype: torch.dtype | str = torch.bfloat16,
-    lora_rank: int = 16,
-    lora_alpha: int = 32,
-    lora_dropout: float = 0.05,
     attn_implementation: str | None = None,
 ):
-    """Load the text-only Qwen causal backbone and apply LoRA to every linear layer."""
+    """Load only the trainable text backbone from the pinned Qwen causal LM."""
 
     try:
-        from peft import LoraConfig, TaskType, get_peft_model
         from transformers import Qwen3_5ForCausalLM
     except ImportError as exc:
         raise ImportError(
-            "Qwen LoRA training requires recent transformers and peft; "
+            "Qwen training requires a recent Transformers build; "
             "install the repository-root requirements.txt."
         ) from exc
 
@@ -435,6 +448,40 @@ def load_qwen_backbone_with_lora(
     del causal_lm
     if hasattr(backbone.config, "use_cache"):
         backbone.config.use_cache = False
+    backbone.requires_grad_(True)
+    return backbone
+
+
+def load_qwen_backbone(
+    model_id: str = DEFAULT_DECODER_MODEL_ID,
+    *,
+    revision: str = DEFAULT_DECODER_REVISION,
+    dtype: torch.dtype | str = torch.bfloat16,
+    finetuning_mode: str = "lora",
+    lora_rank: int = DEFAULT_LORA_RANK,
+    lora_alpha: int = DEFAULT_LORA_ALPHA,
+    lora_dropout: float = DEFAULT_LORA_DROPOUT,
+    attn_implementation: str | None = None,
+):
+    """Load a full-trainable or all-linear-LoRA Qwen text backbone."""
+
+    normalized_mode = _normalize_finetuning_mode(finetuning_mode)
+    if normalized_mode == "lora":
+        try:
+            from peft import LoraConfig, TaskType, get_peft_model
+        except ImportError as exc:
+            raise ImportError(
+                "Qwen LoRA training requires PEFT; install the repository-root "
+                "requirements.txt."
+            ) from exc
+    backbone = _load_qwen_text_backbone(
+        model_id,
+        revision=revision,
+        dtype=dtype,
+        attn_implementation=attn_implementation,
+    )
+    if normalized_mode == "full":
+        return backbone
 
     lora_config = LoraConfig(
         r=int(lora_rank),
@@ -445,6 +492,30 @@ def load_qwen_backbone_with_lora(
         task_type=TaskType.FEATURE_EXTRACTION,
     )
     return get_peft_model(backbone, lora_config)
+
+
+def load_qwen_backbone_with_lora(
+    model_id: str = DEFAULT_DECODER_MODEL_ID,
+    *,
+    revision: str = DEFAULT_DECODER_REVISION,
+    dtype: torch.dtype | str = torch.bfloat16,
+    lora_rank: int = DEFAULT_LORA_RANK,
+    lora_alpha: int = DEFAULT_LORA_ALPHA,
+    lora_dropout: float = DEFAULT_LORA_DROPOUT,
+    attn_implementation: str | None = None,
+):
+    """Backward-compatible wrapper for the explicit LoRA loader mode."""
+
+    return load_qwen_backbone(
+        model_id,
+        revision=revision,
+        dtype=dtype,
+        finetuning_mode="lora",
+        lora_rank=lora_rank,
+        lora_alpha=lora_alpha,
+        lora_dropout=lora_dropout,
+        attn_implementation=attn_implementation,
+    )
 
 
 def build_qwen_va_model(
@@ -459,17 +530,19 @@ def build_qwen_va_model(
     et_cache_size: int = 70000,
     gaze_feature_indices: Sequence[int] | None = None,
     dtype: torch.dtype | str = torch.bfloat16,
-    lora_rank: int = 16,
-    lora_alpha: int = 32,
-    lora_dropout: float = 0.05,
+    finetuning_mode: str = "lora",
+    lora_rank: int = DEFAULT_LORA_RANK,
+    lora_alpha: int = DEFAULT_LORA_ALPHA,
+    lora_dropout: float = DEFAULT_LORA_DROPOUT,
     gaze_projection_dim: int = 128,
     gaze_projection_dropout: tuple[float, float] = (0.1, 0.3),
     classifier_dropout: float = 0.1,
     attn_implementation: str | None = None,
 ) -> DecoderVARegressor:
-    """Construct the selected Qwen/LoRA VA model and optional pinned ET2 provider."""
+    """Construct the selected Qwen VA model and optional pinned ET2 provider."""
 
     normalized_fusion = _normalize_gaze_fusion(gaze_fusion)
+    normalized_finetuning_mode = _normalize_finetuning_mode(finetuning_mode)
     active_feature_indices = (
         normalize_et2_feature_indices(gaze_feature_indices)
         if normalized_fusion == "prefix-concat"
@@ -485,10 +558,11 @@ def build_qwen_va_model(
         if active_feature_indices
         else (0,) * len(ET2_FEATURE_NAMES)
     )
-    backbone = load_qwen_backbone_with_lora(
+    backbone = load_qwen_backbone(
         model_id,
         revision=model_revision,
         dtype=dtype,
+        finetuning_mode=normalized_finetuning_mode,
         lora_rank=lora_rank,
         lora_alpha=lora_alpha,
         lora_dropout=lora_dropout,
@@ -514,9 +588,13 @@ def build_qwen_va_model(
         gaze_projection_dropout=gaze_projection_dropout,
         classifier_dropout=classifier_dropout,
     )
+    model.config.finetuning_mode = normalized_finetuning_mode
+    model.finetuning_mode = normalized_finetuning_mode
+    uses_lora = normalized_finetuning_mode == "lora"
     model._reconstruction_config = {
         "decoder_model_id": str(model_id),
         "decoder_revision": str(model_revision),
+        "finetuning_mode": normalized_finetuning_mode,
         "gaze_fusion": normalized_fusion,
         "et_repo_id": str(et_repo_id),
         "et_revision": str(et_revision),
@@ -527,11 +605,11 @@ def build_qwen_va_model(
         "et_cache_size": int(et_cache_size),
         "output_dim": 2,
         "output_activation": OUTPUT_ACTIVATION,
-        "lora_rank": int(lora_rank),
-        "lora_alpha": int(lora_alpha),
-        "lora_dropout": float(lora_dropout),
-        "lora_target_modules": "all-linear",
-        "lora_task_type": "FEATURE_EXTRACTION",
+        "lora_rank": int(lora_rank) if uses_lora else None,
+        "lora_alpha": int(lora_alpha) if uses_lora else None,
+        "lora_dropout": float(lora_dropout) if uses_lora else None,
+        "lora_target_modules": "all-linear" if uses_lora else None,
+        "lora_task_type": "FEATURE_EXTRACTION" if uses_lora else None,
         "gaze_projection_dim": int(gaze_projection_dim),
         "gaze_projection_dropout": [
             float(value) for value in gaze_projection_dropout
@@ -562,10 +640,14 @@ def load_saved_decoder_va_model(
 
     with open(manifest_path, "r", encoding="utf-8") as input_file:
         manifest = json.load(input_file)
-    if manifest.get("schema_version") != ARCHITECTURE_MANIFEST_VERSION:
+    manifest_version = manifest.get("schema_version")
+    if manifest_version not in {
+        LEGACY_LORA_MANIFEST_VERSION,
+        ARCHITECTURE_MANIFEST_VERSION,
+    }:
         raise ValueError(
             "Unsupported decoder VA architecture manifest version: "
-            f"{manifest.get('schema_version')!r}"
+            f"{manifest_version!r}"
         )
     state_contract = manifest.get("state_dict")
     if not isinstance(state_contract, dict):
@@ -593,6 +675,7 @@ def load_saved_decoder_va_model(
         "et_cache_size",
         "output_dim",
         "output_activation",
+        "finetuning_mode",
         "lora_rank",
         "lora_alpha",
         "lora_dropout",
@@ -603,12 +686,32 @@ def load_saved_decoder_va_model(
         "classifier_dropout",
         "attn_implementation",
     }
+    if manifest_version == LEGACY_LORA_MANIFEST_VERSION:
+        required.remove("finetuning_mode")
     missing = sorted(required.difference(reconstruction))
     if missing:
         raise ValueError(
             "Architecture manifest is missing reconstruction field(s): "
             + ", ".join(missing)
         )
+    saved_finetuning_mode = (
+        "lora"
+        if manifest_version == LEGACY_LORA_MANIFEST_VERSION
+        else _normalize_finetuning_mode(reconstruction["finetuning_mode"])
+    )
+    if manifest_version == LEGACY_LORA_MANIFEST_VERSION:
+        declared_legacy_mode = manifest.get(
+            "finetuning_mode",
+            reconstruction.get("finetuning_mode", "lora"),
+        )
+        if declared_legacy_mode != "lora":
+            raise ValueError("Version-5 manifests can only describe LoRA models.")
+    elif manifest.get("finetuning_mode") != saved_finetuning_mode:
+        raise ValueError(
+            "Architecture manifest fine-tuning mode disagrees with "
+            "reconstruction metadata."
+        )
+
     saved_fusion = reconstruction["gaze_fusion"]
     if saved_fusion not in GAZE_FUSIONS:
         raise ValueError(
@@ -634,10 +737,42 @@ def load_saved_decoder_va_model(
         raise ValueError(
             f"Only the {OUTPUT_ACTIVATION!r} VA output activation is supported."
         )
-    if reconstruction["lora_target_modules"] != "all-linear":
-        raise ValueError("Saved model does not use the supported all-linear LoRA contract.")
-    if reconstruction["lora_task_type"] != "FEATURE_EXTRACTION":
-        raise ValueError("Saved model does not use the supported LoRA task type.")
+    lora_fields = {
+        "lora_rank": reconstruction["lora_rank"],
+        "lora_alpha": reconstruction["lora_alpha"],
+        "lora_dropout": reconstruction["lora_dropout"],
+        "lora_target_modules": reconstruction["lora_target_modules"],
+        "lora_task_type": reconstruction["lora_task_type"],
+    }
+    if saved_finetuning_mode == "lora":
+        try:
+            lora_rank = int(lora_fields["lora_rank"])
+            lora_alpha = int(lora_fields["lora_alpha"])
+            lora_dropout = float(lora_fields["lora_dropout"])
+        except (TypeError, ValueError) as exc:
+            raise ValueError("Saved LoRA hyperparameters are invalid.") from exc
+        if lora_rank <= 0 or lora_alpha <= 0:
+            raise ValueError("Saved LoRA rank and alpha must be positive.")
+        if not 0.0 <= lora_dropout < 1.0:
+            raise ValueError("Saved LoRA dropout must be in [0, 1).")
+        if lora_fields["lora_target_modules"] != "all-linear":
+            raise ValueError(
+                "Saved model does not use the supported all-linear LoRA contract."
+            )
+        if lora_fields["lora_task_type"] != "FEATURE_EXTRACTION":
+            raise ValueError("Saved model does not use the supported LoRA task type.")
+    else:
+        non_null_lora_fields = sorted(
+            field for field, value in lora_fields.items() if value is not None
+        )
+        if non_null_lora_fields:
+            raise ValueError(
+                "Full fine-tuning manifests must set all LoRA metadata to null: "
+                + ", ".join(non_null_lora_fields)
+            )
+        lora_rank = DEFAULT_LORA_RANK
+        lora_alpha = DEFAULT_LORA_ALPHA
+        lora_dropout = DEFAULT_LORA_DROPOUT
     if manifest.get("gaze_fusion") != saved_fusion:
         raise ValueError(
             "Architecture manifest gaze_fusion disagrees with reconstruction metadata."
@@ -711,6 +846,7 @@ def load_saved_decoder_va_model(
         tokenizer,
         model_id=str(reconstruction["decoder_model_id"]),
         model_revision=str(reconstruction["decoder_revision"]),
+        finetuning_mode=saved_finetuning_mode,
         gaze_fusion=str(reconstruction["gaze_fusion"]),
         et_repo_id=str(reconstruction["et_repo_id"]),
         et_revision=str(reconstruction["et_revision"]),
@@ -718,9 +854,9 @@ def load_saved_decoder_va_model(
         et_cache_size=effective_cache_size,
         gaze_feature_indices=saved_feature_indices or None,
         dtype=dtype,
-        lora_rank=int(reconstruction["lora_rank"]),
-        lora_alpha=int(reconstruction["lora_alpha"]),
-        lora_dropout=float(reconstruction["lora_dropout"]),
+        lora_rank=lora_rank,
+        lora_alpha=lora_alpha,
+        lora_dropout=lora_dropout,
         gaze_projection_dim=int(reconstruction["gaze_projection_dim"]),
         gaze_projection_dropout=tuple(
             float(value) for value in reconstruction["gaze_projection_dropout"]

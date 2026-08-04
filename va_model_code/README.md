@@ -130,6 +130,9 @@ To download and preprocess in one command:
 python prepare_english_data.py --download-default
 ```
 
+The `data` directory is intentionally excluded from Git, so this command must
+be run once after cloning the repository onto a new training machine.
+
 To preprocess the existing validated ZIP:
 
 ```bash
@@ -250,7 +253,7 @@ python train_model.py qwen3.5-0.8b heteroscedastic+ccc \
   --gaze-fusion none
 ```
 
-Configuration-only validation without model downloads:
+Dataset and Trainer-API validation without tokenizer or model downloads:
 
 ```bash
 python train_model.py --dry-run --no-iemocap
@@ -346,8 +349,8 @@ experiment rather than silently replacing the historical folds.
 The tests do not download Qwen or ET2:
 
 ```bash
-# Run after entering va_model_code.
-python -m pytest -q tests
+# Run from the repository root so va_model_code is importable.
+python -m pytest -q va_model_code/tests
 ```
 
 They cover safe ZIP handling, exact legacy counts, exclusions and typo aliases,

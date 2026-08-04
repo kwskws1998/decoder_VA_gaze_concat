@@ -597,6 +597,7 @@ def test_trainer_runs_one_step_and_predicts_four_outputs(tmp_path):
         loss_name="heteroscedastic+ccc",
     )
 
+    assert trainer.model_accepts_loss_kwargs is False
     result = trainer.train()
     predictions = trainer.predict(dataset)
 

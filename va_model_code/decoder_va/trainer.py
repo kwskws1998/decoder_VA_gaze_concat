@@ -28,6 +28,7 @@ class VARegressionTrainer(Trainer):
         self.hetero_logvar_min = hetero_logvar_min
         self.hetero_logvar_max = hetero_logvar_max
         super().__init__(*args, **kwargs)
+        self.model_accepts_loss_kwargs = False
 
     def compute_loss(
         self,

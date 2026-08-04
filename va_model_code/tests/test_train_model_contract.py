@@ -65,6 +65,60 @@ def test_cli_defaults_to_prefix_and_rejects_postfix():
         parser.parse_args(["--gaze-fusion", "postfix-concat"])
 
 
+@pytest.mark.parametrize("warmup_ratio", (-0.01, 1.0))
+def test_training_contract_rejects_invalid_warmup_ratio(warmup_ratio):
+    args = train_model_module._build_parser().parse_args(
+        ["--warmup-ratio", str(warmup_ratio)]
+    )
+
+    with pytest.raises(ValueError, match="interval"):
+        train_model_module._validate_args(args)
+
+
+@pytest.mark.parametrize(
+    ("transformers_version", "expected_warmup_argument"),
+    (("4.49.0", "warmup_ratio"), ("5.14.1", "warmup_steps")),
+)
+def test_training_arguments_are_compatible_across_transformers_versions(
+    monkeypatch,
+    tmp_path,
+    transformers_version,
+    expected_warmup_argument,
+):
+    captured_kwargs = {}
+
+    def capture_training_arguments(**kwargs):
+        captured_kwargs.update(kwargs)
+        return captured_kwargs
+
+    monkeypatch.setattr(
+        train_model_module,
+        "_package_version",
+        lambda distribution: transformers_version,
+    )
+    monkeypatch.setattr(
+        train_model_module,
+        "TrainingArguments",
+        capture_training_arguments,
+    )
+    args = train_model_module._build_parser().parse_args([])
+
+    result = train_model_module._training_arguments(
+        args,
+        tmp_path / "heldout_fold1",
+        bf16=False,
+        fp16=False,
+    )
+
+    assert result is captured_kwargs
+    assert captured_kwargs[expected_warmup_argument] == pytest.approx(0.1)
+    assert (
+        {"warmup_ratio", "warmup_steps"} - {expected_warmup_argument}
+    ).isdisjoint(captured_kwargs)
+    assert "overwrite_output_dir" not in captured_kwargs
+    assert "save_safetensors" not in captured_kwargs
+
+
 def test_resume_contract_accepts_matching_prefix_checkpoint(tmp_path):
     fold_output = tmp_path / "run" / "heldout_fold1"
     checkpoint = fold_output / "checkpoints" / "checkpoint-10"

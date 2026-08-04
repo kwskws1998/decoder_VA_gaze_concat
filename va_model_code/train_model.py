@@ -145,6 +145,8 @@ def _validate_args(args: argparse.Namespace) -> None:
         raise ValueError("--max-steps must be -1 or a positive integer.")
     if args.learning_rate <= 0:
         raise ValueError("--learning-rate must be positive.")
+    if not 0.0 <= args.warmup_ratio < 1.0:
+        raise ValueError("--warmup-ratio must be in the interval [0, 1).")
     if args.et_cache_size < 0:
         raise ValueError("--et-cache-size cannot be negative.")
     if args.hetero_logvar_min >= args.hetero_logvar_max:
@@ -352,42 +354,54 @@ def _training_arguments(
 ) -> TrainingArguments:
     """Build version-stable Trainer arguments for one held-out fold."""
 
-    return TrainingArguments(
-        output_dir=str(fold_output_dir / "checkpoints"),
-        overwrite_output_dir=False,
-        do_train=True,
-        do_eval=True,
-        eval_strategy="epoch",
-        save_strategy="epoch",
-        logging_strategy="steps",
-        logging_steps=args.logging_steps,
-        per_device_train_batch_size=args.train_batch_size,
-        per_device_eval_batch_size=args.eval_batch_size,
-        gradient_accumulation_steps=args.gradient_accumulation_steps,
-        learning_rate=args.learning_rate,
-        weight_decay=args.weight_decay,
-        warmup_ratio=args.warmup_ratio,
-        num_train_epochs=args.epochs,
-        max_steps=args.max_steps,
-        seed=args.seed,
-        data_seed=args.seed,
-        bf16=bf16,
-        fp16=fp16,
-        use_cpu=args.use_cpu,
-        gradient_checkpointing=args.gradient_checkpointing,
-        gradient_checkpointing_kwargs={"use_reentrant": False},
-        remove_unused_columns=False,
-        label_names=["labels"],
-        load_best_model_at_end=True,
-        metric_for_best_model="mse_mean",
-        greater_is_better=False,
-        save_total_limit=args.save_total_limit,
-        save_safetensors=True,
-        report_to=args.report_to or "none",
-        run_name=f"{args.model}-heldout-fold-{fold_output_dir.name}",
-        dataloader_num_workers=0,
-        dataloader_pin_memory=torch.cuda.is_available() and not args.use_cpu,
-    )
+    training_kwargs = {
+        "output_dir": str(fold_output_dir / "checkpoints"),
+        "do_train": True,
+        "do_eval": True,
+        "eval_strategy": "epoch",
+        "save_strategy": "epoch",
+        "logging_strategy": "steps",
+        "logging_steps": args.logging_steps,
+        "per_device_train_batch_size": args.train_batch_size,
+        "per_device_eval_batch_size": args.eval_batch_size,
+        "gradient_accumulation_steps": args.gradient_accumulation_steps,
+        "learning_rate": args.learning_rate,
+        "weight_decay": args.weight_decay,
+        "num_train_epochs": args.epochs,
+        "max_steps": args.max_steps,
+        "seed": args.seed,
+        "data_seed": args.seed,
+        "bf16": bf16,
+        "fp16": fp16,
+        "use_cpu": args.use_cpu,
+        "gradient_checkpointing": args.gradient_checkpointing,
+        "gradient_checkpointing_kwargs": {"use_reentrant": False},
+        "remove_unused_columns": False,
+        "label_names": ["labels"],
+        "load_best_model_at_end": True,
+        "metric_for_best_model": "mse_mean",
+        "greater_is_better": False,
+        "save_total_limit": args.save_total_limit,
+        "report_to": args.report_to or "none",
+        "run_name": f"{args.model}-heldout-fold-{fold_output_dir.name}",
+        "dataloader_num_workers": 0,
+        "dataloader_pin_memory": (
+            torch.cuda.is_available() and not args.use_cpu
+        ),
+    }
+    transformers_version = _package_version("transformers")
+    try:
+        transformers_major = int(str(transformers_version).split(".", maxsplit=1)[0])
+    except ValueError as exc:
+        raise RuntimeError(
+            f"Cannot parse installed transformers version: {transformers_version!r}"
+        ) from exc
+    if transformers_major >= 5:
+        training_kwargs["warmup_steps"] = args.warmup_ratio
+    else:
+        training_kwargs["warmup_ratio"] = args.warmup_ratio
+
+    return TrainingArguments(**training_kwargs)
 
 
 def run(args: argparse.Namespace) -> Path | None:
@@ -408,9 +422,25 @@ def run(args: argparse.Namespace) -> Path | None:
     if any(frame.empty for frame in filtered.folds.values()):
         raise ValueError("Dataset exclusions left at least one fold empty.")
     if args.dry_run:
+        _, bf16, fp16 = _runtime_precision(args.use_cpu)
+        dry_run_root = (
+            Path(args.output_dir)
+            if args.output_dir
+            else Path("Preds") / "dry_run"
+        )
+        for held_out_fold in args.held_out_folds:
+            _training_arguments(
+                args,
+                dry_run_root / f"heldout_fold{held_out_fold}",
+                bf16=bf16,
+                fp16=fp16,
+            )
         _print_dataset_counts("Validated datasets:", filtered_counts)
         print(f"Excluded: {', '.join(filtered.excluded_names) or '<none>'}")
-        print("Dry run complete; no tokenizer or model was downloaded.")
+        print(
+            "Dry run complete; Trainer arguments are compatible and no tokenizer "
+            "or model was downloaded."
+        )
         return None
 
     output_dir = Path(args.output_dir) if args.output_dir else _default_output_dir()
@@ -487,6 +517,12 @@ def run(args: argparse.Namespace) -> Path | None:
             "evaluation_rows": len(eval_frame),
         }
         _validate_resume_contract(args, fold_output, expected_fold_manifest)
+        training_arguments = _training_arguments(
+            args,
+            fold_output,
+            bf16=bf16,
+            fp16=fp16,
+        )
         fold_output.mkdir(parents=True, exist_ok=True)
         print(
             f"Training fold {training_fold} ({len(train_frame):,} rows); "
@@ -528,12 +564,7 @@ def run(args: argparse.Namespace) -> Path | None:
 
         trainer = VARegressionTrainer(
             model=model,
-            args=_training_arguments(
-                args,
-                fold_output,
-                bf16=bf16,
-                fp16=fp16,
-            ),
+            args=training_arguments,
             train_dataset=train_dataset,
             eval_dataset=eval_dataset,
             data_collator=collator,

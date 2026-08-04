@@ -122,7 +122,11 @@ def resolve_excluded_datasets(
 def read_fold(path: str | os.PathLike[str]) -> pd.DataFrame:
     fold_path = Path(path)
     if not fold_path.is_file():
-        raise FileNotFoundError(f"Fold TSV not found: {fold_path}")
+        raise FileNotFoundError(
+            f"Fold TSV not found: {fold_path}. On a fresh machine, enter "
+            "va_model_code and run `python prepare_english_data.py "
+            "--download-default` before training."
+        )
     frame = pd.read_csv(
         fold_path,
         sep="\t",

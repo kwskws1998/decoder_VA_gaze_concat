@@ -123,14 +123,38 @@ def test_training_contract_rejects_invalid_warmup_ratio(warmup_ratio):
 
 
 @pytest.mark.parametrize(
-    ("transformers_version", "expected_warmup_argument"),
-    (("4.49.0", "warmup_ratio"), ("5.14.1", "warmup_steps")),
+    (
+        "transformers_version",
+        "expected_warmup_argument",
+        "training_argument_names",
+        "expected_sampling_argument",
+        "expected_sampling_value",
+    ),
+    (
+        (
+            "4.49.0",
+            "warmup_ratio",
+            {"group_by_length"},
+            "group_by_length",
+            True,
+        ),
+        (
+            "5.14.1",
+            "warmup_steps",
+            {"train_sampling_strategy"},
+            "train_sampling_strategy",
+            "group_by_length",
+        ),
+    ),
 )
 def test_training_arguments_are_compatible_across_transformers_versions(
     monkeypatch,
     tmp_path,
     transformers_version,
     expected_warmup_argument,
+    training_argument_names,
+    expected_sampling_argument,
+    expected_sampling_value,
 ):
     captured_kwargs = {}
 
@@ -147,6 +171,11 @@ def test_training_arguments_are_compatible_across_transformers_versions(
         train_model_module,
         "TrainingArguments",
         capture_training_arguments,
+    )
+    monkeypatch.setattr(
+        train_model_module,
+        "_training_argument_names",
+        lambda: frozenset(training_argument_names),
     )
     args = train_model_module._build_parser().parse_args(
         ["qwen3.5-0.8b", "mse"]
@@ -169,7 +198,66 @@ def test_training_arguments_are_compatible_across_transformers_versions(
     assert "save_safetensors" not in captured_kwargs
     assert captured_kwargs["seed"] == 43
     assert "data_seed" not in captured_kwargs
-    assert captured_kwargs["group_by_length"] is True
+    assert captured_kwargs[expected_sampling_argument] == expected_sampling_value
+    assert (
+        {"group_by_length", "train_sampling_strategy"}
+        - {expected_sampling_argument}
+    ).isdisjoint(captured_kwargs)
+
+
+def test_transformers_v5_can_disable_length_grouping(monkeypatch, tmp_path):
+    captured_kwargs = {}
+
+    monkeypatch.setattr(
+        train_model_module,
+        "_package_version",
+        lambda distribution: "5.14.1",
+    )
+    monkeypatch.setattr(
+        train_model_module,
+        "_training_argument_names",
+        lambda: frozenset({"train_sampling_strategy"}),
+    )
+    monkeypatch.setattr(
+        train_model_module,
+        "TrainingArguments",
+        lambda **kwargs: captured_kwargs.update(kwargs) or captured_kwargs,
+    )
+    args = train_model_module._build_parser().parse_args(
+        ["qwen3.5-0.8b", "mse", "--no-group-by-length"]
+    )
+
+    train_model_module._training_arguments(
+        args,
+        tmp_path / "heldout_fold1",
+        bf16=False,
+        fp16=False,
+    )
+
+    assert captured_kwargs["train_sampling_strategy"] == "random"
+
+
+def test_training_argument_names_inspects_the_runtime_constructor(monkeypatch):
+    class FakeTrainingArguments:
+        def __init__(
+            self,
+            output_dir=None,
+            train_sampling_strategy="random",
+        ):
+            self.output_dir = output_dir
+            self.train_sampling_strategy = train_sampling_strategy
+
+    monkeypatch.setattr(
+        train_model_module,
+        "TrainingArguments",
+        FakeTrainingArguments,
+    )
+
+    names = train_model_module._training_argument_names()
+
+    assert "output_dir" in names
+    assert "train_sampling_strategy" in names
+    assert "group_by_length" not in names
 
 
 def test_resume_contract_accepts_matching_prefix_checkpoint(tmp_path):

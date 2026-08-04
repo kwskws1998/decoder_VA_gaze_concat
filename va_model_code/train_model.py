@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 from datetime import datetime
 from importlib.metadata import PackageNotFoundError, version
+import inspect
 import json
 import math
 from pathlib import Path
@@ -335,6 +336,17 @@ def _package_version(distribution: str) -> str | None:
         return None
 
 
+def _training_argument_names() -> frozenset[str]:
+    """Return the installed TrainingArguments constructor parameter names."""
+
+    try:
+        return frozenset(inspect.signature(TrainingArguments).parameters)
+    except (TypeError, ValueError) as exc:
+        raise RuntimeError(
+            "Cannot inspect the installed Transformers TrainingArguments API."
+        ) from exc
+
+
 def _fold_specifications(filtered_folds, held_out_folds: Sequence[int]):
     """Yield train/evaluation frames for each requested held-out fold."""
 
@@ -389,12 +401,23 @@ def _training_arguments(
         "save_total_limit": args.save_total_limit,
         "report_to": args.report_to or "none",
         "run_name": f"{args.model}-heldout-fold-{fold_output_dir.name}",
-        "group_by_length": args.group_by_length,
         "dataloader_num_workers": 0,
         "dataloader_pin_memory": (
             torch.cuda.is_available() and not args.use_cpu
         ),
     }
+    training_argument_names = _training_argument_names()
+    if "train_sampling_strategy" in training_argument_names:
+        training_kwargs["train_sampling_strategy"] = (
+            "group_by_length" if args.group_by_length else "random"
+        )
+    elif "group_by_length" in training_argument_names:
+        training_kwargs["group_by_length"] = args.group_by_length
+    else:
+        raise RuntimeError(
+            "The installed Transformers TrainingArguments API exposes neither "
+            "train_sampling_strategy nor group_by_length."
+        )
     transformers_version = _package_version("transformers")
     try:
         transformers_major = int(str(transformers_version).split(".", maxsplit=1)[0])

@@ -20,6 +20,84 @@ DEFAULT_ET2_FILENAME = "et_predictor2_seed123.safetensors"
 ET2_MAX_INPUT_TOKENS = 512
 
 
+def normalize_et2_feature_indices(
+    feature_indices: Sequence[int] | None = None,
+    *,
+    feature_index: int | None = None,
+) -> tuple[int, ...]:
+    """Validate a non-empty ET2 subset and return it in canonical channel order."""
+
+    if feature_indices is not None and feature_index is not None:
+        raise ValueError("Specify feature_indices or legacy feature_index, not both.")
+    requested = (
+        (3,)
+        if feature_indices is None and feature_index is None
+        else (feature_index,)
+        if feature_indices is None
+        else tuple(feature_indices)
+    )
+    if not requested:
+        raise ValueError("At least one ET2 feature index is required.")
+
+    normalized: list[int] = []
+    for value in requested:
+        if isinstance(value, bool) or not isinstance(value, int):
+            raise TypeError("ET2 feature indices must be integers.")
+        index = int(value)
+        if not 0 <= index < len(ET2_FEATURE_NAMES):
+            raise ValueError(
+                f"ET2 feature indices must be in [0, {len(ET2_FEATURE_NAMES) - 1}]."
+            )
+        normalized.append(index)
+    if len(set(normalized)) != len(normalized):
+        raise ValueError("ET2 feature indices cannot contain duplicates.")
+    return tuple(sorted(normalized))
+
+
+def et2_feature_indices_from_names(feature_names: Sequence[str]) -> tuple[int, ...]:
+    """Resolve a non-empty named ET2 subset into canonical channel order."""
+
+    requested = (feature_names,) if isinstance(feature_names, str) else tuple(feature_names)
+    if not requested:
+        raise ValueError("At least one ET2 gaze feature is required.")
+    unknown = sorted(set(requested).difference(ET2_FEATURE_NAMES))
+    if unknown:
+        raise ValueError(
+            "Unknown ET2 gaze feature(s): "
+            + ", ".join(repr(name) for name in unknown)
+            + f"; choose from {ET2_FEATURE_NAMES}."
+        )
+    if len(set(requested)) != len(requested):
+        raise ValueError("ET2 gaze features cannot contain duplicates.")
+    requested_set = set(requested)
+    return tuple(
+        index
+        for index, name in enumerate(ET2_FEATURE_NAMES)
+        if name in requested_set
+    )
+
+
+def et2_feature_names_from_indices(
+    feature_indices: Sequence[int],
+) -> tuple[str, ...]:
+    """Return canonical ET2 names for one validated non-empty channel subset."""
+
+    normalized = normalize_et2_feature_indices(feature_indices)
+    return tuple(ET2_FEATURE_NAMES[index] for index in normalized)
+
+
+def et2_features_used_from_indices(
+    feature_indices: Sequence[int],
+) -> tuple[int, ...]:
+    """Return the five-bit ET2 feature mask for a non-empty channel subset."""
+
+    normalized = set(normalize_et2_feature_indices(feature_indices))
+    return tuple(
+        int(index in normalized)
+        for index in range(len(ET2_FEATURE_NAMES))
+    )
+
+
 def _et2_roberta_config():
     """Recreate the exact roberta-base configuration used to train ET2."""
 
@@ -110,7 +188,7 @@ def segment_text_for_et2(text: str) -> list[str]:
 
 
 class ET2GazeProvider:
-    """Provide frozen TRT-only ET2 features aligned to target first subwords."""
+    """Provide selected frozen ET2 features aligned to target first subwords."""
 
     def __init__(
         self,
@@ -118,10 +196,11 @@ class ET2GazeProvider:
         repo_id: str = DEFAULT_ET2_REPO_ID,
         revision: str = DEFAULT_ET2_REVISION,
         filename: str = DEFAULT_ET2_FILENAME,
-        feature_index: int = 3,
+        feature_index: int | None = None,
         cache_size: int = 20000,
         max_length: int = ET2_MAX_INPUT_TOKENS,
         device: str | torch.device | None = None,
+        feature_indices: Sequence[int] | None = None,
     ):
         if tokenizer is None:
             raise ValueError("A target-model tokenizer is required.")
@@ -131,10 +210,10 @@ class ET2GazeProvider:
             raise ValueError("revision must be a non-empty branch, tag, or commit.")
         if not str(filename).endswith(".safetensors"):
             raise ValueError("ET2 weights must be loaded from a .safetensors file.")
-        if not 0 <= int(feature_index) < len(ET2_FEATURE_NAMES):
-            raise ValueError(
-                f"feature_index must be in [0, {len(ET2_FEATURE_NAMES) - 1}]."
-            )
+        normalized_feature_indices = normalize_et2_feature_indices(
+            feature_indices,
+            feature_index=feature_index,
+        )
         if int(cache_size) < 0:
             raise ValueError("cache_size cannot be negative.")
         if int(max_length) <= 2:
@@ -148,7 +227,17 @@ class ET2GazeProvider:
         self.repo_id = str(repo_id)
         self.revision = str(revision)
         self.filename = str(filename)
-        self.feature_index = int(feature_index)
+        self.feature_indices = normalized_feature_indices
+        self.feature_names = tuple(
+            ET2_FEATURE_NAMES[index] for index in self.feature_indices
+        )
+        self.features_used = tuple(
+            int(index in self.feature_indices)
+            for index in range(len(ET2_FEATURE_NAMES))
+        )
+        self.feature_index = (
+            self.feature_indices[0] if len(self.feature_indices) == 1 else None
+        )
         self.cache_size = int(cache_size)
         self.max_length = int(max_length)
         self.device = torch.device(device) if device is not None else None
@@ -213,7 +302,7 @@ class ET2GazeProvider:
             self.repo_id,
             self.revision,
             self.filename,
-            self.feature_index,
+            self.feature_indices,
             tuple(int(token_id) for token_id in valid_token_ids),
         )
 
@@ -334,7 +423,19 @@ class ET2GazeProvider:
     ) -> tuple[torch.Tensor, torch.Tensor]:
         """Place finite ET word predictions on exact target first subwords."""
 
-        output = torch.zeros(len(target_ids), 1, dtype=torch.float32)
+        if (
+            word_features.ndim != 2
+            or word_features.shape[0] != len(words)
+            or word_features.shape[1] != len(self.feature_indices)
+        ):
+            raise ValueError("word_features must have shape [num_words, num_features].")
+        if word_feature_mask.ndim != 1 or word_feature_mask.shape[0] != len(words):
+            raise ValueError("word_feature_mask must have shape [num_words].")
+        output = torch.zeros(
+            len(target_ids),
+            len(self.feature_indices),
+            dtype=torch.float32,
+        )
         mapped_mask = torch.zeros(len(target_ids), dtype=torch.bool)
         if not words:
             return output, mapped_mask
@@ -353,10 +454,10 @@ class ET2GazeProvider:
             ):
                 continue
             feature = word_features[word_index]
-            if not bool(torch.isfinite(feature).item()):
+            if not bool(torch.isfinite(feature).all().item()):
                 continue
             first_subword = indices[0]
-            output[first_subword, 0] = feature
+            output[first_subword] = feature
             mapped_mask[first_subword] = True
         return output, mapped_mask
 
@@ -365,7 +466,7 @@ class ET2GazeProvider:
         target_rows: Sequence[Sequence[int]],
         execution_device: torch.device,
     ) -> list[tuple[torch.Tensor, torch.Tensor]]:
-        """Batch uncached texts through ET2 and return CPU-aligned TRT rows."""
+        """Batch uncached texts through ET2 and return selected CPU-aligned rows."""
 
         decoded_rows = self._decode_target_rows(target_rows)
         segmented_rows = [segment_text_for_et2(text) for text in decoded_rows]
@@ -379,7 +480,11 @@ class ET2GazeProvider:
             if words:
                 continue
             results[index] = (
-                torch.zeros(len(target_rows[index]), 1, dtype=torch.float32),
+                torch.zeros(
+                    len(target_rows[index]),
+                    len(self.feature_indices),
+                    dtype=torch.float32,
+                ),
                 torch.zeros(len(target_rows[index]), dtype=torch.bool),
             )
         if not active_indices:
@@ -433,7 +538,11 @@ class ET2GazeProvider:
             if len(word_ids) != len(ids):
                 raise RuntimeError("ET tokenizer returned a malformed word-id sequence.")
 
-            word_features = torch.zeros(len(words), dtype=torch.float32)
+            word_features = torch.zeros(
+                len(words),
+                len(self.feature_indices),
+                dtype=torch.float32,
+            )
             word_feature_mask = torch.zeros(len(words), dtype=torch.bool)
             for token_index, word_index in enumerate(word_ids):
                 if (
@@ -447,9 +556,9 @@ class ET2GazeProvider:
                 feature = predictions_cpu[
                     active_batch_index,
                     token_index,
-                    self.feature_index,
+                    list(self.feature_indices),
                 ]
-                if not bool(torch.isfinite(feature).item()):
+                if not bool(torch.isfinite(feature).all().item()):
                     continue
                 word_features[word_index] = feature
                 word_feature_mask[word_index] = True
@@ -529,7 +638,7 @@ class ET2GazeProvider:
         features = torch.zeros(
             batch_size,
             sequence_length,
-            1,
+            len(self.feature_indices),
             dtype=torch.float32,
             device=input_ids.device,
         )
@@ -541,6 +650,12 @@ class ET2GazeProvider:
         )
         for row_index, (key, valid_length) in enumerate(zip(keys, valid_lengths)):
             row_features, row_mask = resolved[key]
+            if (
+                row_features.ndim != 2
+                or row_features.shape[1] != len(self.feature_indices)
+                or row_mask.ndim != 1
+            ):
+                raise RuntimeError("Cached ET2 rows do not match the selected feature shape.")
             copy_length = min(
                 valid_length,
                 row_features.shape[0],

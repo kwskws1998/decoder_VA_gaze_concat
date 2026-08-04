@@ -127,6 +127,7 @@ dmypy.json
 
 # input data, saved log, checkpoints
 data/
+data_paper*/
 Output Directory/
 model/
 data/

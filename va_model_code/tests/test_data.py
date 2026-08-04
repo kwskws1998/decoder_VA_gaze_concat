@@ -26,12 +26,22 @@ from va_model_code.decoder_va.filters import (
 )
 from va_model_code.decoder_va.preprocessing import (
     FOLD_FILENAMES,
+    LEGACY_DEDUP_POLICY,
+    LEGACY_PROTOCOL,
+    LEGACY_SPLIT_STRATEGY,
+    LEGACY_TEXT_POLICY,
     MANIFEST_FILENAME,
+    MANIFEST_VERSION,
     MERGED_FILENAME,
     OUTPUT_COLUMNS,
+    PAPER_DEDUP_POLICY,
+    PAPER_PROTOCOL,
+    PAPER_SPLIT_STRATEGY,
+    PAPER_TEXT_POLICY,
     SOURCE_NAME_MAP,
     build_english_dataset,
 )
+from va_model_code.prepare_english_data import main as prepare_english_data
 
 
 def _write_source(path: Path, rows: list[dict[str, object]]) -> None:
@@ -45,7 +55,9 @@ def _make_small_bundle(source_dir: Path) -> None:
         [
             {"text": "  hello   world  ", "valence": 0.2, "arousal": 0.3},
             {"text": "hello world", "valence": 0.9, "arousal": 0.8},
+            {"text": "hello world", "valence": 0.7, "arousal": 0.6},
             {"text": "   ", "valence": 0.4, "arousal": 0.5},
+            {"text": None, "valence": 0.6, "arousal": 0.7},
             {"text": "invalid", "valence": "bad", "arousal": 0.1},
         ],
     )
@@ -65,9 +77,14 @@ def _make_small_bundle(source_dir: Path) -> None:
         "warriner_et_al": (0.51, 0.52),
     }
     for stem, (valence, arousal) in remaining.items():
+        text = (
+            "cross-source duplicate"
+            if stem in {"emotales", "iemocap"}
+            else stem
+        )
         _write_source(
             source_dir / f"{stem}.tsv",
-            [{"text": stem, "valence": valence, "arousal": arousal}],
+            [{"text": text, "valence": valence, "arousal": arousal}],
         )
 
 
@@ -153,6 +170,16 @@ def test_preprocessing_preserves_legacy_semantics(tmp_path: Path) -> None:
     assert facebook.loc["high", "valence"] == pytest.approx(1.0)
 
     manifest = json.loads(result_a.manifest_path.read_text(encoding="utf-8"))
+    assert manifest["schema_version"] == MANIFEST_VERSION
+    assert manifest["protocol"] == LEGACY_PROTOCOL
+    assert manifest["paper_protocol"] is False
+    assert manifest["normalization"] == "observed"
+    assert manifest["text_policy"] == LEGACY_TEXT_POLICY
+    assert manifest["dedup_policy"] == LEGACY_DEDUP_POLICY
+    assert manifest["split"]["strategy"] == LEGACY_SPLIT_STRATEGY
+    assert manifest["build"]["protocol"] == LEGACY_PROTOCOL
+    assert manifest["build"]["text_policy"] == LEGACY_TEXT_POLICY
+    assert manifest["build"]["dedup_policy"] == LEGACY_DEDUP_POLICY
     assert [item["filename"] for item in manifest["sources"]] == sorted(
         (f"{stem}.tsv" for stem in SOURCE_NAME_MAP if stem != "fb"),
         key=str.casefold,
@@ -162,6 +189,102 @@ def test_preprocessing_preserves_legacy_semantics(tmp_path: Path) -> None:
     for filename in (*FOLD_FILENAMES, MERGED_FILENAME):
         path = output_a / filename
         assert manifest["outputs"][filename]["sha256"] == sha256_file(path)
+
+
+def test_paper_protocol_cli_preserves_rows_and_splits_each_source(
+    tmp_path: Path,
+) -> None:
+    source_dir = tmp_path / "source_tsv"
+    _make_small_bundle(source_dir)
+    output_a = tmp_path / "paper_a"
+    assert (
+        prepare_english_data(
+            [
+                "--source-dir",
+                str(source_dir),
+                "--paper-protocol",
+                "--output-dir",
+                str(output_a),
+                "--seed",
+                "42",
+            ]
+        )
+        == 0
+    )
+    output_b = tmp_path / "paper_b"
+    result_b = build_english_dataset(
+        output_b,
+        source_dir=source_dir,
+        seed=42,
+        paper_protocol=True,
+    )
+
+    merged = pd.read_csv(
+        output_a / MERGED_FILENAME,
+        sep="\t",
+        keep_default_na=False,
+    )
+    assert len(merged) == 13
+    assert result_b.total_rows == 13
+    assert merged["index"].tolist() == list(range(13))
+    assert "  hello   world  " in merged["text"].tolist()
+    assert "   " in merged["text"].tolist()
+    assert "" in merged["text"].tolist()
+    assert (merged["text"] == "hello world").sum() == 2
+    assert (merged["text"] == "cross-source duplicate").sum() == 2
+
+    facebook = merged[merged["dataset_of_origin"] == "fb"].set_index("text")
+    assert facebook.loc["low", "valence"] == pytest.approx(0.0)
+    assert facebook.loc["middle", "valence"] == pytest.approx(0.5)
+    assert facebook.loc["high", "valence"] == pytest.approx(1.0)
+
+    manifest = json.loads(
+        (output_a / MANIFEST_FILENAME).read_text(encoding="utf-8")
+    )
+    assert manifest["schema_version"] == MANIFEST_VERSION
+    assert manifest["protocol"] == PAPER_PROTOCOL
+    assert manifest["paper_protocol"] is True
+    assert manifest["normalization"] == "source-scale"
+    assert manifest["text_policy"] == PAPER_TEXT_POLICY
+    assert manifest["dedup_policy"] == PAPER_DEDUP_POLICY
+    assert manifest["split"]["strategy"] == PAPER_SPLIT_STRATEGY
+    assert manifest["build"]["protocol"] == PAPER_PROTOCOL
+    assert manifest["build"]["text_policy"] == PAPER_TEXT_POLICY
+    assert manifest["build"]["dedup_policy"] == PAPER_DEDUP_POLICY
+    assert all(
+        source["duplicate_text_rows_dropped"] == 0
+        for source in manifest["sources"]
+    )
+
+    source_counts = manifest["split"]["per_source_fold_counts"]
+    for counts in source_counts.values():
+        assert counts["fold1_rows"] + counts["fold2_rows"] == counts["total_rows"]
+        assert abs(counts["fold1_rows"] - counts["fold2_rows"]) <= 1
+
+    assert sha256_file(output_a / FOLD_FILENAMES[0]) == sha256_file(
+        result_b.fold1_path
+    )
+    assert sha256_file(output_a / FOLD_FILENAMES[1]) == sha256_file(
+        result_b.fold2_path
+    )
+    fold_indices = set()
+    for filename in FOLD_FILENAMES:
+        frame = read_fold(output_a / filename)
+        assert fold_indices.isdisjoint(frame["index"])
+        fold_indices.update(frame["index"])
+    assert fold_indices == set(range(13))
+
+
+def test_paper_protocol_rejects_observed_normalization(tmp_path: Path) -> None:
+    source_dir = tmp_path / "source_tsv"
+    _make_small_bundle(source_dir)
+    with pytest.raises(ValueError, match="requires normalization='source-scale'"):
+        build_english_dataset(
+            tmp_path / "paper",
+            source_dir=source_dir,
+            paper_protocol=True,
+            normalization="observed",
+        )
 
 
 def test_actual_bundle_row_counts_and_no_iemocap_regression(tmp_path: Path) -> None:
@@ -184,6 +307,15 @@ def test_actual_bundle_row_counts_and_no_iemocap_regression(tmp_path: Path) -> N
         "nrc-vad": 19_971,
         "word ratings ENG": 13_915,
     }
+    assert sha256_file(result.fold1_path) == (
+        "ba9a833084064ab5807dc600aa834d2c21c8d3bb9019ba40147196995d6cc714"
+    )
+    assert sha256_file(result.fold2_path) == (
+        "1a972b4ed29692de47887991340bfe1656b85a6f8a9e84dacfc88553f6f22f2f"
+    )
+    assert sha256_file(result.merged_path) == (
+        "957c20b155a7ad1069a0ec168dacc00fbc494ce4b5adeae403c0d1c0468f3a01"
+    )
     folds = {
         filename: read_fold(tmp_path / "data" / filename)
         for filename in FOLD_FILENAMES
@@ -193,6 +325,69 @@ def test_actual_bundle_row_counts_and_no_iemocap_regression(tmp_path: Path) -> N
     assert sum(len(frame) for frame in filtered.folds.values()) == 53_601
     manifest = json.loads((tmp_path / "data" / MANIFEST_FILENAME).read_text())
     assert manifest["blank_text_rows_retained"] == 3
+
+
+def test_actual_bundle_paper_protocol_counts_and_source_balance(
+    tmp_path: Path,
+) -> None:
+    project_root = Path(__file__).resolve().parents[1]
+    archive = project_root / "data/external/english_va_bundle.zip"
+    expected = "5db750ededfd9717dcca465b34fd7e6c348e50e563ad2c0814c458b04441e81d"
+    result = build_english_dataset(
+        tmp_path / "data_paper",
+        archive_path=archive,
+        expected_sha256=expected,
+        seed=42,
+        paper_protocol=True,
+    )
+    assert result.total_rows == 63_823
+    assert result.dataset_counts == {
+        "EmoTales sentences": 1_395,
+        "Emobank": 10_062,
+        "GlasgowNorms": 5_553,
+        "IEMOCAP sentences": 10_032,
+        "fb": 2_895,
+        "nrc-vad": 19_971,
+        "word ratings ENG": 13_915,
+    }
+
+    manifest = json.loads(result.manifest_path.read_text(encoding="utf-8"))
+    assert manifest["protocol"] == PAPER_PROTOCOL
+    assert manifest["split"]["fold1_rows"] == 31_909
+    assert manifest["split"]["fold2_rows"] == 31_914
+    expected_fold_counts = {
+        "EmoTales sentences": (697, 698),
+        "Emobank": (5_031, 5_031),
+        "GlasgowNorms": (2_776, 2_777),
+        "IEMOCAP sentences": (5_016, 5_016),
+        "fb": (1_447, 1_448),
+        "nrc-vad": (9_985, 9_986),
+        "word ratings ENG": (6_957, 6_958),
+    }
+    source_counts = manifest["split"]["per_source_fold_counts"]
+    for name, (fold1_rows, fold2_rows) in expected_fold_counts.items():
+        assert source_counts[name] == {
+            "fold1_rows": fold1_rows,
+            "fold2_rows": fold2_rows,
+            "total_rows": fold1_rows + fold2_rows,
+        }
+        assert abs(fold1_rows - fold2_rows) <= 1
+    assert sum(
+        source["invalid_va_rows_dropped"] for source in manifest["sources"]
+    ) == 3
+    assert all(
+        source["duplicate_text_rows_dropped"] == 0
+        for source in manifest["sources"]
+    )
+
+
+def test_missing_fold_error_shows_both_generation_commands(tmp_path: Path) -> None:
+    with pytest.raises(FileNotFoundError) as error:
+        read_fold(tmp_path / "missing" / FOLD_FILENAMES[0])
+    message = str(error.value)
+    assert "--download-default --output-dir <dir>" in message
+    assert "--download-default --paper-protocol --output-dir <dir>" in message
+    assert "--data-dir <dir>" in message
 
 
 def test_repeat_comma_filters_apply_to_both_folds_and_fail_unresolved() -> None:

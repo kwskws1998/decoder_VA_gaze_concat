@@ -44,7 +44,22 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument(
-        "--normalization", choices=NORMALIZATION_CHOICES, default="observed"
+        "--normalization",
+        choices=NORMALIZATION_CHOICES,
+        default=None,
+        help=(
+            "Score normalization. Defaults to observed for the legacy protocol "
+            "and source-scale for --paper-protocol."
+        ),
+    )
+    parser.add_argument(
+        "--paper-protocol",
+        action="store_true",
+        help=(
+            "Preserve valid source rows and whitespace, disable deduplication, "
+            "force source-scale normalization, and split each source independently "
+            "in half before combining the two folds."
+        ),
     )
     parser.add_argument("--force", action="store_true", help="Ignore a valid build cache.")
     parser.add_argument("--force-download", action="store_true")
@@ -62,7 +77,13 @@ def _build_parser() -> argparse.ArgumentParser:
 
 
 def main(argv: Sequence[str] | None = None) -> int:
-    args = _build_parser().parse_args(argv)
+    parser = _build_parser()
+    args = parser.parse_args(argv)
+    if args.paper_protocol and args.normalization not in (None, "source-scale"):
+        parser.error("--paper-protocol requires --normalization source-scale.")
+    normalization = args.normalization or (
+        "source-scale" if args.paper_protocol else "observed"
+    )
     has_download_source = bool(
         args.gdrive_url or args.gdrive_file_id or args.download_default
     )
@@ -113,11 +134,16 @@ def main(argv: Sequence[str] | None = None) -> int:
         archive_path=archive,
         expected_sha256=args.sha256 if archive is not None else None,
         seed=args.seed,
-        normalization=args.normalization,
+        normalization=normalization,
+        paper_protocol=args.paper_protocol,
         force=args.force,
         require_all_sources=not args.allow_partial_sources,
     )
-    print(f"Prepared {result.total_rows} rows with seed {args.seed}.")
+    protocol = "paper" if args.paper_protocol else "legacy"
+    print(
+        f"Prepared {result.total_rows} rows with seed {args.seed} "
+        f"({protocol} protocol, {normalization} normalization)."
+    )
     for name, count in result.dataset_counts.items():
         print(f"  {name}: {count}")
     print(f"Fold 1: {result.fold1_path}")

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 import csv
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -21,8 +22,18 @@ OUTPUT_COLUMNS = ("index", "text", "dataset_of_origin", "valence", "arousal")
 FOLD_FILENAMES = ("full_dataset_fold1.csv", "full_dataset_fold2.csv")
 MERGED_FILENAME = "full_dataset_english_all.csv"
 MANIFEST_FILENAME = "english_dataset_manifest.json"
-MANIFEST_VERSION = 1
+MANIFEST_VERSION = 2
 NORMALIZATION_CHOICES = ("observed", "source-scale")
+LEGACY_PROTOCOL = "legacy-global-shuffle"
+PAPER_PROTOCOL = "paper-source-wise-two-fold"
+LEGACY_TEXT_POLICY = "collapse-whitespace-strip-fill-missing-empty"
+PAPER_TEXT_POLICY = "preserve-source-whitespace-fill-missing-empty"
+LEGACY_DEDUP_POLICY = "within-source-text-first-then-text-and-dataset-first"
+PAPER_DEDUP_POLICY = "none"
+LEGACY_SPLIT_STRATEGY = "seeded-global-shuffle-then-contiguous-row-halves"
+PAPER_SPLIT_STRATEGY = (
+    "independently-seeded-per-source-shuffle-half-split-then-concatenate"
+)
 
 SOURCE_NAME_MAP = {
     "emobank": "Emobank",
@@ -69,6 +80,12 @@ def clean_text(series: pd.Series) -> pd.Series:
     return cleaned.str.strip()
 
 
+def preserve_text(series: pd.Series) -> pd.Series:
+    """Preserve source whitespace while representing missing text as empty."""
+
+    return series.fillna("").astype(str)
+
+
 def _normalize_observed(series: pd.Series) -> tuple[pd.Series, dict[str, object]]:
     minimum = float(series.min())
     maximum = float(series.max())
@@ -95,6 +112,8 @@ def _normalize_dimension(
     dataset_name: str,
     dimension: str,
     normalization: str,
+    *,
+    strict_source_scale: bool = False,
 ) -> tuple[pd.Series, dict[str, object]]:
     if normalization == "source-scale":
         bounds = SOURCE_SCALE_BOUNDS.get(dataset_name, {}).get(dimension)
@@ -108,6 +127,19 @@ def _normalize_dimension(
                 "observed_min": float(series.min()),
                 "observed_max": float(series.max()),
             }
+        if bool(series.between(0.0, 1.0, inclusive="both").all()):
+            return series.astype(float), {
+                "method": "unchanged-unit-interval",
+                "source_min": 0.0,
+                "source_max": 1.0,
+                "observed_min": float(series.min()),
+                "observed_max": float(series.max()),
+            }
+        if strict_source_scale:
+            raise ValueError(
+                "Paper protocol requires declared source-scale bounds for "
+                f"{dataset_name!r} {dimension}, whose values are outside [0, 1]."
+            )
     return _normalize_observed(series)
 
 
@@ -187,8 +219,9 @@ def process_source(
     path: str | os.PathLike[str],
     *,
     normalization: str = "observed",
+    paper_protocol: bool = False,
 ) -> tuple[pd.DataFrame, dict[str, object]]:
-    """Clean one source, drop invalid VA, normalize, and deduplicate its text."""
+    """Prepare one source according to the selected preprocessing protocol."""
 
     if normalization not in NORMALIZATION_CHOICES:
         raise ValueError(
@@ -199,7 +232,11 @@ def process_source(
     raw = _read_source(source_path)
     selected = pd.DataFrame(
         {
-            "text": clean_text(raw["text"]),
+            "text": (
+                preserve_text(raw["text"])
+                if paper_protocol
+                else clean_text(raw["text"])
+            ),
             "valence": pd.to_numeric(raw["valence"], errors="coerce"),
             "arousal": pd.to_numeric(raw["arousal"], errors="coerce"),
         }
@@ -214,14 +251,23 @@ def process_source(
 
     selected["dataset_of_origin"] = dataset_name
     selected["valence"], valence_normalization = _normalize_dimension(
-        selected["valence"], dataset_name, "valence", normalization
+        selected["valence"],
+        dataset_name,
+        "valence",
+        normalization,
+        strict_source_scale=paper_protocol,
     )
     selected["arousal"], arousal_normalization = _normalize_dimension(
-        selected["arousal"], dataset_name, "arousal", normalization
+        selected["arousal"],
+        dataset_name,
+        "arousal",
+        normalization,
+        strict_source_scale=paper_protocol,
     )
 
     rows_before_dedup = len(selected)
-    selected = selected.drop_duplicates(subset=["text"], keep="first").copy()
+    if not paper_protocol:
+        selected = selected.drop_duplicates(subset=["text"], keep="first").copy()
     selected = selected[["text", "dataset_of_origin", "valence", "arousal"]]
     selected.reset_index(drop=True, inplace=True)
 
@@ -235,6 +281,12 @@ def process_source(
         "duplicate_text_rows_dropped": int(rows_before_dedup - len(selected)),
         "blank_text_rows_retained": int((selected["text"] == "").sum()),
         "output_rows": int(len(selected)),
+        "text_policy": (
+            PAPER_TEXT_POLICY if paper_protocol else LEGACY_TEXT_POLICY
+        ),
+        "dedup_policy": (
+            PAPER_DEDUP_POLICY if paper_protocol else LEGACY_DEDUP_POLICY
+        ),
         "normalization": {
             "valence": valence_normalization,
             "arousal": arousal_normalization,
@@ -275,6 +327,86 @@ def _prepare_frames(
     fold1 = shuffled.iloc[:midpoint].copy()
     fold2 = shuffled.iloc[midpoint:].copy()
     return fold1, fold2, shuffled, summaries
+
+
+def _independent_source_seed(seed: int, source_path: Path) -> int:
+    """Derive a stable independent RNG seed for one source file."""
+
+    identity = f"{int(seed)}\0{source_path.name.casefold()}".encode("utf-8")
+    return int.from_bytes(hashlib.sha256(identity).digest()[:8], "big")
+
+
+def _prepare_paper_frames(
+    source_paths: Iterable[Path],
+    *,
+    seed: int,
+    normalization: str,
+) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame, list[dict[str, object]]]:
+    """Split each source independently in half before combining the folds."""
+
+    merged_frames: list[pd.DataFrame] = []
+    fold1_frames: list[pd.DataFrame] = []
+    fold2_frames: list[pd.DataFrame] = []
+    summaries: list[dict[str, object]] = []
+    next_index = 0
+
+    for path in sorted(source_paths, key=lambda item: item.name.casefold()):
+        frame, summary = process_source(
+            path,
+            normalization=normalization,
+            paper_protocol=True,
+        )
+        frame = frame.copy()
+        frame.insert(
+            0,
+            "index",
+            np.arange(next_index, next_index + len(frame), dtype=np.int64),
+        )
+        next_index += len(frame)
+        frame = frame[list(OUTPUT_COLUMNS)]
+        merged_frames.append(frame)
+
+        source_seed = _independent_source_seed(seed, path)
+        permutation = np.random.default_rng(source_seed).permutation(len(frame))
+        midpoint = len(frame) // 2
+        source_fold1 = frame.iloc[permutation[:midpoint]].copy()
+        source_fold2 = frame.iloc[permutation[midpoint:]].copy()
+        fold1_frames.append(source_fold1)
+        fold2_frames.append(source_fold2)
+        summary["split"] = {
+            "seed": source_seed,
+            "fold1_rows": int(len(source_fold1)),
+            "fold2_rows": int(len(source_fold2)),
+            "total_rows": int(len(frame)),
+        }
+        summaries.append(summary)
+
+    merged = pd.concat(merged_frames, ignore_index=True)
+    fold1 = pd.concat(fold1_frames, ignore_index=True)
+    fold2 = pd.concat(fold2_frames, ignore_index=True)
+    return fold1, fold2, merged, summaries
+
+
+def _per_source_fold_counts(
+    fold1: pd.DataFrame,
+    fold2: pd.DataFrame,
+) -> dict[str, dict[str, int]]:
+    """Record the two fold sizes for every retained source."""
+
+    fold1_counts = fold1.groupby("dataset_of_origin", sort=True).size()
+    fold2_counts = fold2.groupby("dataset_of_origin", sort=True).size()
+    names = sorted(
+        set(fold1_counts.index).union(fold2_counts.index),
+        key=lambda value: str(value).casefold(),
+    )
+    return {
+        str(name): {
+            "fold1_rows": int(fold1_counts.get(name, 0)),
+            "fold2_rows": int(fold2_counts.get(name, 0)),
+            "total_rows": int(fold1_counts.get(name, 0) + fold2_counts.get(name, 0)),
+        }
+        for name in names
+    }
 
 
 def _write_tsv(frame: pd.DataFrame, path: Path) -> None:
@@ -355,14 +487,22 @@ def _build_from_paths(
     *,
     seed: int,
     normalization: str,
+    paper_protocol: bool,
     force: bool,
     archive_record: dict[str, object] | None,
 ) -> BuildResult:
     output_dir.mkdir(parents=True, exist_ok=True)
     source_records = file_hash_records(source_paths)
+    protocol = PAPER_PROTOCOL if paper_protocol else LEGACY_PROTOCOL
+    text_policy = PAPER_TEXT_POLICY if paper_protocol else LEGACY_TEXT_POLICY
+    dedup_policy = PAPER_DEDUP_POLICY if paper_protocol else LEGACY_DEDUP_POLICY
     build_identity: dict[str, object] = {
+        "protocol": protocol,
+        "paper_protocol": bool(paper_protocol),
         "seed": int(seed),
         "normalization": normalization,
+        "text_policy": text_policy,
+        "dedup_policy": dedup_policy,
         "source_files": source_records,
         "archive": archive_record,
     }
@@ -371,11 +511,25 @@ def _build_from_paths(
         if cached is not None:
             return cached
 
-    fold1, fold2, merged, source_summaries = _prepare_frames(
-        source_paths,
-        seed=seed,
-        normalization=normalization,
-    )
+    if paper_protocol:
+        fold1, fold2, merged, source_summaries = _prepare_paper_frames(
+            source_paths,
+            seed=seed,
+            normalization=normalization,
+        )
+        split_strategy = PAPER_SPLIT_STRATEGY
+    else:
+        fold1, fold2, merged, source_summaries = _prepare_frames(
+            source_paths,
+            seed=seed,
+            normalization=normalization,
+        )
+        split_strategy = LEGACY_SPLIT_STRATEGY
+    per_source_counts = _per_source_fold_counts(fold1, fold2)
+    for summary in source_summaries:
+        name = str(summary["dataset_of_origin"])
+        summary.setdefault("split", dict(per_source_counts[name]))
+
     outputs = {
         FOLD_FILENAMES[0]: fold1,
         FOLD_FILENAMES[1]: fold2,
@@ -401,17 +555,25 @@ def _build_from_paths(
 
     counts_series = merged.groupby("dataset_of_origin", sort=True).size()
     dataset_counts = {str(name): int(value) for name, value in counts_series.items()}
+    split_manifest: dict[str, object] = {
+        "strategy": split_strategy,
+        "seed": int(seed),
+        "fold1_rows": int(len(fold1)),
+        "fold2_rows": int(len(fold2)),
+        "per_source_fold_counts": per_source_counts,
+    }
+    if not paper_protocol:
+        split_manifest["midpoint"] = int(len(merged) // 2)
     manifest: dict[str, object] = {
         "schema_version": MANIFEST_VERSION,
         "build": build_identity,
+        "protocol": protocol,
+        "paper_protocol": bool(paper_protocol),
+        "text_policy": text_policy,
+        "dedup_policy": dedup_policy,
+        "normalization": normalization,
         "columns": list(OUTPUT_COLUMNS),
-        "split": {
-            "strategy": "seeded-global-shuffle-then-contiguous-row-halves",
-            "seed": int(seed),
-            "midpoint": int(len(merged) // 2),
-            "fold1_rows": int(len(fold1)),
-            "fold2_rows": int(len(fold2)),
-        },
+        "split": split_manifest,
         "total_rows": int(len(merged)),
         "blank_text_rows_retained": int((merged["text"] == "").sum()),
         "dataset_counts": dataset_counts,
@@ -437,7 +599,8 @@ def build_english_dataset(
     archive_path: str | os.PathLike[str] | None = None,
     expected_sha256: str | None = None,
     seed: int = 42,
-    normalization: str = "observed",
+    normalization: str | None = None,
+    paper_protocol: bool = False,
     force: bool = False,
     require_all_sources: bool = True,
 ) -> BuildResult:
@@ -445,9 +608,16 @@ def build_english_dataset(
 
     if (source_dir is None) == (archive_path is None):
         raise ValueError("Provide exactly one of source_dir or archive_path.")
+    if normalization is None:
+        normalization = "source-scale" if paper_protocol else "observed"
     if normalization not in NORMALIZATION_CHOICES:
         raise ValueError(
             f"normalization must be one of {NORMALIZATION_CHOICES}; got {normalization!r}."
+        )
+    if paper_protocol and normalization != "source-scale":
+        raise ValueError(
+            "Paper protocol requires normalization='source-scale'; "
+            f"got {normalization!r}."
         )
     output_path = Path(output_dir)
     if archive_path is None:
@@ -460,6 +630,7 @@ def build_english_dataset(
             output_path,
             seed=seed,
             normalization=normalization,
+            paper_protocol=paper_protocol,
             force=force,
             archive_record=None,
         )
@@ -483,6 +654,7 @@ def build_english_dataset(
             output_path,
             seed=seed,
             normalization=normalization,
+            paper_protocol=paper_protocol,
             force=force,
             archive_record=archive_record,
         )

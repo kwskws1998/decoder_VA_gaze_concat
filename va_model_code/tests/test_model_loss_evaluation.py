@@ -31,6 +31,7 @@ from va_model_code.decoder_va.model import (
     ARCHITECTURE_MANIFEST_VERSION,
     GAZE_PREFIX_ORDER,
     GAZE_PREFIX_POOLING,
+    OUTPUT_ACTIVATION,
     SAFE_WEIGHTS_FILENAME,
     DecoderVARegressor,
     build_qwen_va_model,
@@ -78,8 +79,12 @@ class FakeCausalBackbone(nn.Module):
 
 
 class FakeGazeProvider:
+    def __init__(self, feature_indices=(3,)):
+        self.feature_indices = tuple(feature_indices)
+
     def compute(self, input_ids, attention_mask):
-        features = input_ids.to(dtype=torch.float32).unsqueeze(-1) / 10.0
+        base = input_ids.to(dtype=torch.float32).unsqueeze(-1) / 10.0
+        features = base.repeat(1, 1, len(self.feature_indices))
         mask = attention_mask.to(dtype=torch.bool)
         mask[:, 0] = False
         return features.masked_fill(~mask.unsqueeze(-1), 0.0), mask
@@ -220,6 +225,64 @@ def test_prefix_model_readout_depends_on_gaze_before_text():
     hook.remove()
 
     assert not torch.equal(pooled_inputs[0], pooled_inputs[1])
+
+
+def test_prefix_projector_accepts_multiple_selected_gaze_channels():
+    backbone = FakeCausalBackbone()
+    model = DecoderVARegressor(
+        backbone,
+        gaze_provider=FakeGazeProvider((0, 2, 3)),
+        gaze_fusion="prefix-concat",
+    )
+
+    output = model(
+        input_ids=torch.tensor([[1, 2, 3]]),
+        attention_mask=torch.ones(1, 3, dtype=torch.long),
+    )
+
+    assert model.gaze_feature_count == 3
+    assert model.gaze_projector[0].in_features == 3
+    assert output.logits.shape == (1, 2)
+
+
+def test_common_regression_head_is_paired_before_gaze_only_parameters():
+    torch.manual_seed(123)
+    baseline = DecoderVARegressor(
+        FakeCausalBackbone(),
+        gaze_provider=None,
+        gaze_fusion="none",
+    )
+    torch.manual_seed(123)
+    gaze = DecoderVARegressor(
+        FakeCausalBackbone(),
+        gaze_provider=FakeGazeProvider(),
+        gaze_fusion="prefix-concat",
+    )
+
+    for baseline_parameter, gaze_parameter in zip(
+        baseline.regression_head.parameters(),
+        gaze.regression_head.parameters(),
+    ):
+        assert torch.equal(baseline_parameter, gaze_parameter)
+
+
+def test_va_outputs_use_hard_sigmoid_not_logistic_sigmoid():
+    model = DecoderVARegressor(
+        FakeCausalBackbone(),
+        gaze_provider=None,
+        gaze_fusion="none",
+    )
+    with torch.no_grad():
+        model.regression_head[-1].weight.zero_()
+        model.regression_head[-1].bias.copy_(torch.tensor([-4.0, 4.0]))
+
+    output = model(
+        input_ids=torch.tensor([[1, 2, 3]]),
+        attention_mask=torch.ones(1, 3, dtype=torch.long),
+    )
+
+    assert output.logits.tolist() == [[0.0, 1.0]]
+    assert model.config.va_output_activation == OUTPUT_ACTIVATION
 
 
 def test_regression_head_accepts_lower_precision_backbone_output():
@@ -447,6 +510,7 @@ def test_saved_prefix_model_has_strict_reload_contract(tmp_path, monkeypatch):
         lora_rank=8,
         lora_alpha=16,
         lora_dropout=0.02,
+        gaze_feature_indices=(0, 3),
     )
     with torch.no_grad():
         source.regression_head[-1].bias.copy_(torch.tensor([0.1, 0.2]))
@@ -470,23 +534,33 @@ def test_saved_prefix_model_has_strict_reload_contract(tmp_path, monkeypatch):
     assert manifest["schema_version"] == ARCHITECTURE_MANIFEST_VERSION
     assert manifest["decoder_commit"] == "fixed-decoder-commit"
     assert manifest["gaze_fusion"] == "prefix-concat"
+    assert manifest["gaze_features"] == ["nFix", "TRT"]
+    assert manifest["gaze_feature_indices"] == [0, 3]
+    assert manifest["features_used"] == [1, 0, 0, 1, 0]
     assert manifest["gaze_concat_order"] == GAZE_PREFIX_ORDER
     assert manifest["pooling_position"] == GAZE_PREFIX_POOLING
+    assert manifest["output_activation"] == OUTPUT_ACTIVATION
     assert manifest["reconstruction"]["gaze_fusion"] == "prefix-concat"
+    assert manifest["reconstruction"]["et_feature_names"] == ["nFix", "TRT"]
+    assert manifest["reconstruction"]["et_feature_indices"] == [0, 3]
+    assert manifest["reconstruction"]["features_used"] == [1, 0, 0, 1, 0]
     assert manifest["reconstruction"]["output_dim"] == 2
+    assert manifest["reconstruction"]["output_activation"] == OUTPUT_ACTIVATION
     assert manifest["reconstruction"]["lora_rank"] == 8
     assert manifest["reconstruction"]["et_revision"] == "fixed-et-commit"
     assert manifest["state_dict"]["strict_loading"] is True
     assert loaded_tokenizer is tokenizer
     assert loaded_tokenizer.padding_side == "right"
     assert loaded.gaze_provider is not None
+    assert loaded.gaze_provider.feature_indices == (0, 3)
+    assert loaded.gaze_projector[0].in_features == 2
     assert loaded._reconstruction_config["et_cache_size"] == 17
     assert loaded.training is False
     for name, expected in source.state_dict().items():
         assert torch.equal(loaded.state_dict()[name], expected)
 
-    source.gaze_provider = FakeGazeProvider()
-    loaded.gaze_provider = FakeGazeProvider()
+    source.gaze_provider = FakeGazeProvider((0, 3))
+    loaded.gaze_provider = FakeGazeProvider((0, 3))
     source.eval()
     batch = {
         "input_ids": torch.tensor([[1, 2, 3], [4, 5, 0]]),
@@ -531,6 +605,74 @@ def test_saved_prefix_model_has_strict_reload_contract(tmp_path, monkeypatch):
     )
     with pytest.raises(ValueError, match="pooling position"):
         load_saved_decoder_va_model(tmp_path, tokenizer=tokenizer, dtype=torch.float32)
+
+    manifest["pooling_position"] = GAZE_PREFIX_POOLING
+    manifest["features_used"] = [0, 0, 0, 1, 0]
+    (tmp_path / ARCHITECTURE_MANIFEST_FILENAME).write_text(
+        json.dumps(manifest),
+        encoding="utf-8",
+    )
+    with pytest.raises(ValueError, match="feature mask"):
+        load_saved_decoder_va_model(tmp_path, tokenizer=tokenizer, dtype=torch.float32)
+
+    manifest["features_used"] = [1, 0, 0, 1, 0]
+    manifest["et_model"]["feature_names"] = ["TRT"]
+    (tmp_path / ARCHITECTURE_MANIFEST_FILENAME).write_text(
+        json.dumps(manifest),
+        encoding="utf-8",
+    )
+    with pytest.raises(ValueError, match="ET2 model metadata"):
+        load_saved_decoder_va_model(tmp_path, tokenizer=tokenizer, dtype=torch.float32)
+
+    manifest["et_model"]["feature_names"] = ["nFix", "TRT"]
+    manifest["reconstruction"]["et_feature_names"] = ["TRT"]
+    (tmp_path / ARCHITECTURE_MANIFEST_FILENAME).write_text(
+        json.dumps(manifest),
+        encoding="utf-8",
+    )
+    with pytest.raises(ValueError, match="Reconstruction metadata"):
+        load_saved_decoder_va_model(tmp_path, tokenizer=tokenizer, dtype=torch.float32)
+
+
+def test_saved_text_only_model_has_no_active_gaze_metadata(tmp_path, monkeypatch):
+    monkeypatch.setattr(
+        model_module,
+        "load_qwen_backbone_with_lora",
+        lambda *args, **kwargs: FakeCausalBackbone(),
+    )
+    tokenizer = SimpleNamespace(padding_side="left")
+    source = build_qwen_va_model(
+        tokenizer,
+        model_id="Qwen/fake",
+        model_revision="fixed-decoder-commit",
+        gaze_fusion="none",
+        dtype=torch.float32,
+    )
+    save_file(
+        source.state_dict(),
+        tmp_path / SAFE_WEIGHTS_FILENAME,
+        metadata={"format": "pt"},
+    )
+    source.save_architecture_manifest(tmp_path)
+
+    loaded, _ = load_saved_decoder_va_model(
+        tmp_path,
+        tokenizer=tokenizer,
+        dtype=torch.float32,
+    )
+    manifest = json.loads(
+        (tmp_path / ARCHITECTURE_MANIFEST_FILENAME).read_text(encoding="utf-8")
+    )
+
+    assert manifest["gaze_features"] == []
+    assert manifest["gaze_feature_indices"] == []
+    assert manifest["features_used"] == [0, 0, 0, 0, 0]
+    assert manifest["et_model"] is None
+    assert manifest["reconstruction"]["et_feature_names"] == []
+    assert manifest["reconstruction"]["et_feature_indices"] == []
+    assert manifest["reconstruction"]["features_used"] == [0, 0, 0, 0, 0]
+    assert loaded.gaze_provider is None
+    assert loaded.gaze_projector is None
 
 
 def test_blank_text_uses_one_active_eos_token():

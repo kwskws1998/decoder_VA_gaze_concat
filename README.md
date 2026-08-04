@@ -45,11 +45,22 @@ PY
 cd va_model_code
 python prepare_english_data.py --download-default
 
+# Original-paper source-wise two-fold data for the Qwen ablation:
+python prepare_english_data.py \
+  --download-default \
+  --paper-protocol \
+  --seed 42 \
+  --output-dir data_paper7_seed42
+
 cd ..
 python -m pytest -q va_model_code/tests
 
 cd va_model_code
-python train_model.py --dry-run --no-iemocap
+python train_model.py --list-datasets --data-dir data_paper7_seed42
+python train_model.py --dry-run \
+  --data-dir data_paper7_seed42 \
+  --gaze-fusion prefix-concat \
+  --gaze-features TRT
 ```
 
 The dry run validates the installed Trainer API before downloading the tokenizer

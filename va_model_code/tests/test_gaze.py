@@ -7,9 +7,14 @@ from torch import nn
 from va_model_code.decoder_va import gaze as gaze_module
 from va_model_code.decoder_va.alignment import align_words_to_tokens
 from va_model_code.decoder_va.gaze import (
+    ET2_FEATURE_NAMES,
     ET2GazeProvider,
     _ET2RegressionModel,
     _et2_roberta_config,
+    et2_feature_indices_from_names,
+    et2_feature_names_from_indices,
+    et2_features_used_from_indices,
+    normalize_et2_feature_indices,
     segment_text_for_et2,
 )
 from va_model_code.decoder_va.packing import pack_prefix_gaze
@@ -149,18 +154,23 @@ class FakeETModel(nn.Module):
             dtype=torch.float32,
             device=input_ids.device,
         )
+        for feature_index in range(5):
+            output[:, :, feature_index] = (
+                input_ids.to(dtype=torch.float32) + 100.0 * feature_index
+            ) * self.scale
         output[:, :, 3] = input_ids.to(dtype=torch.float32) * self.scale
         return output
 
 
 class FakeET2GazeProvider(ET2GazeProvider):
-    def __init__(self, tokenizer):
+    def __init__(self, tokenizer, feature_indices=None):
         super().__init__(
             tokenizer=tokenizer,
             repo_id="fake/et2",
             revision="fixed-revision",
             cache_size=8,
             device="cpu",
+            feature_indices=feature_indices,
         )
         self.load_count = 0
         self.fake_model = FakeETModel()
@@ -201,6 +211,21 @@ def test_et2_provider_rejects_lengths_beyond_roberta_capacity():
             tokenizer=FakeTargetTokenizer(),
             max_length=513,
         )
+
+
+def test_named_et2_feature_subsets_are_validated_and_canonicalized():
+    assert ET2_FEATURE_NAMES == ("nFix", "FFD", "GPT", "TRT", "fixProp")
+    assert et2_feature_indices_from_names(["TRT", "nFix"]) == (0, 3)
+    assert et2_feature_names_from_indices([3, 0]) == ("nFix", "TRT")
+    assert et2_features_used_from_indices([0, 3]) == (1, 0, 0, 1, 0)
+    assert normalize_et2_feature_indices() == (3,)
+
+    with pytest.raises(ValueError, match="duplicates"):
+        et2_feature_indices_from_names(["TRT", "TRT"])
+    with pytest.raises(ValueError, match="Unknown"):
+        et2_feature_indices_from_names(["TRT", "unknown"])
+    with pytest.raises(ValueError, match="duplicates"):
+        normalize_et2_feature_indices([3, 3])
 
 
 def test_et2_asset_loader_preserves_pinned_identity_and_prefix_space(
@@ -335,6 +360,26 @@ def test_provider_is_lazy_frozen_batched_cached_and_first_subword_aligned():
     assert torch.equal(cached_mask, mapped_mask)
     assert all(cache_value[0].device.type == "cpu" for cache_value in provider._cache.values())
     assert all(cache_value[1].device.type == "cpu" for cache_value in provider._cache.values())
+
+
+def test_provider_returns_every_selected_channel_in_canonical_order():
+    provider = FakeET2GazeProvider(
+        FakeTargetTokenizer(),
+        feature_indices=(4, 0, 3),
+    )
+    input_ids = torch.tensor([[0, 10, 11, 12, 2]], dtype=torch.long)
+    attention_mask = torch.ones_like(input_ids)
+
+    features, mapped_mask = provider.compute(input_ids, attention_mask)
+
+    assert provider.feature_indices == (0, 3, 4)
+    assert provider.feature_names == ("nFix", "TRT", "fixProp")
+    assert provider.features_used == (1, 0, 0, 1, 1)
+    assert provider.feature_index is None
+    assert features.shape == (1, 5, 3)
+    assert mapped_mask.tolist() == [[False, True, False, True, False]]
+    assert features[0, 1].tolist() == [10.0, 10.0, 410.0]
+    assert features[0, 3].tolist() == [13.0, 13.0, 413.0]
 
 
 def test_provider_rejects_non_contiguous_attention_masks():

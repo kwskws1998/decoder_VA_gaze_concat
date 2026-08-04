@@ -5,17 +5,22 @@ from __future__ import annotations
 import copy
 import json
 from pathlib import Path
-from typing import Any
+from typing import Any, Sequence
 
 import torch
 from torch import nn
+from torch.nn import functional as F
 from transformers.modeling_outputs import SequenceClassifierOutput
 
 from .gaze import (
     DEFAULT_ET2_FILENAME,
     DEFAULT_ET2_REPO_ID,
     DEFAULT_ET2_REVISION,
+    ET2_FEATURE_NAMES,
     ET2GazeProvider,
+    et2_feature_names_from_indices,
+    et2_features_used_from_indices,
+    normalize_et2_feature_indices,
 )
 from .packing import pack_prefix_gaze
 
@@ -23,10 +28,11 @@ from .packing import pack_prefix_gaze
 DEFAULT_DECODER_MODEL_ID = "Qwen/Qwen3.5-0.8B-Base"
 DEFAULT_DECODER_REVISION = "dc7cdfe2ee4154fa7e30f5b51ca41bfa40174e68"
 GAZE_FUSIONS = ("none", "prefix-concat")
-GAZE_PREFIX_ORDER = "eye_start, compact_trt_gaze, eye_end, text"
+GAZE_PREFIX_ORDER = "eye_start, compact_selected_gaze, eye_end, text"
 GAZE_PREFIX_POOLING = "last_valid_text_token_after_gaze_prefix"
+OUTPUT_ACTIVATION = "hard_sigmoid"
 ARCHITECTURE_MANIFEST_FILENAME = "decoder_va_architecture.json"
-ARCHITECTURE_MANIFEST_VERSION = 4
+ARCHITECTURE_MANIFEST_VERSION = 5
 SAFE_WEIGHTS_FILENAME = "model.safetensors"
 
 
@@ -115,10 +121,27 @@ class DecoderVARegressor(nn.Module):
         if not 0.0 <= self.classifier_dropout < 1.0:
             raise ValueError("classifier_dropout must be in [0, 1).")
 
+        self.regression_head = nn.Sequential(
+            nn.LayerNorm(self.hidden_size),
+            nn.Dropout(self.classifier_dropout),
+            nn.Linear(self.hidden_size, self.output_dim),
+        )
         if self.gaze_fusion == "prefix-concat":
+            provider_feature_indices = getattr(
+                self.gaze_provider,
+                "feature_indices",
+                None,
+            )
+            self.gaze_feature_count = (
+                len(provider_feature_indices)
+                if provider_feature_indices is not None
+                else 1
+            )
+            if self.gaze_feature_count <= 0:
+                raise ValueError("The gaze provider must select at least one feature.")
             first_dropout, second_dropout = self.gaze_projection_dropout
             self.gaze_projector = nn.Sequential(
-                nn.Linear(1, self.gaze_projection_dim),
+                nn.Linear(self.gaze_feature_count, self.gaze_projection_dim),
                 nn.LayerNorm(self.gaze_projection_dim),
                 nn.GELU(),
                 nn.Dropout(first_dropout),
@@ -129,17 +152,14 @@ class DecoderVARegressor(nn.Module):
             self.eye_start = nn.Parameter(torch.zeros(self.hidden_size))
             self.eye_end = nn.Parameter(torch.zeros(self.hidden_size))
         else:
+            self.gaze_feature_count = 0
             self.gaze_projector = None
             self.register_parameter("eye_start", None)
             self.register_parameter("eye_end", None)
-        self.regression_head = nn.Sequential(
-            nn.LayerNorm(self.hidden_size),
-            nn.Dropout(self.classifier_dropout),
-            nn.Linear(self.hidden_size, self.output_dim),
-        )
         self.config.num_labels = self.output_dim
         self.config.problem_type = "regression"
         self.config.gaze_fusion = self.gaze_fusion
+        self.config.gaze_feature_count = self.gaze_feature_count
         self.config.gaze_concat_order = (
             GAZE_PREFIX_ORDER if self.gaze_fusion == "prefix-concat" else None
         )
@@ -150,6 +170,7 @@ class DecoderVARegressor(nn.Module):
         )
         self.config.decoder_va_architecture_version = ARCHITECTURE_MANIFEST_VERSION
         self.config.va_output_names = ["valence", "arousal"]
+        self.config.va_output_activation = OUTPUT_ACTIVATION
         if hasattr(backbone_config, "use_cache"):
             backbone_config.use_cache = False
 
@@ -218,7 +239,7 @@ class DecoderVARegressor(nn.Module):
         attention_mask: torch.Tensor,
         text_embeddings: torch.Tensor,
     ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
-        """Infer frozen TRT and prefix its compact projection before each text."""
+        """Infer selected frozen ET2 channels and prefix their compact projection."""
 
         raw_gaze, gaze_mask = self.gaze_provider.compute(input_ids, attention_mask)
         projector_dtype = next(self.gaze_projector.parameters()).dtype
@@ -282,7 +303,7 @@ class DecoderVARegressor(nn.Module):
         pooled = hidden[row_indices, pooling_positions]
         head_dtype = next(self.regression_head.parameters()).dtype
         raw_logits = self.regression_head(pooled.to(dtype=head_dtype))
-        logits = torch.sigmoid(raw_logits)
+        logits = F.hardsigmoid(raw_logits)
         return SequenceClassifierOutput(logits=logits)
 
     def trainable_parameter_summary(self) -> dict[str, int | float]:
@@ -311,19 +332,38 @@ class DecoderVARegressor(nn.Module):
                 "with build_qwen_va_model()."
             )
         manifest_path = output_path / ARCHITECTURE_MANIFEST_FILENAME
+        active_indices = (
+            tuple(self.gaze_provider.feature_indices)
+            if self.gaze_provider is not None
+            else ()
+        )
+        active_names = (
+            et2_feature_names_from_indices(active_indices)
+            if active_indices
+            else ()
+        )
+        features_used = (
+            et2_features_used_from_indices(active_indices)
+            if active_indices
+            else (0,) * len(ET2_FEATURE_NAMES)
+        )
         payload = {
             "schema_version": ARCHITECTURE_MANIFEST_VERSION,
             "decoder_model_id": self._reconstruction_config["decoder_model_id"],
             "decoder_model_type": getattr(self.config, "model_type", None),
             "decoder_commit": self._reconstruction_config["decoder_revision"],
             "gaze_fusion": self.gaze_fusion,
-            "gaze_feature": "TRT" if self.gaze_fusion != "none" else None,
+            "gaze_features": list(active_names),
+            "gaze_feature_indices": list(active_indices),
+            "features_used": list(features_used),
             "et_model": (
                 {
                     "repo_id": self.gaze_provider.repo_id,
                     "revision": self.gaze_provider.revision,
                     "filename": self.gaze_provider.filename,
-                    "feature_index": self.gaze_provider.feature_index,
+                    "feature_names": list(active_names),
+                    "feature_indices": list(active_indices),
+                    "features_used": list(features_used),
                 }
                 if self.gaze_provider is not None
                 else None
@@ -337,6 +377,7 @@ class DecoderVARegressor(nn.Module):
                 else "last_valid_text_token"
             ),
             "output_names": list(self.config.va_output_names),
+            "output_activation": OUTPUT_ACTIVATION,
             "reconstruction": copy.deepcopy(self._reconstruction_config),
             "state_dict": {
                 "filename": SAFE_WEIGHTS_FILENAME,
@@ -416,6 +457,7 @@ def build_qwen_va_model(
     et_revision: str = DEFAULT_ET2_REVISION,
     et_filename: str = DEFAULT_ET2_FILENAME,
     et_cache_size: int = 70000,
+    gaze_feature_indices: Sequence[int] | None = None,
     dtype: torch.dtype | str = torch.bfloat16,
     lora_rank: int = 16,
     lora_alpha: int = 32,
@@ -428,6 +470,21 @@ def build_qwen_va_model(
     """Construct the selected Qwen/LoRA VA model and optional pinned ET2 provider."""
 
     normalized_fusion = _normalize_gaze_fusion(gaze_fusion)
+    active_feature_indices = (
+        normalize_et2_feature_indices(gaze_feature_indices)
+        if normalized_fusion == "prefix-concat"
+        else ()
+    )
+    active_feature_names = (
+        et2_feature_names_from_indices(active_feature_indices)
+        if active_feature_indices
+        else ()
+    )
+    active_features_used = (
+        et2_features_used_from_indices(active_feature_indices)
+        if active_feature_indices
+        else (0,) * len(ET2_FEATURE_NAMES)
+    )
     backbone = load_qwen_backbone_with_lora(
         model_id,
         revision=model_revision,
@@ -443,7 +500,7 @@ def build_qwen_va_model(
             repo_id=et_repo_id,
             revision=et_revision,
             filename=et_filename,
-            feature_index=3,
+            feature_indices=active_feature_indices,
             cache_size=et_cache_size,
         )
         if normalized_fusion == "prefix-concat"
@@ -464,9 +521,12 @@ def build_qwen_va_model(
         "et_repo_id": str(et_repo_id),
         "et_revision": str(et_revision),
         "et_filename": str(et_filename),
-        "et_feature_index": 3,
+        "et_feature_names": list(active_feature_names),
+        "et_feature_indices": list(active_feature_indices),
+        "features_used": list(active_features_used),
         "et_cache_size": int(et_cache_size),
         "output_dim": 2,
+        "output_activation": OUTPUT_ACTIVATION,
         "lora_rank": int(lora_rank),
         "lora_alpha": int(lora_alpha),
         "lora_dropout": float(lora_dropout),
@@ -527,9 +587,12 @@ def load_saved_decoder_va_model(
         "et_repo_id",
         "et_revision",
         "et_filename",
-        "et_feature_index",
+        "et_feature_names",
+        "et_feature_indices",
+        "features_used",
         "et_cache_size",
         "output_dim",
+        "output_activation",
         "lora_rank",
         "lora_alpha",
         "lora_dropout",
@@ -546,19 +609,35 @@ def load_saved_decoder_va_model(
             "Architecture manifest is missing reconstruction field(s): "
             + ", ".join(missing)
         )
-    if reconstruction["et_feature_index"] != 3:
-        raise ValueError("Only raw TRT at ET2 feature index 3 is supported.")
-    if reconstruction["output_dim"] != 2:
-        raise ValueError("Only the two-output valence/arousal head is supported.")
-    if reconstruction["lora_target_modules"] != "all-linear":
-        raise ValueError("Saved model does not use the supported all-linear LoRA contract.")
-    if reconstruction["lora_task_type"] != "FEATURE_EXTRACTION":
-        raise ValueError("Saved model does not use the supported LoRA task type.")
     saved_fusion = reconstruction["gaze_fusion"]
     if saved_fusion not in GAZE_FUSIONS:
         raise ValueError(
             f"Saved model declares unsupported gaze fusion {saved_fusion!r}."
         )
+    raw_feature_indices = reconstruction["et_feature_indices"]
+    if not isinstance(raw_feature_indices, list):
+        raise ValueError("Saved ET2 feature indices must be a JSON list.")
+    if saved_fusion == "prefix-concat":
+        try:
+            saved_feature_indices = normalize_et2_feature_indices(raw_feature_indices)
+        except (TypeError, ValueError) as exc:
+            raise ValueError("Saved ET2 feature indices are invalid.") from exc
+        if list(saved_feature_indices) != raw_feature_indices:
+            raise ValueError("Saved ET2 feature indices are not in canonical order.")
+    else:
+        if raw_feature_indices:
+            raise ValueError("Text-only models must not declare active ET2 features.")
+        saved_feature_indices = ()
+    if reconstruction["output_dim"] != 2:
+        raise ValueError("Only the two-output valence/arousal head is supported.")
+    if reconstruction["output_activation"] != OUTPUT_ACTIVATION:
+        raise ValueError(
+            f"Only the {OUTPUT_ACTIVATION!r} VA output activation is supported."
+        )
+    if reconstruction["lora_target_modules"] != "all-linear":
+        raise ValueError("Saved model does not use the supported all-linear LoRA contract.")
+    if reconstruction["lora_task_type"] != "FEATURE_EXTRACTION":
+        raise ValueError("Saved model does not use the supported LoRA task type.")
     if manifest.get("gaze_fusion") != saved_fusion:
         raise ValueError(
             "Architecture manifest gaze_fusion disagrees with reconstruction metadata."
@@ -573,6 +652,44 @@ def load_saved_decoder_va_model(
         raise ValueError("Architecture manifest declares an incompatible gaze concat order.")
     if manifest.get("pooling_position") != expected_pooling:
         raise ValueError("Architecture manifest declares an incompatible pooling position.")
+    expected_feature_names = (
+        list(et2_feature_names_from_indices(saved_feature_indices))
+        if saved_feature_indices
+        else []
+    )
+    expected_features_used = (
+        list(et2_features_used_from_indices(saved_feature_indices))
+        if saved_feature_indices
+        else [0] * len(ET2_FEATURE_NAMES)
+    )
+    if reconstruction["et_feature_names"] != expected_feature_names:
+        raise ValueError("Reconstruction metadata declares incompatible gaze feature names.")
+    if reconstruction["features_used"] != expected_features_used:
+        raise ValueError("Reconstruction metadata declares an incompatible gaze feature mask.")
+    if manifest.get("gaze_feature_indices") != list(saved_feature_indices):
+        raise ValueError("Architecture manifest declares incompatible gaze feature indices.")
+    if manifest.get("gaze_features") != expected_feature_names:
+        raise ValueError("Architecture manifest declares incompatible gaze feature names.")
+    if manifest.get("features_used") != expected_features_used:
+        raise ValueError("Architecture manifest declares an incompatible gaze feature mask.")
+    if manifest.get("output_activation") != OUTPUT_ACTIVATION:
+        raise ValueError("Architecture manifest declares an incompatible output activation.")
+    et_model = manifest.get("et_model")
+    if saved_fusion == "prefix-concat":
+        if not isinstance(et_model, dict):
+            raise ValueError("Architecture manifest is missing ET2 model metadata.")
+        expected_et_model = {
+            "repo_id": reconstruction["et_repo_id"],
+            "revision": reconstruction["et_revision"],
+            "filename": reconstruction["et_filename"],
+            "feature_names": expected_feature_names,
+            "feature_indices": list(saved_feature_indices),
+            "features_used": expected_features_used,
+        }
+        if et_model != expected_et_model:
+            raise ValueError("Architecture manifest declares incompatible ET2 model metadata.")
+    elif et_model is not None:
+        raise ValueError("Text-only models must not declare ET2 model metadata.")
 
     if tokenizer is None:
         from transformers import AutoTokenizer
@@ -599,6 +716,7 @@ def load_saved_decoder_va_model(
         et_revision=str(reconstruction["et_revision"]),
         et_filename=str(reconstruction["et_filename"]),
         et_cache_size=effective_cache_size,
+        gaze_feature_indices=saved_feature_indices or None,
         dtype=dtype,
         lora_rank=int(reconstruction["lora_rank"]),
         lora_alpha=int(reconstruction["lora_alpha"]),

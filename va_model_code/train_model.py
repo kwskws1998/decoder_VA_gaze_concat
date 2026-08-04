@@ -23,6 +23,12 @@ from decoder_va.evaluation import (
     write_oof_reports,
 )
 from decoder_va.filters import dataset_counts, load_filtered_folds
+from decoder_va.gaze import (
+    ET2_FEATURE_NAMES,
+    et2_feature_indices_from_names,
+    et2_feature_names_from_indices,
+    et2_features_used_from_indices,
+)
 from decoder_va.model import (
     ARCHITECTURE_MANIFEST_VERSION,
     DEFAULT_DECODER_MODEL_ID,
@@ -30,6 +36,7 @@ from decoder_va.model import (
     DEFAULT_ET2_REVISION,
     GAZE_PREFIX_ORDER,
     GAZE_PREFIX_POOLING,
+    OUTPUT_ACTIVATION,
     build_qwen_va_model,
 )
 from decoder_va.trainer import VARegressionTrainer
@@ -45,7 +52,7 @@ def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description=(
             "Two-fold out-of-fold VA regression with Qwen3.5-0.8B-Base and "
-            "optional frozen ET2 TRT prefix concat."
+            "optional frozen ET2 gaze-feature prefix concat."
         )
     )
     parser.add_argument("model", nargs="?", default="qwen3.5-0.8b", choices=MODEL_ALIASES)
@@ -61,6 +68,17 @@ def _build_parser() -> argparse.ArgumentParser:
         "--gaze-fusion",
         choices=("prefix-concat", "none"),
         default="prefix-concat",
+    )
+    parser.add_argument(
+        "--gaze-features",
+        nargs="+",
+        choices=ET2_FEATURE_NAMES,
+        default=("TRT",),
+        metavar="FEATURE",
+        help=(
+            "Raw ET2 channels used by prefix-concat. Choose one or more from "
+            f"{', '.join(ET2_FEATURE_NAMES)}; default: TRT."
+        ),
     )
     parser.add_argument("--et-model-id", default="skboy/et_prediction_2")
     parser.add_argument("--et-revision", default=DEFAULT_ET2_REVISION)
@@ -103,6 +121,11 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--logging-steps", type=int, default=50)
     parser.add_argument("--save-total-limit", type=int, default=1)
     parser.add_argument(
+        "--group-by-length",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+    )
+    parser.add_argument(
         "--gradient-checkpointing",
         action=argparse.BooleanOptionalAction,
         default=True,
@@ -117,6 +140,9 @@ def _build_parser() -> argparse.ArgumentParser:
 def _validate_args(args: argparse.Namespace) -> None:
     """Fail before downloading models when a run configuration is invalid."""
 
+    gaze_feature_indices = et2_feature_indices_from_names(args.gaze_features)
+    args.gaze_feature_indices = gaze_feature_indices
+    args.gaze_features = et2_feature_names_from_indices(gaze_feature_indices)
     if args.loss is None and not (args.dry_run or args.list_datasets):
         raise ValueError(
             "Training loss must be explicit; choose one of: "
@@ -242,8 +268,13 @@ def _validate_resume_contract(
         "model_id",
         "model_revision",
         "gaze_fusion",
+        "gaze_features",
+        "gaze_feature_indices",
+        "features_used",
         "gaze_concat_order",
         "pooling_position",
+        "output_activation",
+        "paired_ablation_seed_policy",
         "et_model_id",
         "et_revision",
         "et_filename",
@@ -251,6 +282,7 @@ def _validate_resume_contract(
         "lora_alpha",
         "lora_dropout",
         "attn_implementation",
+        "group_by_length",
         "gradient_checkpointing",
         "max_length",
         "train_batch_size",
@@ -259,6 +291,7 @@ def _validate_resume_contract(
         "weight_decay",
         "warmup_ratio",
         "seed",
+        "fold_seed",
         "held_out_fold",
         "training_fold",
         "fold_sha256",
@@ -322,9 +355,11 @@ def _training_arguments(
     *,
     bf16: bool,
     fp16: bool,
+    fold_seed: int | None = None,
 ) -> TrainingArguments:
     """Build version-stable Trainer arguments for one held-out fold."""
 
+    effective_seed = args.seed if fold_seed is None else int(fold_seed)
     training_kwargs = {
         "output_dir": str(fold_output_dir / "checkpoints"),
         "do_train": True,
@@ -340,8 +375,7 @@ def _training_arguments(
         "weight_decay": args.weight_decay,
         "num_train_epochs": args.epochs,
         "max_steps": args.max_steps,
-        "seed": args.seed,
-        "data_seed": args.seed,
+        "seed": effective_seed,
         "bf16": bf16,
         "fp16": fp16,
         "use_cpu": args.use_cpu,
@@ -355,6 +389,7 @@ def _training_arguments(
         "save_total_limit": args.save_total_limit,
         "report_to": args.report_to or "none",
         "run_name": f"{args.model}-heldout-fold-{fold_output_dir.name}",
+        "group_by_length": args.group_by_length,
         "dataloader_num_workers": 0,
         "dataloader_pin_memory": (
             torch.cuda.is_available() and not args.use_cpu
@@ -400,11 +435,13 @@ def run(args: argparse.Namespace) -> Path | None:
             else Path("Preds") / "dry_run"
         )
         for held_out_fold in args.held_out_folds:
+            fold_seed = int(args.seed) + int(held_out_fold) - 1
             _training_arguments(
                 args,
                 dry_run_root / f"heldout_fold{held_out_fold}",
                 bf16=bf16,
                 fp16=fp16,
+                fold_seed=fold_seed,
             )
         _print_dataset_counts("Validated datasets:", filtered_counts)
         print(f"Excluded: {', '.join(filtered.excluded_names) or '<none>'}")
@@ -425,8 +462,6 @@ def run(args: argparse.Namespace) -> Path | None:
             f"Output directory already exists and is not empty: {output_dir}"
         )
     output_dir.mkdir(parents=True, exist_ok=True)
-    set_seed(args.seed)
-
     tokenizer = load_auto_tokenizer(
         args.model_id,
         revision=args.model_revision,
@@ -436,6 +471,21 @@ def run(args: argparse.Namespace) -> Path | None:
     tokenizer.padding_side = "right"
     collator = VABatchCollator(tokenizer, pad_to_multiple_of=8)
     dtype, bf16, fp16 = _runtime_precision(args.use_cpu)
+    active_feature_indices = (
+        tuple(args.gaze_feature_indices)
+        if args.gaze_fusion == "prefix-concat"
+        else ()
+    )
+    active_feature_names = (
+        et2_feature_names_from_indices(active_feature_indices)
+        if active_feature_indices
+        else ()
+    )
+    features_used = (
+        et2_features_used_from_indices(active_feature_indices)
+        if active_feature_indices
+        else (0,) * len(ET2_FEATURE_NAMES)
+    )
 
     run_manifest = {
         **vars(args),
@@ -461,8 +511,9 @@ def run(args: argparse.Namespace) -> Path | None:
         "excluded_dataset_names": filtered.excluded_names,
         "dataset_counts_after_filter": filtered_counts,
         "fold_protocol": "two-fold out-of-fold; train the opposite fold and predict held-out",
-        "gaze_feature": "TRT" if args.gaze_fusion != "none" else None,
-        "gaze_feature_index": 3 if args.gaze_fusion != "none" else None,
+        "gaze_features": active_feature_names,
+        "gaze_feature_indices": active_feature_indices,
+        "features_used": features_used,
         "gaze_concat_order": (
             GAZE_PREFIX_ORDER
             if args.gaze_fusion == "prefix-concat"
@@ -473,6 +524,12 @@ def run(args: argparse.Namespace) -> Path | None:
             if args.gaze_fusion == "prefix-concat"
             else "last_valid_text_token"
         ),
+        "output_activation": OUTPUT_ACTIVATION,
+        "paired_ablation_seed_policy": {
+            "purpose": "pair baseline and gaze initialization within each held-out fold",
+            "formula": "base_seed + held_out_fold - 1",
+            "paper_protocol_requirement": False,
+        },
     }
     fold_predictions = []
 
@@ -481,8 +538,10 @@ def run(args: argparse.Namespace) -> Path | None:
         args.held_out_folds,
     ):
         fold_output = output_dir / f"heldout_fold{held_out_fold}"
+        fold_seed = int(args.seed) + int(held_out_fold) - 1
         expected_fold_manifest = {
             **run_manifest,
+            "fold_seed": fold_seed,
             "held_out_fold": held_out_fold,
             "training_fold": training_fold,
             "training_rows": len(train_frame),
@@ -494,6 +553,7 @@ def run(args: argparse.Namespace) -> Path | None:
             fold_output,
             bf16=bf16,
             fp16=fp16,
+            fold_seed=fold_seed,
         )
         fold_output.mkdir(parents=True, exist_ok=True)
         print(
@@ -510,6 +570,7 @@ def run(args: argparse.Namespace) -> Path | None:
             tokenizer,
             max_length=args.max_length,
         )
+        set_seed(fold_seed)
         model = build_qwen_va_model(
             tokenizer,
             model_id=args.model_id,
@@ -519,6 +580,7 @@ def run(args: argparse.Namespace) -> Path | None:
             et_revision=args.et_revision,
             et_filename=args.et_filename,
             et_cache_size=args.et_cache_size,
+            gaze_feature_indices=active_feature_indices or None,
             dtype=dtype,
             lora_rank=args.lora_rank,
             lora_alpha=args.lora_alpha,

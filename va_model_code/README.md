@@ -57,23 +57,24 @@ linear head. This implementation:
 - uses `trust_remote_code=False` and never executes the repository's
   `model.py`;
 - freezes the complete ET model;
-- selects raw TRT only, index 3 in
-  `(nFix, FFD, GPT, TRT, fixProp)`;
+- selects any non-empty subset of the five raw channels
+  `(nFix, FFD, GPT, TRT, fixProp)`; the default remains TRT at index 3;
 - aligns ET words monotonically to the first exact Qwen subword;
-- caches detached results by model revision and the complete token sequence.
+- caches detached results by model revision, selected channels, and the complete
+  token sequence.
 
 Each sample is packed before batch padding:
 
 ```text
-[eye_start] [projected valid TRT] [eye_end] [valid Qwen text] [right padding]
+[eye_start] [projected valid gaze vectors] [eye_end] [valid Qwen text] [right padding]
 ```
 
 This preserves the prefix order in the official
 [`gaze_reward` GazeConcat implementation](https://github.com/Telefonica-Scientific-Research/gaze_reward/blob/main/rlhf_rw/models/reward_model_general_sp.py#L154-L210):
 eye-start boundary, projected gaze sequence, eye-end boundary, then text. The
-Qwen adaptation uses trainable boundary parameters and compact TRT values mapped
-to exact Qwen first-subword positions rather than adding tokenizer vocabulary
-items or retaining every predictor position.
+Qwen adaptation uses trainable boundary parameters and compact selected gaze
+vectors mapped to exact Qwen first-subword positions rather than adding tokenizer
+vocabulary items or retaining every predictor position.
 
 The causal decoder is pooled at each sample's last valid text token. That token
 can attend to the complete gaze prefix and all preceding text, whereas the
@@ -87,7 +88,8 @@ The regression head emits exactly:
 [valence, arousal]
 ```
 
-Both outputs are constrained to `[0, 1]`. Training requires an explicit choice
+Both outputs are constrained to `[0, 1]` with the original VA paper's hard
+sigmoid output activation. Training requires an explicit choice
 of `mse`, `ccc`, or the legacy-compatible 50:50 `mse+ccc`; no uncertainty or
 log-variance head is used. The commands below use MSE as the simplest baseline.
 
@@ -130,6 +132,44 @@ To download and preprocess in one command:
 ```bash
 python prepare_english_data.py --download-default
 ```
+
+The command above preserves the repository's legacy preprocessing behavior.
+For the original VA paper's source-wise two-fold protocol, build a separate
+dataset directory:
+
+```bash
+python prepare_english_data.py \
+  --download-default \
+  --paper-protocol \
+  --seed 42 \
+  --output-dir data_paper7_seed42
+```
+
+Paper protocol mode retains every row with finite VA labels, preserves the
+source text, normalizes against the original source scale, independently
+shuffles and halves each source, and then combines the corresponding halves.
+The split is generated once and reused by every model condition.
+
+Verified paper-protocol output for the bundled seven sources is 63,823 rows:
+31,909 in fold 1 and 31,914 in fold 2. Verify the intended directory before
+training:
+
+```bash
+python train_model.py --list-datasets \
+  --data-dir data_paper7_seed42
+```
+
+This reproduces the paper's preprocessing and two-fold procedure on the
+available seven-source English bundle; it is not the paper's unavailable
+34-source multilingual training artifact. The
+[authors' repository](https://github.com/gmendes9/multilingual_va_prediction#dataset)
+explains that the original combined dataset cannot be publicly provided. There
+is also a small source-version mismatch even within the English subset: Table 1
+lists IEMOCAP at 10,039 and Facebook Posts at 2,894, whereas this validated
+bundle contains 10,032 and 2,895 respectively. Therefore, use 63,823 as this
+experiment's expected sample count and compare baseline against gaze on exactly
+the same generated folds; do not compare the absolute score directly against
+the paper's table.
 
 The `data` directory is intentionally excluded from Git, so this command must
 be run once after cloning the repository onto a new training machine.
@@ -240,6 +280,25 @@ Default Qwen + TRT prefix concat:
 python train_model.py qwen3.5-0.8b mse
 ```
 
+Choose one raw ET2 feature:
+
+```bash
+python train_model.py qwen3.5-0.8b mse \
+  --gaze-features FFD
+```
+
+Choose several features. They are canonicalized to the published ET2 order:
+
+```bash
+python train_model.py qwen3.5-0.8b mse \
+  --gaze-features nFix FFD GPT TRT fixProp
+```
+
+Every run manifest records the canonical feature names, zero-based indices, and
+five-bit mask in `(nFix, FFD, GPT, TRT, fixProp)` order. For example,
+`--gaze-features TRT nFix` is stored as names `[nFix, TRT]`, indices `[0, 3]`,
+and mask `[1, 0, 0, 1, 0]`.
+
 No-IEMOCAP run:
 
 ```bash
@@ -259,6 +318,81 @@ Dataset and Trainer-API validation without tokenizer or model downloads:
 ```bash
 python train_model.py --dry-run --no-iemocap
 ```
+
+### Original-paper protocol, single-seed Qwen A/B
+
+Generate `data_paper7_seed42` first with the paper-protocol command above. Then
+run the text-only baseline:
+
+Relevant word-for-word excerpts from the paper are:
+
+> “randomly split in half”
+
+> “hard sigmoid activation function”
+
+> “batch size was fixed at 16”
+
+> “models were trained during 10 epochs”
+
+Source: [Mendes and Martins (2023), Section 5](https://arxiv.org/pdf/2302.14021#page=7).
+
+```bash
+python train_model.py qwen3.5-0.8b mse \
+  --data-dir data_paper7_seed42 \
+  --gaze-fusion none \
+  --held-out-folds 1 2 \
+  --max-length 200 \
+  --train-batch-size 16 \
+  --eval-batch-size 16 \
+  --gradient-accumulation-steps 1 \
+  --epochs 10 \
+  --max-steps -1 \
+  --learning-rate 6e-6 \
+  --weight-decay 0.01 \
+  --warmup-ratio 0.1 \
+  --logging-steps 200 \
+  --save-total-limit 1 \
+  --group-by-length \
+  --seed 42 \
+  --output-dir Preds/paper7_qwen_baseline_seed42
+```
+
+Run the matching gaze condition, choosing the desired raw feature subset:
+
+```bash
+python train_model.py qwen3.5-0.8b mse \
+  --data-dir data_paper7_seed42 \
+  --gaze-fusion prefix-concat \
+  --gaze-features TRT \
+  --held-out-folds 1 2 \
+  --max-length 200 \
+  --train-batch-size 16 \
+  --eval-batch-size 16 \
+  --gradient-accumulation-steps 1 \
+  --epochs 10 \
+  --max-steps -1 \
+  --learning-rate 6e-6 \
+  --weight-decay 0.01 \
+  --warmup-ratio 0.1 \
+  --logging-steps 200 \
+  --save-total-limit 1 \
+  --group-by-length \
+  --seed 42 \
+  --output-dir Preds/paper7_qwen_gaze_TRT_seed42
+```
+
+The top-level seed is 42. Internally, held-out folds 1 and 2 use fold seeds 42
+and 43 respectively. The same fold seed is reused across baseline and gaze so
+their shared Qwen/LoRA and regression-head initialization is paired. This is an
+ablation-control choice, not a requirement stated by the original paper.
+
+Compare the two root `oof_metrics.json` files, not the arithmetic mean of fold
+metrics. Both must report `n_examples == 63823`. The paper-facing metrics are
+Pearson, RMSE, and MAE for valence and arousal. The two
+`oof_predictions.tsv` files must have identical `index`, `held_out_fold`,
+`dataset_of_origin`, `valence`, and `arousal` columns; only predictions should
+differ. One top-level seed supports a descriptive A/B result, not a
+seed-variance or significance claim.
 
 The evaluation protocol remains fixed two-fold out-of-fold:
 
@@ -320,13 +454,13 @@ loads `model.safetensors` with strict key checking. The pinned Qwen checkpoint
 must be available locally or from Hugging Face during reconstruction; ET2
 weights remain external and are fetched lazily only when gaze inference starts.
 
-The fixed two-output head uses architecture manifest schema version 4. Version 3
-allowed the now-removed four-output uncertainty head, and version 2 used the
-incompatible postfix gaze contract. Both older schemas are rejected on strict
-reload rather than silently reinterpreting their weights. Do not resume a
-version 2 or 3 Trainer checkpoint. `--resume-from-checkpoint` requires a
-checkpoint under the selected held-out fold and a matching version-4
-`run_manifest.json`.
+The selectable-feature, hard-sigmoid two-output head uses architecture manifest
+schema version 5. Version 4 was TRT-only and used a different output activation,
+version 3 allowed the removed four-output uncertainty head, and version 2 used
+the incompatible postfix gaze contract. Older schemas are rejected on strict
+reload rather than silently reinterpreting their weights. Do not resume an
+older Trainer checkpoint. `--resume-from-checkpoint` requires a checkpoint
+under the selected held-out fold and a matching version-5 `run_manifest.json`.
 
 Legacy metric names and semantics are retained:
 

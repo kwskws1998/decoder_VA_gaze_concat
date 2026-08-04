@@ -125,7 +125,10 @@ def read_fold(path: str | os.PathLike[str]) -> pd.DataFrame:
         raise FileNotFoundError(
             f"Fold TSV not found: {fold_path}. On a fresh machine, enter "
             "va_model_code and run `python prepare_english_data.py "
-            "--download-default` before training."
+            "--download-default --output-dir <dir>` before training. For "
+            "paper-protocol folds, run `python prepare_english_data.py "
+            "--download-default --paper-protocol --output-dir <dir>`, then pass "
+            "the same directory to training with `--data-dir <dir>`."
         )
     frame = pd.read_csv(
         fold_path,

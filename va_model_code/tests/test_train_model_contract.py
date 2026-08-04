@@ -20,7 +20,7 @@ def _expected_resume_manifest() -> dict[str, object]:
     """Build the architecture-sensitive subset recorded before Trainer resume."""
 
     return {
-        "architecture_manifest_version": 4,
+        "architecture_manifest_version": 5,
         "model": "qwen3.5-0.8b",
         "loss": "mse",
         "output_dim": 2,
@@ -28,8 +28,17 @@ def _expected_resume_manifest() -> dict[str, object]:
         "model_id": "Qwen/fake",
         "model_revision": "decoder-commit",
         "gaze_fusion": "prefix-concat",
-        "gaze_concat_order": "eye_start, compact_trt_gaze, eye_end, text",
+        "gaze_features": ["nFix", "TRT"],
+        "gaze_feature_indices": [0, 3],
+        "features_used": [1, 0, 0, 1, 0],
+        "gaze_concat_order": "eye_start, compact_selected_gaze, eye_end, text",
         "pooling_position": "last_valid_text_token_after_gaze_prefix",
+        "output_activation": "hard_sigmoid",
+        "paired_ablation_seed_policy": {
+            "purpose": "pair baseline and gaze initialization within each held-out fold",
+            "formula": "base_seed + held_out_fold - 1",
+            "paper_protocol_requirement": False,
+        },
         "et_model_id": "ET/fake",
         "et_revision": "et-commit",
         "et_filename": "et.safetensors",
@@ -37,6 +46,7 @@ def _expected_resume_manifest() -> dict[str, object]:
         "lora_alpha": 32,
         "lora_dropout": 0.05,
         "attn_implementation": None,
+        "group_by_length": True,
         "gradient_checkpointing": True,
         "max_length": 200,
         "train_batch_size": 4,
@@ -45,6 +55,7 @@ def _expected_resume_manifest() -> dict[str, object]:
         "weight_decay": 0.01,
         "warmup_ratio": 0.1,
         "seed": 42,
+        "fold_seed": 42,
         "held_out_fold": 1,
         "training_fold": 2,
         "fold_sha256": {"full_dataset_fold1.csv": "abc"},
@@ -59,6 +70,8 @@ def test_cli_defaults_to_prefix_and_requires_explicit_training_loss():
     defaults = parser.parse_args([])
 
     assert defaults.gaze_fusion == "prefix-concat"
+    assert defaults.gaze_features == ("TRT",)
+    assert defaults.group_by_length is True
     assert defaults.loss is None
     with pytest.raises(ValueError, match="must be explicit"):
         train_model_module._validate_args(defaults)
@@ -67,6 +80,36 @@ def test_cli_defaults_to_prefix_and_requires_explicit_training_loss():
         parser.parse_args(["--gaze-fusion", "postfix-concat"])
     with pytest.raises(SystemExit):
         parser.parse_args(["qwen3.5-0.8b", "heteroscedastic+ccc"])
+
+
+def test_cli_canonicalizes_named_gaze_subsets_and_rejects_duplicates():
+    parser = train_model_module._build_parser()
+    args = parser.parse_args(
+        [
+            "qwen3.5-0.8b",
+            "mse",
+            "--gaze-features",
+            "TRT",
+            "nFix",
+        ]
+    )
+
+    train_model_module._validate_args(args)
+
+    assert args.gaze_features == ("nFix", "TRT")
+    assert args.gaze_feature_indices == (0, 3)
+
+    duplicate_args = parser.parse_args(
+        [
+            "qwen3.5-0.8b",
+            "mse",
+            "--gaze-features",
+            "TRT",
+            "TRT",
+        ]
+    )
+    with pytest.raises(ValueError, match="duplicates"):
+        train_model_module._validate_args(duplicate_args)
 
 
 @pytest.mark.parametrize("warmup_ratio", (-0.01, 1.0))
@@ -114,6 +157,7 @@ def test_training_arguments_are_compatible_across_transformers_versions(
         tmp_path / "heldout_fold1",
         bf16=False,
         fp16=False,
+        fold_seed=43,
     )
 
     assert result is captured_kwargs
@@ -123,6 +167,9 @@ def test_training_arguments_are_compatible_across_transformers_versions(
     ).isdisjoint(captured_kwargs)
     assert "overwrite_output_dir" not in captured_kwargs
     assert "save_safetensors" not in captured_kwargs
+    assert captured_kwargs["seed"] == 43
+    assert "data_seed" not in captured_kwargs
+    assert captured_kwargs["group_by_length"] is True
 
 
 def test_resume_contract_accepts_matching_prefix_checkpoint(tmp_path):
@@ -148,7 +195,7 @@ def test_resume_contract_rejects_old_postfix_manifest(tmp_path):
         {
             "architecture_manifest_version": 2,
             "gaze_fusion": "postfix-concat",
-            "gaze_concat_order": "text, eye_start, compact_trt_gaze, eye_end",
+            "gaze_concat_order": "text, eye_start, compact_selected_gaze, eye_end",
             "pooling_position": "eye_end",
         }
     )

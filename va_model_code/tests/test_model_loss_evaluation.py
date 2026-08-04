@@ -85,13 +85,12 @@ class FakeGazeProvider:
         return features.masked_fill(~mask.unsqueeze(-1), 0.0), mask
 
 
-def test_prefix_model_pools_last_text_and_returns_distributional_va():
+def test_prefix_model_pools_last_text_and_returns_two_output_va():
     backbone = FakeCausalBackbone()
     model = DecoderVARegressor(
         backbone,
         gaze_provider=FakeGazeProvider(),
         gaze_fusion="prefix-concat",
-        output_dim=4,
     )
     model.eval()
     input_ids = torch.tensor([[1, 2, 3], [4, 5, 0]])
@@ -104,8 +103,8 @@ def test_prefix_model_pools_last_text_and_returns_distributional_va():
     output = model(input_ids=input_ids, attention_mask=attention_mask)
     hook.remove()
 
-    assert output.logits.shape == (2, 4)
-    assert torch.all((output.logits[:, :2] >= 0.0) & (output.logits[:, :2] <= 1.0))
+    assert output.logits.shape == (2, 2)
+    assert torch.all((output.logits >= 0.0) & (output.logits <= 1.0))
     assert model.config.gaze_concat_order == GAZE_PREFIX_ORDER
     assert model.config.pooling_position == GAZE_PREFIX_POOLING
     assert (
@@ -156,7 +155,6 @@ def test_prefix_model_readout_depends_on_text_after_eye_end():
         backbone,
         gaze_provider=ConstantGazeProvider(),
         gaze_fusion="prefix-concat",
-        output_dim=2,
     )
     model.eval()
     pooled_inputs = []
@@ -202,7 +200,6 @@ def test_prefix_model_readout_depends_on_gaze_before_text():
         backbone,
         gaze_provider=gaze_provider,
         gaze_fusion="prefix-concat",
-        output_dim=2,
     )
     model.gaze_projector = nn.Linear(1, backbone.config.hidden_size, bias=False)
     with torch.no_grad():
@@ -237,7 +234,6 @@ def test_regression_head_accepts_lower_precision_backbone_output():
         LowerPrecisionOutputBackbone(),
         gaze_provider=None,
         gaze_fusion="none",
-        output_dim=2,
     )
     model.eval()
 
@@ -255,7 +251,6 @@ def test_text_only_model_pools_last_valid_token_without_left_padding():
         backbone,
         gaze_provider=None,
         gaze_fusion="none",
-        output_dim=2,
     )
     model.eval()
     pooled_inputs = []
@@ -291,7 +286,6 @@ def test_text_only_model_rejects_invalid_attention_masks(attention_mask, error):
         FakeCausalBackbone(),
         gaze_provider=None,
         gaze_fusion="none",
-        output_dim=2,
     )
 
     with pytest.raises(ValueError, match=error):
@@ -322,12 +316,13 @@ def test_legacy_postfix_fusion_is_rejected(gaze_fusion):
         model_module._normalize_gaze_fusion(gaze_fusion)
 
 
-def test_losses_are_finite_for_singleton_and_distributional_batches():
+@pytest.mark.parametrize("loss_name", ("mse", "ccc", "mse+ccc"))
+def test_two_output_losses_are_finite_for_singleton_batches(loss_name):
     labels = torch.tensor([[0.25, 0.75]])
-    logits = torch.tensor([[0.3, 0.7, -1.0, 1.0]], requires_grad=True)
+    logits = torch.tensor([[0.3, 0.7]], requires_grad=True)
 
-    ccc = concordance_correlation_coefficient(logits[:, :2], labels)
-    breakdown = va_regression_loss(logits, labels, "heteroscedastic+ccc")
+    ccc = concordance_correlation_coefficient(logits, labels)
+    breakdown = va_regression_loss(logits, labels, loss_name)
 
     assert torch.isfinite(ccc).all()
     assert torch.isfinite(breakdown.total)
@@ -335,13 +330,21 @@ def test_losses_are_finite_for_singleton_and_distributional_batches():
     assert torch.isfinite(logits.grad).all()
 
 
-def test_metrics_preserve_legacy_names_and_add_uncertainty():
+def test_four_output_predictions_are_rejected():
+    labels = torch.tensor([[0.25, 0.75]])
+    logits = torch.tensor([[0.3, 0.7, -1.0, 1.0]])
+
+    with pytest.raises(ValueError, match=r"\[batch, 2\]"):
+        va_regression_loss(logits, labels, "mse")
+
+
+def test_metrics_preserve_point_regression_names():
     labels = np.array([[0.0, 1.0], [1.0, 0.0], [0.5, 0.5]])
     predictions = np.array(
         [
-            [0.1, 0.9, -1.0, -1.0],
-            [0.9, 0.1, -1.0, -1.0],
-            [0.5, 0.5, -1.0, -1.0],
+            [0.1, 0.9],
+            [0.9, 0.1],
+            [0.5, 0.5],
         ]
     )
 
@@ -351,7 +354,7 @@ def test_metrics_preserve_legacy_names_and_add_uncertainty():
     assert metrics["mae_arousal"] == pytest.approx(0.0666666667)
     assert metrics["pearson_corr_valence"] > 0.99
     assert "ccc_arousal" in metrics
-    assert "gaussian_nll_mean" in metrics
+    assert not any("nll" in name or "logvar" in name for name in metrics)
 
 
 def test_oof_reports_only_include_datasets_that_remain(tmp_path):
@@ -440,16 +443,13 @@ def test_saved_prefix_model_has_strict_reload_contract(tmp_path, monkeypatch):
         model_revision="fixed-decoder-commit",
         gaze_fusion="prefix-concat",
         et_revision="fixed-et-commit",
-        output_dim=4,
         dtype=torch.float32,
         lora_rank=8,
         lora_alpha=16,
         lora_dropout=0.02,
     )
     with torch.no_grad():
-        source.regression_head[-1].bias.copy_(
-            torch.tensor([0.1, 0.2, 0.3, 0.4])
-        )
+        source.regression_head[-1].bias.copy_(torch.tensor([0.1, 0.2]))
     save_file(
         source.state_dict(),
         tmp_path / SAFE_WEIGHTS_FILENAME,
@@ -473,6 +473,7 @@ def test_saved_prefix_model_has_strict_reload_contract(tmp_path, monkeypatch):
     assert manifest["gaze_concat_order"] == GAZE_PREFIX_ORDER
     assert manifest["pooling_position"] == GAZE_PREFIX_POOLING
     assert manifest["reconstruction"]["gaze_fusion"] == "prefix-concat"
+    assert manifest["reconstruction"]["output_dim"] == 2
     assert manifest["reconstruction"]["lora_rank"] == 8
     assert manifest["reconstruction"]["et_revision"] == "fixed-et-commit"
     assert manifest["state_dict"]["strict_loading"] is True
@@ -496,6 +497,15 @@ def test_saved_prefix_model_has_strict_reload_contract(tmp_path, monkeypatch):
         loaded_logits = loaded(**batch).logits
     torch.testing.assert_close(loaded_logits, expected_logits)
 
+    manifest["reconstruction"]["output_dim"] = 4
+    (tmp_path / ARCHITECTURE_MANIFEST_FILENAME).write_text(
+        json.dumps(manifest),
+        encoding="utf-8",
+    )
+    with pytest.raises(ValueError, match="two-output"):
+        load_saved_decoder_va_model(tmp_path, tokenizer=tokenizer, dtype=torch.float32)
+
+    manifest["reconstruction"]["output_dim"] = 2
     manifest["schema_version"] = 2
     (tmp_path / ARCHITECTURE_MANIFEST_FILENAME).write_text(
         json.dumps(manifest),
@@ -549,7 +559,7 @@ def test_blank_text_uses_one_active_eos_token():
     assert item["attention_mask"].tolist() == [1]
 
 
-def test_trainer_runs_one_step_and_predicts_four_outputs(tmp_path):
+def test_trainer_runs_one_step_and_predicts_two_outputs(tmp_path):
     class TinyDataset(Dataset):
         rows = (
             {
@@ -575,7 +585,6 @@ def test_trainer_runs_one_step_and_predicts_four_outputs(tmp_path):
         FakeCausalBackbone(),
         gaze_provider=FakeGazeProvider(),
         gaze_fusion="prefix-concat",
-        output_dim=4,
     )
     arguments = TrainingArguments(
         output_dir=str(tmp_path),
@@ -594,7 +603,7 @@ def test_trainer_runs_one_step_and_predicts_four_outputs(tmp_path):
         args=arguments,
         train_dataset=dataset,
         data_collator=default_data_collator,
-        loss_name="heteroscedastic+ccc",
+        loss_name="mse",
     )
 
     assert trainer.model_accepts_loss_kwargs is False
@@ -602,5 +611,5 @@ def test_trainer_runs_one_step_and_predicts_four_outputs(tmp_path):
     predictions = trainer.predict(dataset)
 
     assert np.isfinite(result.training_loss)
-    assert predictions.predictions.shape == (2, 4)
+    assert predictions.predictions.shape == (2, 2)
     assert predictions.label_ids.shape == (2, 2)

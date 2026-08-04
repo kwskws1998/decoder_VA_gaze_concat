@@ -81,14 +81,15 @@ prefix-side `eye_end` cannot causally attend to later text. Explicit per-sample
 pooling indices avoid selecting physical right padding, and position IDs are
 rebuilt after packing.
 
-The default head emits:
+The regression head emits exactly:
 
 ```text
-[valence_mu, arousal_mu, valence_logvar, arousal_logvar]
+[valence, arousal]
 ```
 
-The means are constrained to `[0, 1]`. Training uses Gaussian
-heteroscedastic NLL plus MSE and CCC anchors.
+Both outputs are constrained to `[0, 1]`. Training requires an explicit choice
+of `mse`, `ccc`, or the legacy-compatible 50:50 `mse+ccc`; no uncertainty or
+log-variance head is used. The commands below use MSE as the simplest baseline.
 
 ## Environment
 
@@ -236,20 +237,20 @@ total: 53,601
 Default Qwen + TRT prefix concat:
 
 ```bash
-python train_model.py qwen3.5-0.8b heteroscedastic+ccc
+python train_model.py qwen3.5-0.8b mse
 ```
 
 No-IEMOCAP run:
 
 ```bash
-python train_model.py qwen3.5-0.8b heteroscedastic+ccc \
+python train_model.py qwen3.5-0.8b mse \
   --no-iemocap
 ```
 
 Text-only Qwen ablation:
 
 ```bash
-python train_model.py qwen3.5-0.8b heteroscedastic+ccc \
+python train_model.py qwen3.5-0.8b mse \
   --gaze-fusion none
 ```
 
@@ -319,21 +320,22 @@ loads `model.safetensors` with strict key checking. The pinned Qwen checkpoint
 must be available locally or from Hugging Face during reconstruction; ET2
 weights remain external and are fetched lazily only when gaze inference starts.
 
-The gaze-prefix change uses architecture manifest schema version 3. Version 2
-models used the incompatible postfix contract and are rejected on strict reload;
-this also intentionally rejects old version 2 text-only manifests rather than
-silently crossing the architecture boundary. Do not resume a version 2/postfix
-Trainer checkpoint. `--resume-from-checkpoint` now requires a checkpoint under
-the selected held-out fold and a matching prefix-era `run_manifest.json`.
+The fixed two-output head uses architecture manifest schema version 4. Version 3
+allowed the now-removed four-output uncertainty head, and version 2 used the
+incompatible postfix gaze contract. Both older schemas are rejected on strict
+reload rather than silently reinterpreting their weights. Do not resume a
+version 2 or 3 Trainer checkpoint. `--resume-from-checkpoint` requires a
+checkpoint under the selected held-out fold and a matching version-4
+`run_manifest.json`.
 
 Legacy metric names and semantics are retained:
 
 - `mse_valence`, `mae_valence`, `pearson_corr_valence`;
 - `mse_arousal`, `mae_arousal`, `pearson_corr_arousal`.
 
-CCC, mean metrics, and heteroscedastic Gaussian NLL/calibration fields are added.
-Per-dataset reporting is generated only for datasets still present after
-filtering, so exclusions cannot trigger hard-coded source lookup failures.
+CCC and mean metrics are also reported. Per-dataset reporting is generated only
+for datasets still present after filtering, so exclusions cannot trigger
+hard-coded source lookup failures.
 
 ## Methodological warning
 

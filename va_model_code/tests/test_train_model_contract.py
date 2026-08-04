@@ -20,10 +20,10 @@ def _expected_resume_manifest() -> dict[str, object]:
     """Build the architecture-sensitive subset recorded before Trainer resume."""
 
     return {
-        "architecture_manifest_version": 3,
+        "architecture_manifest_version": 4,
         "model": "qwen3.5-0.8b",
-        "loss": "heteroscedastic+ccc",
-        "output_dim": 4,
+        "loss": "mse",
+        "output_dim": 2,
         "dtype": "float32",
         "model_id": "Qwen/fake",
         "model_revision": "decoder-commit",
@@ -44,10 +44,6 @@ def _expected_resume_manifest() -> dict[str, object]:
         "learning_rate": 1e-4,
         "weight_decay": 0.01,
         "warmup_ratio": 0.1,
-        "hetero_mse_weight": 0.1,
-        "hetero_ccc_weight": 0.1,
-        "hetero_logvar_min": -5.0,
-        "hetero_logvar_max": 3.0,
         "seed": 42,
         "held_out_fold": 1,
         "training_fold": 2,
@@ -57,18 +53,26 @@ def _expected_resume_manifest() -> dict[str, object]:
     }
 
 
-def test_cli_defaults_to_prefix_and_rejects_postfix():
+def test_cli_defaults_to_prefix_and_requires_explicit_training_loss():
     parser = train_model_module._build_parser()
 
-    assert parser.parse_args([]).gaze_fusion == "prefix-concat"
+    defaults = parser.parse_args([])
+
+    assert defaults.gaze_fusion == "prefix-concat"
+    assert defaults.loss is None
+    with pytest.raises(ValueError, match="must be explicit"):
+        train_model_module._validate_args(defaults)
+    train_model_module._validate_args(parser.parse_args(["--dry-run"]))
     with pytest.raises(SystemExit):
         parser.parse_args(["--gaze-fusion", "postfix-concat"])
+    with pytest.raises(SystemExit):
+        parser.parse_args(["qwen3.5-0.8b", "heteroscedastic+ccc"])
 
 
 @pytest.mark.parametrize("warmup_ratio", (-0.01, 1.0))
 def test_training_contract_rejects_invalid_warmup_ratio(warmup_ratio):
     args = train_model_module._build_parser().parse_args(
-        ["--warmup-ratio", str(warmup_ratio)]
+        ["qwen3.5-0.8b", "mse", "--warmup-ratio", str(warmup_ratio)]
     )
 
     with pytest.raises(ValueError, match="interval"):
@@ -101,7 +105,9 @@ def test_training_arguments_are_compatible_across_transformers_versions(
         "TrainingArguments",
         capture_training_arguments,
     )
-    args = train_model_module._build_parser().parse_args([])
+    args = train_model_module._build_parser().parse_args(
+        ["qwen3.5-0.8b", "mse"]
+    )
 
     result = train_model_module._training_arguments(
         args,
@@ -144,6 +150,32 @@ def test_resume_contract_rejects_old_postfix_manifest(tmp_path):
             "gaze_fusion": "postfix-concat",
             "gaze_concat_order": "text, eye_start, compact_trt_gaze, eye_end",
             "pooling_position": "eye_end",
+        }
+    )
+    (fold_output / "run_manifest.json").write_text(
+        json.dumps(recorded),
+        encoding="utf-8",
+    )
+    args = SimpleNamespace(resume_from_checkpoint=str(checkpoint))
+
+    with pytest.raises(ValueError, match="refusing to reinterpret"):
+        train_model_module._validate_resume_contract(
+            args,
+            fold_output,
+            _expected_resume_manifest(),
+        )
+
+
+def test_resume_contract_rejects_old_four_output_manifest(tmp_path):
+    fold_output = tmp_path / "run" / "heldout_fold1"
+    checkpoint = fold_output / "checkpoints" / "checkpoint-10"
+    checkpoint.mkdir(parents=True)
+    recorded = _expected_resume_manifest()
+    recorded.update(
+        {
+            "architecture_manifest_version": 3,
+            "loss": "heteroscedastic+ccc",
+            "output_dim": 4,
         }
     )
     (fold_output / "run_manifest.json").write_text(

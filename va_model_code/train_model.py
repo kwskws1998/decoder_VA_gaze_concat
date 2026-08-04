@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import argparse
 from datetime import datetime
-from functools import partial
 from importlib.metadata import PackageNotFoundError, version
 import json
 import math
@@ -37,13 +36,7 @@ from decoder_va.trainer import VARegressionTrainer
 
 
 MODEL_ALIASES = ("qwen3.5-0.8b", "qwen")
-LOSS_CHOICES = (
-    "mse",
-    "ccc",
-    "mse+ccc",
-    "heteroscedastic+ccc",
-    "hetero+ccc",
-)
+LOSS_CHOICES = ("mse", "ccc", "mse+ccc")
 
 
 def _build_parser() -> argparse.ArgumentParser:
@@ -59,7 +52,7 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "loss",
         nargs="?",
-        default="heteroscedastic+ccc",
+        default=None,
         choices=LOSS_CHOICES,
     )
     parser.add_argument("--model-id", default=DEFAULT_DECODER_MODEL_ID)
@@ -106,10 +99,6 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--lora-rank", type=int, default=16)
     parser.add_argument("--lora-alpha", type=int, default=32)
     parser.add_argument("--lora-dropout", type=float, default=0.05)
-    parser.add_argument("--hetero-mse-weight", type=float, default=0.1)
-    parser.add_argument("--hetero-ccc-weight", type=float, default=0.1)
-    parser.add_argument("--hetero-logvar-min", type=float, default=-5.0)
-    parser.add_argument("--hetero-logvar-max", type=float, default=3.0)
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--logging-steps", type=int, default=50)
     parser.add_argument("--save-total-limit", type=int, default=1)
@@ -128,6 +117,12 @@ def _build_parser() -> argparse.ArgumentParser:
 def _validate_args(args: argparse.Namespace) -> None:
     """Fail before downloading models when a run configuration is invalid."""
 
+    if args.loss is None and not (args.dry_run or args.list_datasets):
+        raise ValueError(
+            "Training loss must be explicit; choose one of: "
+            + ", ".join(LOSS_CHOICES)
+            + "."
+        )
     positive_integers = (
         "max_length",
         "train_batch_size",
@@ -149,10 +144,6 @@ def _validate_args(args: argparse.Namespace) -> None:
         raise ValueError("--warmup-ratio must be in the interval [0, 1).")
     if args.et_cache_size < 0:
         raise ValueError("--et-cache-size cannot be negative.")
-    if args.hetero_logvar_min >= args.hetero_logvar_max:
-        raise ValueError("--hetero-logvar-min must be smaller than --hetero-logvar-max.")
-    if args.hetero_mse_weight < 0 or args.hetero_ccc_weight < 0:
-        raise ValueError("Heteroscedastic anchor weights cannot be negative.")
     if len(set(args.held_out_folds)) != len(args.held_out_folds):
         raise ValueError("--held-out-folds cannot contain duplicates.")
     if len(args.held_out_folds) != 1 and args.resume_from_checkpoint:
@@ -160,22 +151,6 @@ def _validate_args(args: argparse.Namespace) -> None:
             "--resume-from-checkpoint is ambiguous for multiple fold directories; "
             "resume one --held-out-folds value at a time."
         )
-
-
-def _loss_name(raw_name: str) -> str:
-    """Normalize the short heteroscedastic loss alias."""
-
-    return (
-        "heteroscedastic+ccc"
-        if raw_name == "hetero+ccc"
-        else raw_name
-    )
-
-
-def _output_dimension(loss_name: str) -> int:
-    """Select the point-only or mean/log-variance output schema."""
-
-    return 4 if loss_name == "heteroscedastic+ccc" else 2
 
 
 def _runtime_precision(use_cpu: bool) -> tuple[torch.dtype, bool, bool]:
@@ -283,10 +258,6 @@ def _validate_resume_contract(
         "learning_rate",
         "weight_decay",
         "warmup_ratio",
-        "hetero_mse_weight",
-        "hetero_ccc_weight",
-        "hetero_logvar_min",
-        "hetero_logvar_max",
         "seed",
         "held_out_fold",
         "training_fold",
@@ -408,7 +379,7 @@ def run(args: argparse.Namespace) -> Path | None:
     """Execute filtering, two-fold training, prediction, and dynamic reporting."""
 
     _validate_args(args)
-    loss_name = _loss_name(args.loss)
+    loss_name = args.loss
     filtered = load_filtered_folds(
         args.data_dir,
         exclude_dataset=args.exclude_dataset,
@@ -443,6 +414,7 @@ def run(args: argparse.Namespace) -> Path | None:
         )
         return None
 
+    assert loss_name is not None
     output_dir = Path(args.output_dir) if args.output_dir else _default_output_dir()
     if (
         output_dir.exists()
@@ -469,7 +441,7 @@ def run(args: argparse.Namespace) -> Path | None:
         **vars(args),
         "architecture_manifest_version": ARCHITECTURE_MANIFEST_VERSION,
         "loss": loss_name,
-        "output_dim": _output_dimension(loss_name),
+        "output_dim": 2,
         "dtype": dtype,
         "effective_output_dir": str(output_dir.resolve()),
         "python_version": platform.python_version(),
@@ -547,7 +519,6 @@ def run(args: argparse.Namespace) -> Path | None:
             et_revision=args.et_revision,
             et_filename=args.et_filename,
             et_cache_size=args.et_cache_size,
-            output_dim=_output_dimension(loss_name),
             dtype=dtype,
             lora_rank=args.lora_rank,
             lora_alpha=args.lora_alpha,
@@ -569,16 +540,8 @@ def run(args: argparse.Namespace) -> Path | None:
             eval_dataset=eval_dataset,
             data_collator=collator,
             processing_class=tokenizer,
-            compute_metrics=partial(
-                trainer_compute_metrics,
-                logvar_min=args.hetero_logvar_min,
-                logvar_max=args.hetero_logvar_max,
-            ),
+            compute_metrics=trainer_compute_metrics,
             loss_name=loss_name,
-            hetero_mse_weight=args.hetero_mse_weight,
-            hetero_ccc_weight=args.hetero_ccc_weight,
-            hetero_logvar_min=args.hetero_logvar_min,
-            hetero_logvar_max=args.hetero_logvar_max,
         )
         trainer.train(resume_from_checkpoint=args.resume_from_checkpoint)
         trainer.save_model(str(fold_output / "final_model"))
@@ -613,8 +576,6 @@ def run(args: argparse.Namespace) -> Path | None:
         fold_predictions,
         output_dir,
         run_parameters=_json_ready(run_manifest),
-        logvar_min=args.hetero_logvar_min,
-        logvar_max=args.hetero_logvar_max,
     )
     print(f"Completed. OOF reports: {output_dir.resolve()}")
     return output_dir

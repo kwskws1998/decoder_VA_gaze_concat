@@ -26,7 +26,7 @@ GAZE_FUSIONS = ("none", "prefix-concat")
 GAZE_PREFIX_ORDER = "eye_start, compact_trt_gaze, eye_end, text"
 GAZE_PREFIX_POOLING = "last_valid_text_token_after_gaze_prefix"
 ARCHITECTURE_MANIFEST_FILENAME = "decoder_va_architecture.json"
-ARCHITECTURE_MANIFEST_VERSION = 3
+ARCHITECTURE_MANIFEST_VERSION = 4
 SAFE_WEIGHTS_FILENAME = "model.safetensors"
 
 
@@ -74,14 +74,11 @@ class DecoderVARegressor(nn.Module):
         *,
         gaze_provider: ET2GazeProvider | Any | None = None,
         gaze_fusion: str = "prefix-concat",
-        output_dim: int = 4,
         gaze_projection_dim: int = 128,
         gaze_projection_dropout: tuple[float, float] = (0.1, 0.3),
         classifier_dropout: float = 0.1,
     ) -> None:
         super().__init__()
-        if output_dim not in (2, 4):
-            raise ValueError("output_dim must be 2 for point regression or 4 for uncertainty.")
         self.backbone = backbone
         if not hasattr(backbone, "config"):
             raise TypeError("backbone must expose a Transformers-compatible config.")
@@ -96,7 +93,7 @@ class DecoderVARegressor(nn.Module):
             backbone_config = base_model.config
         self.config = copy.deepcopy(backbone_config)
         self.hidden_size = _hidden_size(self.config)
-        self.output_dim = int(output_dim)
+        self.output_dim = 2
         self.gaze_fusion = _normalize_gaze_fusion(gaze_fusion)
         self.gaze_provider = gaze_provider
         self.gaze_projection_dim = int(gaze_projection_dim)
@@ -152,16 +149,7 @@ class DecoderVARegressor(nn.Module):
             else "last_valid_text_token"
         )
         self.config.decoder_va_architecture_version = ARCHITECTURE_MANIFEST_VERSION
-        self.config.va_output_names = (
-            ["valence", "arousal"]
-            if self.output_dim == 2
-            else [
-                "valence_mu",
-                "arousal_mu",
-                "valence_logvar",
-                "arousal_logvar",
-            ]
-        )
+        self.config.va_output_names = ["valence", "arousal"]
         if hasattr(backbone_config, "use_cache"):
             backbone_config.use_cache = False
 
@@ -259,7 +247,7 @@ class DecoderVARegressor(nn.Module):
         labels: torch.Tensor | None = None,
         **kwargs,
     ) -> SequenceClassifierOutput:
-        """Return bounded VA means followed by optional unconstrained log variances."""
+        """Return bounded valence and arousal predictions."""
 
         del labels, kwargs
         if input_ids.ndim != 2 or attention_mask.ndim != 2:
@@ -294,12 +282,7 @@ class DecoderVARegressor(nn.Module):
         pooled = hidden[row_indices, pooling_positions]
         head_dtype = next(self.regression_head.parameters()).dtype
         raw_logits = self.regression_head(pooled.to(dtype=head_dtype))
-        means = torch.sigmoid(raw_logits[:, :2])
-        logits = (
-            means
-            if self.output_dim == 2
-            else torch.cat((means, raw_logits[:, 2:]), dim=-1)
-        )
+        logits = torch.sigmoid(raw_logits)
         return SequenceClassifierOutput(logits=logits)
 
     def trainable_parameter_summary(self) -> dict[str, int | float]:
@@ -433,7 +416,6 @@ def build_qwen_va_model(
     et_revision: str = DEFAULT_ET2_REVISION,
     et_filename: str = DEFAULT_ET2_FILENAME,
     et_cache_size: int = 70000,
-    output_dim: int = 4,
     dtype: torch.dtype | str = torch.bfloat16,
     lora_rank: int = 16,
     lora_alpha: int = 32,
@@ -471,7 +453,6 @@ def build_qwen_va_model(
         backbone,
         gaze_provider=gaze_provider,
         gaze_fusion=normalized_fusion,
-        output_dim=output_dim,
         gaze_projection_dim=gaze_projection_dim,
         gaze_projection_dropout=gaze_projection_dropout,
         classifier_dropout=classifier_dropout,
@@ -485,7 +466,7 @@ def build_qwen_va_model(
         "et_filename": str(et_filename),
         "et_feature_index": 3,
         "et_cache_size": int(et_cache_size),
-        "output_dim": int(output_dim),
+        "output_dim": 2,
         "lora_rank": int(lora_rank),
         "lora_alpha": int(lora_alpha),
         "lora_dropout": float(lora_dropout),
@@ -567,6 +548,8 @@ def load_saved_decoder_va_model(
         )
     if reconstruction["et_feature_index"] != 3:
         raise ValueError("Only raw TRT at ET2 feature index 3 is supported.")
+    if reconstruction["output_dim"] != 2:
+        raise ValueError("Only the two-output valence/arousal head is supported.")
     if reconstruction["lora_target_modules"] != "all-linear":
         raise ValueError("Saved model does not use the supported all-linear LoRA contract.")
     if reconstruction["lora_task_type"] != "FEATURE_EXTRACTION":
@@ -616,7 +599,6 @@ def load_saved_decoder_va_model(
         et_revision=str(reconstruction["et_revision"]),
         et_filename=str(reconstruction["et_filename"]),
         et_cache_size=effective_cache_size,
-        output_dim=int(reconstruction["output_dim"]),
         dtype=dtype,
         lora_rank=int(reconstruction["lora_rank"]),
         lora_alpha=int(reconstruction["lora_alpha"]),

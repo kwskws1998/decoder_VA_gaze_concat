@@ -17,23 +17,12 @@ This project introduces a novel approach to aligning Large Language Models (LLMs
 - Robust evaluation framework for measuring alignment improvements
 - Support for multiple model architectures (Mistral, Llama, etc.)
 
-## Installation
+## Archived reference
 
-To install and run the project:
-
-1. Clone the repository
-2. Create a virtual environment with python 3.11.8 and activate it  
-3. Install the required dependencies from requirements.txt
-4. Install the tokenizer aligner package:
-
-```bash
-pip install git+https://github.com/angelalopezcardona/tokenizer_aligner.git@v1.0.0
-```
-5. Install the eyetrackpy package:
-```bash
-pip install git+https://github.com/angelalopezcardona/eyetrackpy.git@v1.0.0
-```
-6. Navigate to the rlhf_rw directory
+This directory is retained only to document the upstream GazeConcat
+implementation. Its historical dependency set conflicts with the active Qwen
+VA environment and is intentionally not bundled here. Use the repository-root
+`requirements.txt` only for `va_model_code`.
 
 
 ## Usage
@@ -105,4 +94,3 @@ If you find this work useful for your research, please cite our paper:
 © 2025 Telefónica Innovación Digital.  
 Released under the GNU Lesser General Public License v3.0 (LGPLv3).  
 See [LICENSE](./LICENSE) for details.
-

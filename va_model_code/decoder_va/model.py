@@ -387,7 +387,7 @@ def load_qwen_backbone_with_lora(
     except ImportError as exc:
         raise ImportError(
             "Qwen LoRA training requires recent transformers and peft; "
-            "install va_model_code/requirements.txt."
+            "install the repository-root requirements.txt."
         ) from exc
 
     load_kwargs: dict[str, Any] = {
@@ -403,7 +403,7 @@ def load_qwen_backbone_with_lora(
     except (KeyError, ValueError, ImportError) as exc:
         raise RuntimeError(
             "The installed Transformers build cannot load Qwen3.5. "
-            "Install the versions in va_model_code/requirements.txt."
+            "Install the versions in the repository-root requirements.txt."
         ) from exc
     if not hasattr(causal_lm, "model"):
         raise TypeError(f"{model_id} does not expose a causal text backbone at '.model'.")

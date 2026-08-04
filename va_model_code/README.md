@@ -95,8 +95,11 @@ heteroscedastic NLL plus MSE and CCC anchors.
 Qwen3.5 requires a newer Transformers build than the original code:
 
 ```bash
-cd /Users/wansookim/Documents/decoder_based_va_prediction/va_model_code
+# Run from the repository root, before entering va_model_code.
+python -m pip install torch==2.12.1 \
+  --index-url https://download.pytorch.org/whl/cu126
 python -m pip install -r requirements.txt
+cd va_model_code
 ```
 
 The current local CPU environment can run the unit tests but has an older
@@ -343,8 +346,8 @@ experiment rather than silently replacing the historical folds.
 The tests do not download Qwen or ET2:
 
 ```bash
-cd /Users/wansookim/Documents/decoder_based_va_prediction
-python -m pytest -q va_model_code/tests
+# Run after entering va_model_code.
+python -m pytest -q tests
 ```
 
 They cover safe ZIP handling, exact legacy counts, exclusions and typo aliases,

@@ -4,8 +4,14 @@ import pytest
 import torch
 from torch import nn
 
+from va_model_code.decoder_va import gaze as gaze_module
 from va_model_code.decoder_va.alignment import align_words_to_tokens
-from va_model_code.decoder_va.gaze import ET2GazeProvider, segment_text_for_et2
+from va_model_code.decoder_va.gaze import (
+    ET2GazeProvider,
+    _ET2RegressionModel,
+    _et2_roberta_config,
+    segment_text_for_et2,
+)
 from va_model_code.decoder_va.packing import pack_prefix_gaze
 
 
@@ -162,6 +168,102 @@ class FakeET2GazeProvider(ET2GazeProvider):
     def _load_assets(self):
         self.load_count += 1
         return FakeETTokenizer(), self.fake_model
+
+
+def test_et2_config_matches_the_roberta_base_checkpoint_contract():
+    config = _et2_roberta_config()
+
+    assert config.vocab_size == 50265
+    assert config.hidden_size == 768
+    assert config.num_hidden_layers == 12
+    assert config.num_attention_heads == 12
+    assert config.intermediate_size == 3072
+    assert config.max_position_embeddings == 514
+    assert config.type_vocab_size == 1
+    assert config.layer_norm_eps == pytest.approx(1e-5)
+    assert config.pad_token_id == 1
+    assert config.bos_token_id == 0
+    assert config.eos_token_id == 2
+
+
+def test_et2_model_embedding_shapes_match_the_pinned_checkpoint():
+    with torch.device("meta"):
+        model = _ET2RegressionModel()
+
+    assert model.roberta.embeddings.token_type_embeddings.weight.shape == (1, 768)
+    assert model.roberta.embeddings.position_embeddings.weight.shape == (514, 768)
+    assert model.decoder.weight.shape == (5, 768)
+
+
+def test_et2_provider_rejects_lengths_beyond_roberta_capacity():
+    with pytest.raises(ValueError, match="cannot exceed 512"):
+        ET2GazeProvider(
+            tokenizer=FakeTargetTokenizer(),
+            max_length=513,
+        )
+
+
+def test_et2_asset_loader_preserves_pinned_identity_and_prefix_space(
+    monkeypatch,
+):
+    calls = {}
+    fake_tokenizer = object()
+
+    class FakeModel:
+        def load_state_dict(self, state_dict, strict):
+            calls["state_dict"] = state_dict
+            calls["strict"] = strict
+
+    def fake_tokenizer_loader(repo_id, **kwargs):
+        calls["tokenizer"] = (repo_id, kwargs)
+        return fake_tokenizer
+
+    def fake_hub_download(**kwargs):
+        calls["download"] = kwargs
+        return "/tmp/fake-et2.safetensors"
+
+    def fake_load_file(path, device):
+        calls["load_file"] = (path, device)
+        return {"decoder.weight": torch.ones(1)}
+
+    monkeypatch.setattr(
+        "transformers.AutoTokenizer.from_pretrained",
+        fake_tokenizer_loader,
+    )
+    monkeypatch.setattr(
+        "huggingface_hub.hf_hub_download",
+        fake_hub_download,
+    )
+    monkeypatch.setattr("safetensors.torch.load_file", fake_load_file)
+    monkeypatch.setattr(gaze_module, "_ET2RegressionModel", FakeModel)
+    provider = ET2GazeProvider(
+        tokenizer=FakeTargetTokenizer(),
+        repo_id="skboy/et_prediction_2",
+        revision="fixed-commit",
+        filename="et_predictor2_seed123.safetensors",
+    )
+
+    tokenizer, model = provider._load_assets()
+
+    assert tokenizer is fake_tokenizer
+    assert isinstance(model, FakeModel)
+    assert calls["tokenizer"] == (
+        "skboy/et_prediction_2",
+        {
+            "revision": "fixed-commit",
+            "use_fast": True,
+            "trust_remote_code": False,
+            "add_prefix_space": True,
+        },
+    )
+    assert calls["download"] == {
+        "repo_id": "skboy/et_prediction_2",
+        "filename": "et_predictor2_seed123.safetensors",
+        "revision": "fixed-commit",
+    }
+    assert calls["load_file"] == ("/tmp/fake-et2.safetensors", "cpu")
+    assert calls["state_dict"]["decoder.weight"].tolist() == [1.0]
+    assert calls["strict"] is True
 
 
 def test_exact_alignment_does_not_consume_tokens_after_mismatch():

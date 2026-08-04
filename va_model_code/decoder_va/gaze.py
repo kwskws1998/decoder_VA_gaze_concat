@@ -17,6 +17,32 @@ ET2_FEATURE_NAMES = ("nFix", "FFD", "GPT", "TRT", "fixProp")
 DEFAULT_ET2_REPO_ID = "skboy/et_prediction_2"
 DEFAULT_ET2_REVISION = "5785e77309d9fce8b88e908a9db100c1a0a63456"
 DEFAULT_ET2_FILENAME = "et_predictor2_seed123.safetensors"
+ET2_MAX_INPUT_TOKENS = 512
+
+
+def _et2_roberta_config():
+    """Recreate the exact roberta-base configuration used to train ET2."""
+
+    from transformers import RobertaConfig
+
+    return RobertaConfig(
+        vocab_size=50265,
+        hidden_size=768,
+        num_hidden_layers=12,
+        num_attention_heads=12,
+        intermediate_size=3072,
+        hidden_act="gelu",
+        hidden_dropout_prob=0.1,
+        attention_probs_dropout_prob=0.1,
+        max_position_embeddings=514,
+        type_vocab_size=1,
+        initializer_range=0.02,
+        layer_norm_eps=1e-5,
+        pad_token_id=1,
+        bos_token_id=0,
+        eos_token_id=2,
+        position_embedding_type="absolute",
+    )
 
 
 class _ET2RegressionModel(nn.Module):
@@ -24,9 +50,9 @@ class _ET2RegressionModel(nn.Module):
 
     def __init__(self):
         super().__init__()
-        from transformers import RobertaConfig, RobertaModel
+        from transformers import RobertaModel
 
-        config = RobertaConfig()
+        config = _et2_roberta_config()
         self.roberta = RobertaModel(config)
         self.decoder = nn.Linear(config.hidden_size, len(ET2_FEATURE_NAMES))
 
@@ -94,7 +120,7 @@ class ET2GazeProvider:
         filename: str = DEFAULT_ET2_FILENAME,
         feature_index: int = 3,
         cache_size: int = 20000,
-        max_length: int = 512,
+        max_length: int = ET2_MAX_INPUT_TOKENS,
         device: str | torch.device | None = None,
     ):
         if tokenizer is None:
@@ -113,6 +139,10 @@ class ET2GazeProvider:
             raise ValueError("cache_size cannot be negative.")
         if int(max_length) <= 2:
             raise ValueError("max_length must leave room for lexical tokens.")
+        if int(max_length) > ET2_MAX_INPUT_TOKENS:
+            raise ValueError(
+                f"ET2 max_length cannot exceed {ET2_MAX_INPUT_TOKENS} input tokens."
+            )
 
         self.tokenizer = tokenizer
         self.repo_id = str(repo_id)
@@ -149,6 +179,7 @@ class ET2GazeProvider:
             revision=self.revision,
             use_fast=True,
             trust_remote_code=False,
+            add_prefix_space=True,
         )
         weights_path = hf_hub_download(
             repo_id=self.repo_id,

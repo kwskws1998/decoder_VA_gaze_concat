@@ -1,3 +1,6 @@
+# macOS metadata
+.DS_Store
+
 # Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[cod]
@@ -125,13 +128,14 @@ venv.bak/
 .dmypy.json
 dmypy.json
 
-# input data, saved log, checkpoints
+# Input data, active results, saved logs, and legacy output locations
 data/
 data_paper*/
 Output Directory/
 model/
-data/
 Preds/
+results/*
+!results/README.md
 wandb/
 logs/
 

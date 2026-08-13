@@ -153,7 +153,7 @@ python prepare_english_data.py \
   --download-default \
   --paper-protocol \
   --seed 42 \
-  --output-dir data_paper7_seed42
+  --output-dir data/paper7_seed42
 ```
 
 Paper protocol mode retains every row with finite VA labels, preserves the
@@ -167,7 +167,7 @@ training:
 
 ```bash
 python train_model.py --list-datasets \
-  --data-dir data_paper7_seed42
+  --data-dir data/paper7_seed42
 ```
 
 This reproduces the paper's preprocessing and two-fold procedure on the
@@ -342,10 +342,11 @@ Dataset and Trainer-API validation without tokenizer or model downloads:
 python train_model.py --dry-run --no-iemocap
 ```
 
-### Original-paper protocol, single-seed Qwen A/B
+### Paper-protocol splits, no-IEMOCAP single-seed Qwen A/B
 
-Generate `data_paper7_seed42` first with the paper-protocol command above. Then
-run the text-only baseline:
+Generate `data/paper7_seed42` first with the paper-protocol command above. Then
+run the text-only baseline. `--no-iemocap` is an explicit experiment exclusion,
+not part of the quoted paper protocol:
 
 Relevant word-for-word excerpts from the paper are:
 
@@ -361,9 +362,10 @@ Source: [Mendes and Martins (2023), Section 5](https://arxiv.org/pdf/2302.14021#
 
 ```bash
 python train_model.py qwen3.5-0.8b mse \
-  --data-dir data_paper7_seed42 \
+  --data-dir data/paper7_seed42 \
   --finetuning-mode full \
   --gaze-fusion none \
+  --no-iemocap \
   --held-out-folds 1 2 \
   --max-length 200 \
   --train-batch-size 16 \
@@ -378,17 +380,18 @@ python train_model.py qwen3.5-0.8b mse \
   --save-total-limit 1 \
   --group-by-length \
   --seed 42 \
-  --output-dir Preds/paper7_qwen_full_baseline_seed42
+  --run-name paper7_no_iemocap_qwen_full_baseline_seed42
 ```
 
 Run the matching gaze condition, choosing the desired raw feature subset:
 
 ```bash
 python train_model.py qwen3.5-0.8b mse \
-  --data-dir data_paper7_seed42 \
+  --data-dir data/paper7_seed42 \
   --finetuning-mode full \
   --gaze-fusion prefix-concat \
   --gaze-features TRT \
+  --no-iemocap \
   --held-out-folds 1 2 \
   --max-length 200 \
   --train-batch-size 16 \
@@ -403,12 +406,12 @@ python train_model.py qwen3.5-0.8b mse \
   --save-total-limit 1 \
   --group-by-length \
   --seed 42 \
-  --output-dir Preds/paper7_qwen_full_gaze_TRT_seed42
+  --run-name paper7_no_iemocap_qwen_full_gaze_TRT_seed42
 ```
 
 These two commands form the primary full-fine-tuning A/B. To run the matching
 LoRA A/B, use `--finetuning-mode lora --learning-rate 1e-4` in both commands
-and use new output directories. Never compare a full baseline against a LoRA
+and use new run names. Never compare a full baseline against a LoRA
 gaze condition as the gaze ablation.
 
 The top-level seed is 42. Internally, held-out folds 1 and 2 use fold seeds 42
@@ -418,7 +421,8 @@ fine-tuning mode. This is an ablation-control choice, not a requirement stated
 by the original paper.
 
 Compare the two root `oof_metrics.json` files, not the arithmetic mean of fold
-metrics. Both must report `n_examples == 63823`. The paper-facing metrics are
+metrics. With this exact no-IEMOCAP bundle and split, both must report
+`n_examples == 53791`. The paper-facing metrics are
 Pearson, RMSE, and MAE for valence and arousal. The two
 `oof_predictions.tsv` files must have identical `index`, `held_out_fold`,
 `dataset_of_origin`, `valence`, and `arousal` columns; only predictions should
@@ -435,10 +439,11 @@ Run one held-out fold for recovery or a smoke run:
 
 ```bash
 python train_model.py qwen3.5-0.8b mse \
-  --data-dir data_paper7_seed42 \
+  --data-dir data/paper7_seed42 \
   --finetuning-mode full \
   --gaze-fusion prefix-concat \
   --gaze-features TRT \
+  --no-iemocap \
   --held-out-folds 1 \
   --max-length 200 \
   --train-batch-size 16 \
@@ -449,21 +454,21 @@ python train_model.py qwen3.5-0.8b mse \
   --learning-rate 6e-6 \
   --save-total-limit 1 \
   --seed 42 \
-  --output-dir Preds/smoke_full_gaze_TRT_seed42_b16
+  --run-name smoke_full_gaze_TRT_seed42_b16
 ```
 
 Three optimizer steps ensure that AdamW state exists while a later
 forward/backward pass is measured. Inspect
-`heldout_fold1/gpu_memory.json`; it records peak allocated and reserved CUDA
-memory. If batch 16 runs out of memory or peak reserved memory leaves too
-little headroom, use `--train-batch-size 8` and
+`../results/<run-name>/heldout_fold1/gpu_memory.json`; it records peak allocated
+and reserved CUDA memory. If batch 16 runs out of memory or peak reserved memory
+leaves too little headroom, use `--train-batch-size 8` and
 `--gradient-accumulation-steps 2` in both baseline and gaze runs. This preserves
 effective batch size 16 for the MSE experiment.
 
 Each run writes:
 
 ```text
-Preds/<run>/
+../results/<run-name>/
   heldout_fold1/
     checkpoints/
     final_model/
@@ -479,6 +484,13 @@ Preds/<run>/
   training_parameters.json
 ```
 
+The run root is always anchored to the repository-root `results/` directory.
+`--run-name` accepts exactly one directory name; paths and traversal components
+are rejected. The old CWD-relative `Preds/` output contract and arbitrary
+training `--output-dir` paths are intentionally unsupported. If a user-supplied
+name contains `baseline` or `gaze`, the name is checked against the actual
+fusion setting before model download.
+
 `final_model/` contains a complete safe state dict, the locally saved tokenizer,
 and a versioned architecture manifest with the fine-tuning mode, exact
 decoder/ET revisions, conditional LoRA settings, gaze projector dimensions,
@@ -492,11 +504,24 @@ import torch
 from decoder_va import load_saved_decoder_va_model
 
 model, tokenizer = load_saved_decoder_va_model(
-    "Preds/<run>/heldout_fold1/final_model",
+    "../results/<run-name>/heldout_fold1/final_model",
     dtype=torch.bfloat16,
 )
 model.to("cuda")
 ```
+
+Create a small review archive after both held-out folds finish:
+
+```bash
+python package_results.py \
+  --run-name paper7_no_iemocap_qwen_full_baseline_seed42
+```
+
+The ZIP is written inside that same run directory. Its filename is derived from
+the recorded model, fine-tuning mode, gaze condition, feature selection, and
+seed. The packager requires the complete two-fold OOF result, validates all
+fold/OOF files, writes SHA-256 hashes, tests the completed ZIP, and excludes
+model weights and optimizer states.
 
 The reload path executes no repository-supplied Python. It reconstructs the
 recorded raw-Qwen or Qwen/LoRA architecture, validates
@@ -546,7 +571,8 @@ loss stability, and dynamic OOF reporting.
 
 ## Legacy files
 
-`fold1.py`, `fold2.py`, `models.py`, `custom_trainer.py`, `metrics.py`,
-`data_loader.py`, and `utils.py` are retained unchanged only as provenance for
-the original implementation. The new `train_model.py` does not import them.
-Use the `decoder_va/` package and the commands in this README for all new runs.
+The original encoder implementation is preserved together under
+`../legacy/original_va_model/`. The GazeReward source reference is preserved
+under `../legacy/gaze_reward_reference/`. Neither directory is imported by the
+active `train_model.py`; use the `decoder_va/` package and the commands in this
+README for every current run.

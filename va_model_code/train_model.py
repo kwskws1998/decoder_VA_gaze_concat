@@ -3,19 +3,20 @@
 from __future__ import annotations
 
 import argparse
-from datetime import datetime
 from importlib.metadata import PackageNotFoundError, version
 import inspect
 import json
 import math
 from pathlib import Path
 import platform
+import re
 from typing import Sequence
 
 import numpy as np
 import torch
 from transformers import TrainingArguments, set_seed
 
+from decoder_va.contracts import LOSS_CHOICES, MODEL_ALIASES
 from decoder_va.dataset import TokenizedVADataset, VABatchCollator, load_auto_tokenizer
 from decoder_va.downloads import sha256_file
 from decoder_va.evaluation import (
@@ -45,11 +46,13 @@ from decoder_va.model import (
     OUTPUT_ACTIVATION,
     build_qwen_va_model,
 )
+from decoder_va.paths import (
+    RESULTS_ROOT,
+    default_run_name,
+    resolve_run_directory,
+    validate_run_name,
+)
 from decoder_va.trainer import VARegressionTrainer
-
-
-MODEL_ALIASES = ("qwen3.5-0.8b", "qwen")
-LOSS_CHOICES = ("mse", "ccc", "mse+ccc")
 
 
 def _build_parser() -> argparse.ArgumentParser:
@@ -103,7 +106,13 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--et-cache-size", type=int, default=70000)
     parser.add_argument("--data-dir", default="data")
-    parser.add_argument("--output-dir")
+    parser.add_argument(
+        "--run-name",
+        help=(
+            "One directory name created under the repository-root results/ "
+            "directory. A condition-aware name is generated when omitted."
+        ),
+    )
     parser.add_argument("--exclude-dataset", action="append", default=[])
     parser.add_argument("--no-iemocap", action="store_true")
     parser.add_argument(
@@ -178,6 +187,43 @@ def _validate_args(args: argparse.Namespace) -> None:
     gaze_feature_indices = et2_feature_indices_from_names(args.gaze_features)
     args.gaze_feature_indices = gaze_feature_indices
     args.gaze_features = et2_feature_names_from_indices(gaze_feature_indices)
+    if args.run_name:
+        args.run_name = validate_run_name(args.run_name)
+        normalized_run_name = args.run_name.lower()
+        run_name_tokens = set(re.findall(r"[a-z0-9]+", normalized_run_name))
+        if "baseline" in run_name_tokens and args.gaze_fusion != "none":
+            raise ValueError(
+                "--run-name says baseline but --gaze-fusion enables gaze."
+            )
+        if "gaze" in run_name_tokens and args.gaze_fusion == "none":
+            raise ValueError(
+                "--run-name says gaze but --gaze-fusion is none."
+            )
+        if "full" in run_name_tokens and args.finetuning_mode != "full":
+            raise ValueError(
+                "--run-name says full but --finetuning-mode is not full."
+            )
+        if "lora" in run_name_tokens and args.finetuning_mode != "lora":
+            raise ValueError(
+                "--run-name says lora but --finetuning-mode is not lora."
+            )
+        effective_no_iemocap = args.no_iemocap or args.no_ieomcap
+        if "no_iemocap" in normalized_run_name and not effective_no_iemocap:
+            raise ValueError(
+                "--run-name says no_iemocap but the exclusion flag is absent."
+            )
+        named_seeds = {
+            int(value)
+            for value in re.findall(
+                r"(?:^|[_-])seed([0-9]+)(?:$|[_-])",
+                normalized_run_name,
+            )
+        }
+        if named_seeds and named_seeds != {int(args.seed)}:
+            raise ValueError(
+                f"--run-name seed tag {sorted(named_seeds)} does not match "
+                f"--seed {args.seed}."
+            )
     if args.loss is None and not (args.dry_run or args.list_datasets):
         raise ValueError(
             "Training loss must be explicit; choose one of: "
@@ -245,12 +291,19 @@ def _runtime_precision(use_cpu: bool) -> tuple[torch.dtype, bool, bool]:
     return torch.float16, False, True
 
 
-def _default_output_dir() -> Path:
-    """Create a collision-resistant run directory name."""
+def _resolve_output_dir(args: argparse.Namespace) -> Path:
+    """Resolve the only allowed run location under repository-root results."""
 
-    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    hostname = platform.node() or "unknown-host"
-    return Path("Preds") / f"{timestamp}_{hostname}_qwen35"
+    if not args.run_name:
+        args.run_name = default_run_name(
+            model=args.model,
+            finetuning_mode=args.finetuning_mode,
+            gaze_fusion=args.gaze_fusion,
+            gaze_features=args.gaze_features,
+            seed=args.seed,
+            no_iemocap=args.no_iemocap or args.no_ieomcap,
+        )
+    return resolve_run_directory(args.run_name)
 
 
 def _json_ready(value):
@@ -553,11 +606,7 @@ def run(args: argparse.Namespace) -> Path | None:
         raise ValueError("Dataset exclusions left at least one fold empty.")
     if args.dry_run:
         _, bf16, fp16 = _runtime_precision(args.use_cpu)
-        dry_run_root = (
-            Path(args.output_dir)
-            if args.output_dir
-            else Path("Preds") / "dry_run"
-        )
+        dry_run_root = _resolve_output_dir(args)
         for held_out_fold in args.held_out_folds:
             fold_seed = int(args.seed) + int(held_out_fold) - 1
             _training_arguments(
@@ -577,10 +626,11 @@ def run(args: argparse.Namespace) -> Path | None:
             "Dry run complete; Trainer arguments are compatible and no tokenizer "
             "or model was downloaded."
         )
+        print(f"Planned run directory: {dry_run_root}")
         return None
 
     assert loss_name is not None
-    output_dir = Path(args.output_dir) if args.output_dir else _default_output_dir()
+    output_dir = _resolve_output_dir(args)
     if (
         output_dir.exists()
         and any(output_dir.iterdir())
@@ -622,6 +672,7 @@ def run(args: argparse.Namespace) -> Path | None:
         "output_dim": 2,
         "dtype": dtype,
         "effective_output_dir": str(output_dir.resolve()),
+        "results_root": str(RESULTS_ROOT.resolve()),
         "python_version": platform.python_version(),
         "torch_version": torch.__version__,
         "transformers_version": _package_version("transformers"),

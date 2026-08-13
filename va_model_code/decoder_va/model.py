@@ -30,6 +30,9 @@ DEFAULT_DECODER_REVISION = "dc7cdfe2ee4154fa7e30f5b51ca41bfa40174e68"
 DEFAULT_LORA_RANK = 16
 DEFAULT_LORA_ALPHA = 32
 DEFAULT_LORA_DROPOUT = 0.05
+DEFAULT_GAZE_PROJECTION_DIM = 128
+DEFAULT_GAZE_PROJECTION_DROPOUT = (0.1, 0.3)
+DEFAULT_CLASSIFIER_DROPOUT = 0.1
 FINETUNING_MODES = ("lora", "full")
 GAZE_FUSIONS = ("none", "prefix-concat")
 GAZE_PREFIX_ORDER = "eye_start, compact_selected_gaze, eye_end, text"
@@ -96,9 +99,12 @@ class DecoderVARegressor(nn.Module):
         *,
         gaze_provider: ET2GazeProvider | Any | None = None,
         gaze_fusion: str = "prefix-concat",
-        gaze_projection_dim: int = 128,
-        gaze_projection_dropout: tuple[float, float] = (0.1, 0.3),
-        classifier_dropout: float = 0.1,
+        gaze_projection_dim: int = DEFAULT_GAZE_PROJECTION_DIM,
+        gaze_projection_dropout: tuple[
+            float,
+            float,
+        ] = DEFAULT_GAZE_PROJECTION_DROPOUT,
+        classifier_dropout: float = DEFAULT_CLASSIFIER_DROPOUT,
     ) -> None:
         super().__init__()
         self.backbone = backbone
@@ -534,9 +540,12 @@ def build_qwen_va_model(
     lora_rank: int = DEFAULT_LORA_RANK,
     lora_alpha: int = DEFAULT_LORA_ALPHA,
     lora_dropout: float = DEFAULT_LORA_DROPOUT,
-    gaze_projection_dim: int = 128,
-    gaze_projection_dropout: tuple[float, float] = (0.1, 0.3),
-    classifier_dropout: float = 0.1,
+    gaze_projection_dim: int = DEFAULT_GAZE_PROJECTION_DIM,
+    gaze_projection_dropout: tuple[
+        float,
+        float,
+    ] = DEFAULT_GAZE_PROJECTION_DROPOUT,
+    classifier_dropout: float = DEFAULT_CLASSIFIER_DROPOUT,
     attn_implementation: str | None = None,
 ) -> DecoderVARegressor:
     """Construct the selected Qwen VA model and optional pinned ET2 provider."""

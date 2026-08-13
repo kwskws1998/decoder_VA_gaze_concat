@@ -75,6 +75,7 @@ def test_cli_defaults_to_prefix_and_requires_explicit_training_loss():
     assert defaults.finetuning_mode == "lora"
     assert defaults.group_by_length is True
     assert defaults.loss is None
+    assert defaults.run_name is None
     with pytest.raises(ValueError, match="must be explicit"):
         train_model_module._validate_args(defaults)
     train_model_module._validate_args(parser.parse_args(["--dry-run"]))
@@ -84,6 +85,8 @@ def test_cli_defaults_to_prefix_and_requires_explicit_training_loss():
         parser.parse_args(["qwen3.5-0.8b", "heteroscedastic+ccc"])
     with pytest.raises(SystemExit):
         parser.parse_args(["--finetuning-mode", "adapter"])
+    with pytest.raises(SystemExit):
+        parser.parse_args(["--output-dir", "Preds/old-layout"])
 
 
 def test_cli_resolves_mode_specific_learning_rates():
@@ -173,6 +176,69 @@ def test_cli_canonicalizes_named_gaze_subsets_and_rejects_duplicates():
     )
     with pytest.raises(ValueError, match="duplicates"):
         train_model_module._validate_args(duplicate_args)
+
+
+def test_cli_rejects_misleading_condition_names() -> None:
+    parser = train_model_module._build_parser()
+    gaze_named_baseline = parser.parse_args(
+        [
+            "qwen3.5-0.8b",
+            "mse",
+            "--gaze-fusion",
+            "prefix-concat",
+            "--run-name",
+            "paper7_full_baseline_seed42",
+        ]
+    )
+    baseline_named_gaze = parser.parse_args(
+        [
+            "qwen3.5-0.8b",
+            "mse",
+            "--gaze-fusion",
+            "none",
+            "--run-name",
+            "paper7_full_gaze_TRT_seed42",
+        ]
+    )
+    lora_named_full = parser.parse_args(
+        [
+            "qwen3.5-0.8b",
+            "mse",
+            "--finetuning-mode",
+            "lora",
+            "--run-name",
+            "paper7_full_gaze_seed42",
+        ]
+    )
+    included_named_excluded = parser.parse_args(
+        [
+            "qwen3.5-0.8b",
+            "mse",
+            "--run-name",
+            "paper7_no_iemocap_gaze_seed42",
+        ]
+    )
+    wrong_seed = parser.parse_args(
+        [
+            "qwen3.5-0.8b",
+            "mse",
+            "--seed",
+            "43",
+            "--run-name",
+            "paper7_gaze_seed42",
+        ]
+    )
+
+    with pytest.raises(ValueError, match="says baseline"):
+        train_model_module._validate_args(gaze_named_baseline)
+    with pytest.raises(ValueError, match="says gaze"):
+        train_model_module._validate_args(baseline_named_gaze)
+    with pytest.raises(ValueError, match="says full"):
+        train_model_module._validate_args(lora_named_full)
+    with pytest.raises(ValueError, match="exclusion flag is absent"):
+        train_model_module._validate_args(included_named_excluded)
+    with pytest.raises(ValueError, match="seed tag"):
+        train_model_module._validate_args(wrong_seed)
 
 
 @pytest.mark.parametrize("warmup_ratio", (-0.01, 1.0))

@@ -336,6 +336,30 @@ python train_model.py qwen3.5-0.8b mse \
   --gaze-fusion none
 ```
 
+Explicit precision is selected with `--precision {auto,bf16,fp16,fp32}`. The
+default `auto` uses BF16 on a BF16-capable CUDA GPU. An FP32 gaze run must pass
+`--precision fp32`; this loads Qwen, the trainable gaze projector, and the VA
+head in FP32, disables Trainer BF16/FP16 autocast, and explicitly disables TF32.
+ET2 inference and its raw features are already FP32.
+
+Use a smaller physical batch for the higher-memory FP32 condition while keeping
+effective batch size 16:
+
+```bash
+python train_model.py qwen3.5-0.8b mse \
+  --data-dir data \
+  --finetuning-mode lora \
+  --precision fp32 \
+  --gaze-fusion prefix-concat \
+  --gaze-features TRT \
+  --no-iemocap \
+  --train-batch-size 2 \
+  --eval-batch-size 2 \
+  --gradient-accumulation-steps 8 \
+  --gradient-checkpointing \
+  --run-name english7_no_iemocap_qwen_lora_gaze_TRT_fp32_seed42
+```
+
 Dataset and Trainer-API validation without tokenizer or model downloads:
 
 ```bash

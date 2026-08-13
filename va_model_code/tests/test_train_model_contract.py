@@ -73,6 +73,7 @@ def test_cli_defaults_to_prefix_and_requires_explicit_training_loss():
     assert defaults.gaze_fusion == "prefix-concat"
     assert defaults.gaze_features == ("TRT",)
     assert defaults.finetuning_mode == "lora"
+    assert defaults.precision == "auto"
     assert defaults.group_by_length is True
     assert defaults.loss is None
     assert defaults.run_name is None
@@ -117,6 +118,57 @@ def test_cli_resolves_mode_specific_learning_rates():
     assert full_args.lora_alpha is None
     assert full_args.lora_dropout is None
     train_model_module._validate_args(full_args)
+
+
+def test_runtime_precision_resolves_explicit_fp32_and_cuda_modes(monkeypatch):
+    cuda = train_model_module.torch.cuda
+    monkeypatch.setattr(cuda, "is_available", lambda: True)
+    monkeypatch.setattr(cuda, "is_bf16_supported", lambda: True)
+
+    assert train_model_module._runtime_precision(False, "fp32") == (
+        train_model_module.torch.float32,
+        False,
+        False,
+    )
+    assert train_model_module._runtime_precision(False, "bf16") == (
+        train_model_module.torch.bfloat16,
+        True,
+        False,
+    )
+    assert train_model_module._runtime_precision(False, "fp16") == (
+        train_model_module.torch.float16,
+        False,
+        True,
+    )
+
+
+def test_runtime_precision_rejects_mixed_precision_without_cuda(monkeypatch):
+    monkeypatch.setattr(train_model_module.torch.cuda, "is_available", lambda: False)
+
+    assert train_model_module._runtime_precision(False, "fp32") == (
+        train_model_module.torch.float32,
+        False,
+        False,
+    )
+    with pytest.raises(ValueError, match="requires CUDA"):
+        train_model_module._runtime_precision(False, "bf16")
+
+
+def test_cli_rejects_precision_run_name_mismatch():
+    parser = train_model_module._build_parser()
+    args = parser.parse_args(
+        [
+            "qwen3.5-0.8b",
+            "mse",
+            "--precision",
+            "fp32",
+            "--run-name",
+            "qwen_lora_gaze_bf16_seed42",
+        ]
+    )
+
+    with pytest.raises(ValueError, match="precision tag"):
+        train_model_module._validate_args(args)
 
 
 def test_cli_rejects_inapplicable_or_invalid_lora_settings():
@@ -326,12 +378,42 @@ def test_training_arguments_are_compatible_across_transformers_versions(
     assert "overwrite_output_dir" not in captured_kwargs
     assert "save_safetensors" not in captured_kwargs
     assert captured_kwargs["seed"] == 43
+    assert captured_kwargs["tf32"] is None
     assert "data_seed" not in captured_kwargs
     assert captured_kwargs[expected_sampling_argument] == expected_sampling_value
     assert (
         {"group_by_length", "train_sampling_strategy"}
         - {expected_sampling_argument}
     ).isdisjoint(captured_kwargs)
+
+
+def test_fp32_training_arguments_disable_tf32(monkeypatch, tmp_path):
+    captured_kwargs = {}
+    monkeypatch.setattr(train_model_module, "_package_version", lambda name: "5.14.1")
+    monkeypatch.setattr(
+        train_model_module,
+        "_training_argument_names",
+        lambda: frozenset({"train_sampling_strategy", "tf32"}),
+    )
+    monkeypatch.setattr(
+        train_model_module,
+        "TrainingArguments",
+        lambda **kwargs: captured_kwargs.update(kwargs) or captured_kwargs,
+    )
+    args = train_model_module._build_parser().parse_args(
+        ["qwen3.5-0.8b", "mse", "--precision", "fp32"]
+    )
+
+    train_model_module._training_arguments(
+        args,
+        tmp_path / "heldout_fold1",
+        bf16=False,
+        fp16=False,
+    )
+
+    assert captured_kwargs["bf16"] is False
+    assert captured_kwargs["fp16"] is False
+    assert captured_kwargs["tf32"] is False
 
 
 def test_transformers_v5_can_disable_length_grouping(monkeypatch, tmp_path):

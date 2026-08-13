@@ -55,6 +55,9 @@ from decoder_va.paths import (
 from decoder_va.trainer import VARegressionTrainer
 
 
+PRECISION_MODES = ("auto", "bf16", "fp16", "fp32")
+
+
 def _build_parser() -> argparse.ArgumentParser:
     """Define the decoder training command-line contract."""
 
@@ -80,6 +83,15 @@ def _build_parser() -> argparse.ArgumentParser:
         help=(
             "Train all Qwen text-backbone parameters with 'full' or use "
             "all-linear PEFT adapters with 'lora' (default: lora)."
+        ),
+    )
+    parser.add_argument(
+        "--precision",
+        choices=PRECISION_MODES,
+        default="auto",
+        help=(
+            "Training precision. 'auto' selects BF16 on a supported CUDA GPU, "
+            "otherwise FP16 on CUDA or FP32 without CUDA."
         ),
     )
     parser.add_argument(
@@ -207,6 +219,12 @@ def _validate_args(args: argparse.Namespace) -> None:
             raise ValueError(
                 "--run-name says lora but --finetuning-mode is not lora."
             )
+        named_precisions = run_name_tokens.intersection({"bf16", "fp16", "fp32"})
+        if named_precisions and named_precisions != {args.precision}:
+            raise ValueError(
+                f"--run-name precision tag {sorted(named_precisions)} does not match "
+                f"--precision {args.precision}."
+            )
         effective_no_iemocap = args.no_iemocap or args.no_ieomcap
         if "no_iemocap" in normalized_run_name and not effective_no_iemocap:
             raise ValueError(
@@ -281,11 +299,34 @@ def _validate_args(args: argparse.Namespace) -> None:
         )
 
 
-def _runtime_precision(use_cpu: bool) -> tuple[torch.dtype, bool, bool]:
-    """Choose a conservative dtype for CPU or the active CUDA GPU."""
+def _runtime_precision(
+    use_cpu: bool,
+    precision: str = "auto",
+) -> tuple[torch.dtype, bool, bool]:
+    """Resolve model dtype and Trainer mixed-precision flags."""
 
-    if use_cpu or not torch.cuda.is_available():
+    normalized = str(precision).strip().lower()
+    if normalized not in PRECISION_MODES:
+        raise ValueError(
+            f"Unknown precision {precision!r}; choose one of {PRECISION_MODES}."
+        )
+    cuda_available = torch.cuda.is_available() and not use_cpu
+    if not cuda_available:
+        if normalized not in {"auto", "fp32"}:
+            raise ValueError(
+                f"--precision {normalized} requires CUDA; use --precision fp32 "
+                "for CPU execution."
+            )
         return torch.float32, False, False
+
+    if normalized == "fp32":
+        return torch.float32, False, False
+    if normalized == "bf16":
+        if not torch.cuda.is_bf16_supported():
+            raise ValueError("--precision bf16 requires a BF16-capable CUDA GPU.")
+        return torch.bfloat16, True, False
+    if normalized == "fp16":
+        return torch.float16, False, True
     if torch.cuda.is_bf16_supported():
         return torch.bfloat16, True, False
     return torch.float16, False, True
@@ -544,6 +585,7 @@ def _training_arguments(
         "seed": effective_seed,
         "bf16": bf16,
         "fp16": fp16,
+        "tf32": False if args.precision == "fp32" else None,
         "use_cpu": args.use_cpu,
         "gradient_checkpointing": args.gradient_checkpointing,
         "gradient_checkpointing_kwargs": {"use_reentrant": False},
@@ -605,7 +647,7 @@ def run(args: argparse.Namespace) -> Path | None:
     if any(frame.empty for frame in filtered.folds.values()):
         raise ValueError("Dataset exclusions left at least one fold empty.")
     if args.dry_run:
-        _, bf16, fp16 = _runtime_precision(args.use_cpu)
+        dtype, bf16, fp16 = _runtime_precision(args.use_cpu, args.precision)
         dry_run_root = _resolve_output_dir(args)
         for held_out_fold in args.held_out_folds:
             fold_seed = int(args.seed) + int(held_out_fold) - 1
@@ -620,6 +662,7 @@ def run(args: argparse.Namespace) -> Path | None:
         print(f"Excluded: {', '.join(filtered.excluded_names) or '<none>'}")
         print(
             f"Fine-tuning mode: {args.finetuning_mode}; "
+            f"precision: {args.precision} -> {str(dtype).replace('torch.', '')}; "
             f"learning rate: {args.learning_rate:g}"
         )
         print(
@@ -648,7 +691,7 @@ def run(args: argparse.Namespace) -> Path | None:
     )
     tokenizer.padding_side = "right"
     collator = VABatchCollator(tokenizer, pad_to_multiple_of=8)
-    dtype, bf16, fp16 = _runtime_precision(args.use_cpu)
+    dtype, bf16, fp16 = _runtime_precision(args.use_cpu, args.precision)
     active_feature_indices = (
         tuple(args.gaze_feature_indices)
         if args.gaze_fusion == "prefix-concat"

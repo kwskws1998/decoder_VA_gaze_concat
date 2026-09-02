@@ -2701,6 +2701,7 @@ def build_prediction_report(
         "token_count_before_truncation",
         "was_truncated",
         "was_truncated_at_checkpoint_max_length",
+        "was_truncated_at_evaluation_max_length",
         "overlap_with_heldout_fold1_training",
         "overlap_with_heldout_fold2_training",
         "overlap_with_any_finetuning_text",
@@ -2772,6 +2773,20 @@ def _write_external_evaluation_payload(
             for name, predictions in member_predictions.items()
         },
     }
+    protocol_metric_fields = (
+        "evaluation_protocol_classification",
+        "primary_benchmark_result",
+        "saved_checkpoint_max_length",
+        "evaluation_max_length",
+        "max_length_override",
+    )
+    protocol_metric_metadata = {
+        field: evaluation_manifest[field]
+        for field in protocol_metric_fields
+        if field in evaluation_manifest
+    }
+    if protocol_metric_metadata:
+        metrics["evaluation_protocol"] = protocol_metric_metadata
     with open(output / "metrics.json", "w", encoding="utf-8") as output_file:
         json.dump(_json_ready(metrics), output_file, indent=2, sort_keys=True)
         output_file.write("\n")

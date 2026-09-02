@@ -813,6 +813,52 @@ saved `max_length` (currently 200). Inference still uses that immutable saved
 limit. The audit is label-free and is not performed by `--dry-run`, because a
 dry run deliberately does not load the saved tokenizer.
 
+If the primary 200-token run shows substantial truncation, run a separately
+labeled post-hoc sensitivity analysis at 512 tokens. This changes inference
+preprocessing relative to training, so the evaluator marks
+`primary_benchmark_result=false` in both `metrics.json` and
+`external_evaluation_manifest.json`. It does not change model weights, labels,
+member selection, or ensemble weights. The 512-token ceiling matches the frozen
+ET2 input limit and keeps the baseline/TRT comparison symmetric.
+
+```bash
+LENGTH_STAMP="$(date +%Y%m%d_%H%M%S)"
+LENGTH_ROOT="/workspace/results/external/seed43_bf16_idest_maxlen512_${LENGTH_STAMP}"
+mkdir -p "$LENGTH_ROOT"
+
+python evaluate_external.py idest-english \
+  --run-dir "$BASE_RUN" \
+  --training-data-dir "$TRAIN_DATA" \
+  --raw-dir "$IDEST_RAW" \
+  --download \
+  --no-preflight-check \
+  --precision checkpoint \
+  --device cuda \
+  --batch-size 8 \
+  --max-length 512 \
+  --output-dir "$LENGTH_ROOT/baseline"
+```
+
+```bash
+python evaluate_external.py idest-english \
+  --run-dir "$TRT_RUN" \
+  --training-data-dir "$TRAIN_DATA" \
+  --raw-dir "$IDEST_RAW" \
+  --download \
+  --no-preflight-check \
+  --precision checkpoint \
+  --device cuda \
+  --batch-size 8 \
+  --max-length 512 \
+  --output-dir "$LENGTH_ROOT/trt"
+```
+
+Use a fresh `LENGTH_ROOT` for every attempt because completed and partial
+output directories are never overwritten. If 512-token TRT inference exceeds
+available memory, rerun both conditions with `--batch-size 4`; batch size does
+not change predictions under evaluation mode except for possible negligible
+floating-point kernel differences.
+
 ### SemEval-2026 Task 2 Subtask 1: official test only
 
 The SemEval paper states, word for word:

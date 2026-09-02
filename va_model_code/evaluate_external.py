@@ -43,6 +43,7 @@ from decoder_va.model import load_saved_decoder_va_model
 SCRIPT_DIR = Path(__file__).resolve().parent
 PRECISION_CHOICES = ("checkpoint",)
 DEVICE_CHOICES = ("auto", "cuda", "cpu")
+IDEST_MAX_LENGTH_SENSITIVITY_LIMIT = 512
 
 
 def _add_common_arguments(parser: argparse.ArgumentParser) -> None:
@@ -69,7 +70,8 @@ def _add_common_arguments(parser: argparse.ArgumentParser) -> None:
         "--output-dir",
         help=(
             "New result directory. Default: <run-dir>/external_benchmarks/"
-            "<benchmark>/<split>. Existing paths are never overwritten."
+            "<benchmark>/<split>. IDEST max-length sensitivity runs append a "
+            "maxlen suffix. Existing paths are never overwritten."
         ),
     )
     parser.add_argument(
@@ -208,6 +210,15 @@ def _build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Download the pinned public IDEST CSV from OSF into --raw-dir.",
     )
+    idest.add_argument(
+        "--max-length",
+        type=int,
+        help=(
+            "IDEST-only post-hoc length-sensitivity override. It must exceed the "
+            "saved checkpoint max_length and cannot exceed 512, the frozen ET2 "
+            "input limit. Runs using this option are marked non-primary."
+        ),
+    )
 
     semeval = subparsers.add_parser(
         SEMEVAL_NAME,
@@ -247,6 +258,14 @@ def _validate_args(args: argparse.Namespace) -> None:
         raise ValueError("--et-cache-size cannot be negative.")
     if args.preflight_rows <= 0:
         raise ValueError("--preflight-rows must be positive.")
+    requested_max_length = getattr(args, "max_length", None)
+    if requested_max_length is not None and not (
+        0 < requested_max_length <= IDEST_MAX_LENGTH_SENSITIVITY_LIMIT
+    ):
+        raise ValueError(
+            "--max-length must be in [1, "
+            f"{IDEST_MAX_LENGTH_SENSITIVITY_LIMIT}]."
+        )
 
 
 def _load_external_benchmark(args: argparse.Namespace):
@@ -649,10 +668,21 @@ def _cuda_memory_snapshot(device: torch.device) -> dict[str, Any]:
     }
 
 
-def _default_output_dir(run_dir: Path, benchmark: str, split: str) -> Path:
+def _default_output_dir(
+    run_dir: Path,
+    benchmark: str,
+    split: str,
+    *,
+    max_length_override: int | None = None,
+) -> Path:
     """Anchor external results under the immutable source training run by default."""
 
-    return run_dir / "external_benchmarks" / benchmark / split
+    output_name = (
+        split
+        if max_length_override is None
+        else f"{split}-maxlen{max_length_override}-sensitivity"
+    )
+    return run_dir / "external_benchmarks" / benchmark / output_name
 
 
 def run(args: argparse.Namespace) -> Path | None:
@@ -666,6 +696,18 @@ def run(args: argparse.Namespace) -> Path | None:
     )
     benchmark = _load_external_benchmark(args)
     reject_benchmark_training_sources(members, benchmark.name)
+    saved_max_length = int(members[0].run_manifest["max_length"])
+    requested_max_length = getattr(args, "max_length", None)
+    if requested_max_length is not None:
+        if benchmark.name != IDEST_NAME:
+            raise ValueError("--max-length is available only for idest-english.")
+        if requested_max_length <= saved_max_length:
+            raise ValueError(
+                "IDEST --max-length sensitivity override must exceed the saved "
+                f"checkpoint max_length={saved_max_length}."
+            )
+    evaluation_max_length = requested_max_length or saved_max_length
+    is_length_sensitivity = requested_max_length is not None
 
     needs_training_folds = bool(args.require_overlap_audit or args.preflight_check)
     training_data_dir = None
@@ -696,7 +738,12 @@ def run(args: argparse.Namespace) -> Path | None:
     output_dir = (
         Path(args.output_dir).expanduser().resolve()
         if args.output_dir
-        else _default_output_dir(run_dir, benchmark.name, benchmark.split)
+        else _default_output_dir(
+            run_dir,
+            benchmark.name,
+            benchmark.split,
+            max_length_override=requested_max_length,
+        )
     )
     if output_dir.exists():
         raise FileExistsError(
@@ -714,6 +761,13 @@ def run(args: argparse.Namespace) -> Path | None:
         "selection, fixed two-member arithmetic mean."
     )
     print(f"Model input context: {benchmark.context_policy}.")
+    if is_length_sensitivity:
+        print(
+            "WARNING: post-hoc IDEST length-sensitivity run; this is not the "
+            "prespecified primary benchmark result. "
+            f"Saved max_length={saved_max_length}; evaluation "
+            f"max_length={evaluation_max_length}."
+        )
     if runtime_compatibility["mismatches"]:
         mismatch_names = ", ".join(runtime_compatibility["mismatches"])
         warning_suffix = (
@@ -730,7 +784,8 @@ def run(args: argparse.Namespace) -> Path | None:
         print(
             f"Planned inference device={args.device}; recorded precision="
             f"{recorded_precision}; batch_size={batch_size}; "
-            f"max_length={members[0].run_manifest['max_length']}."
+            f"saved_max_length={saved_max_length}; "
+            f"evaluation_max_length={evaluation_max_length}."
         )
         print(f"Dry run complete. Planned output: {output_dir}")
         return None
@@ -743,7 +798,8 @@ def run(args: argparse.Namespace) -> Path | None:
     )
     print(
         f"Inference device={device}; precision={precision_name}; batch_size={batch_size}; "
-        f"max_length={members[0].run_manifest['max_length']}."
+        f"saved_max_length={saved_max_length}; "
+        f"evaluation_max_length={evaluation_max_length}."
     )
 
     if device.type == "cuda":
@@ -786,22 +842,35 @@ def run(args: argparse.Namespace) -> Path | None:
             tokenization_audit, token_counts, was_truncated = _tokenizer_truncation_audit(
                 tokenizer,
                 benchmark.frame["text"].tolist(),
-                max_length=int(member.run_manifest["max_length"]),
+                max_length=saved_max_length,
             )
+            evaluation_truncated = token_counts > evaluation_max_length
             tokenization_audit.update(
                 {
                     "tokenizer_member": member.name,
                     "tokenizer_model_dir": str(member.model_dir),
+                    "evaluation_max_length": int(evaluation_max_length),
+                    "evaluation_truncated_rows": int(evaluation_truncated.sum()),
+                    "evaluation_truncated_fraction": float(
+                        evaluation_truncated.mean()
+                    ),
                 }
             )
             audited_frame = audited_frame.copy()
             audited_frame["token_count_before_truncation"] = token_counts
             audited_frame["was_truncated_at_checkpoint_max_length"] = was_truncated
+            audited_frame["was_truncated_at_evaluation_max_length"] = (
+                evaluation_truncated
+            )
             tokenizer_audit_completed = True
             print(
                 "Tokenizer truncation audit: "
                 f"{tokenization_audit['truncated_rows']:,}/{tokenization_audit['rows']:,} "
-                f"rows exceed max_length={tokenization_audit['checkpoint_max_length']}."
+                f"rows exceed saved max_length="
+                f"{tokenization_audit['checkpoint_max_length']}; "
+                f"{tokenization_audit['evaluation_truncated_rows']:,}/"
+                f"{tokenization_audit['rows']:,} exceed evaluation max_length="
+                f"{tokenization_audit['evaluation_max_length']}."
             )
         if args.preflight_check:
             if fold_frames is None:
@@ -832,7 +901,7 @@ def run(args: argparse.Namespace) -> Path | None:
             model,
             tokenizer,
             benchmark.frame["text"].tolist(),
-            max_length=int(member.run_manifest["max_length"]),
+            max_length=evaluation_max_length,
             batch_size=batch_size,
             device=device,
             dtype=dtype,
@@ -867,7 +936,26 @@ def run(args: argparse.Namespace) -> Path | None:
         "cuda_autocast": bool(autocast_enabled),
         "tf32_enabled": False,
         "batch_size": int(batch_size),
-        "max_length_source": "saved run manifest",
+        "saved_checkpoint_max_length": saved_max_length,
+        "evaluation_max_length": int(evaluation_max_length),
+        "max_length_override": requested_max_length,
+        "max_length_source": (
+            "IDEST CLI post-hoc sensitivity override"
+            if is_length_sensitivity
+            else "saved run manifest"
+        ),
+        "evaluation_protocol_classification": (
+            "post_hoc_length_sensitivity"
+            if is_length_sensitivity
+            else "prespecified_primary"
+        ),
+        "primary_benchmark_result": not is_length_sensitivity,
+        "protocol_change": (
+            "external text truncation length only; no weights, labels, calibration, "
+            "member selection, or ensemble weights changed"
+            if is_length_sensitivity
+            else None
+        ),
         "input_context_policy": benchmark.context_policy,
         "tokenization_truncation_audit": tokenization_audit,
         "et_cache_size_override": args.et_cache_size,

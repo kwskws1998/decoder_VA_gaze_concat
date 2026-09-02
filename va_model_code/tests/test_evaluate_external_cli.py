@@ -229,6 +229,41 @@ def test_parser_requires_raw_dir_for_new_text_benchmarks(benchmark: str) -> None
     assert error.value.code == 2
 
 
+def test_idest_parser_accepts_only_bounded_length_sensitivity_override() -> None:
+    parser = evaluate_external._build_parser()
+    args = parser.parse_args(
+        [
+            "idest-english",
+            "--run-dir",
+            "run",
+            "--raw-dir",
+            "raw",
+            "--max-length",
+            "512",
+        ]
+    )
+    assert args.max_length == 512
+    evaluate_external._validate_args(args)
+
+    args.max_length = 513
+    with pytest.raises(ValueError, match=r"must be in \[1, 512\]"):
+        evaluate_external._validate_args(args)
+
+    with pytest.raises(SystemExit) as error:
+        parser.parse_args(
+            [
+                "semeval-2026-task2-subtask1",
+                "--run-dir",
+                "run",
+                "--raw-dir",
+                "raw",
+                "--max-length",
+                "512",
+            ]
+        )
+    assert error.value.code == 2
+
+
 def test_new_text_benchmark_dispatch_is_explicit(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -784,3 +819,161 @@ def test_full_semeval_run_audits_truncation_and_reports_official_score(
     assert predictions["token_count_before_truncation"].tolist() == [1, 1, 1, 1]
     assert not predictions["was_truncated_at_checkpoint_max_length"].any()
     assert "Official ensemble r_composite" in capsys.readouterr().out
+
+
+def test_full_idest_length_sensitivity_uses_override_and_marks_nonprimary(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    run_dir = tmp_path / "portable-bundle"
+    run_dir.mkdir()
+    output_dir = tmp_path / "idest-maxlen512"
+    frame = pd.DataFrame(
+        {
+            "index": ["i0", "i1", "i2"],
+            "benchmark_id": ["i0", "i1", "i2"],
+            "text": ["100", "250", "600"],
+            "text_sha256": ["a", "b", "c"],
+            "is_empty_text": [False] * 3,
+            "dataset_of_origin": ["IDEST English"] * 3,
+            "split": ["all-250-zero-shot-test"] * 3,
+            "idest_code": ["i0", "i1", "i2"],
+            "valence": [0.25, 0.50, 0.75],
+            "arousal": [0.25, 0.50, 0.75],
+            "native_valence": [3.0, 5.0, 7.0],
+            "native_arousal": [3.0, 5.0, 7.0],
+        }
+    )
+    benchmark = ExternalBenchmarkData(
+        name="idest-english",
+        version="fixture",
+        split="all-250-zero-shot-test",
+        frame=frame,
+        native_scale={"valence": (1.0, 9.0), "arousal": (1.0, 9.0)},
+        model_to_native_scale=(8.0, 8.0),
+        model_to_native_offset=(1.0, 1.0),
+        source_manifest={"canonical_contract_verified": True},
+        join_report={"english_story_rows": 3},
+        context_policy="one English translated short story only",
+        prediction_metadata_columns=("idest_code",),
+    )
+    common_manifest = {
+        "data_dir": None,
+        "dtype": "float32",
+        "eval_batch_size": 2,
+        "max_length": 200,
+        "dataset_counts_after_filter": {"Emobank": 4},
+        "finetuning_mode": "full",
+        "gaze_fusion": "none",
+        "gaze_features": [],
+        "et_revision": "fixture",
+    }
+    members = tuple(
+        SimpleNamespace(
+            name=f"heldout_fold{fold}",
+            held_out_fold=fold,
+            training_fold=2 if fold == 1 else 1,
+            model_dir=run_dir / f"heldout_fold{fold}" / "final_model",
+            run_manifest={**common_manifest, "held_out_fold": fold},
+            file_sha256={"model_weights": str(fold) * 64},
+        )
+        for fold in (1, 2)
+    )
+    predicted_max_lengths: list[int] = []
+    captured: dict[str, object] = {}
+
+    monkeypatch.setattr(
+        evaluate_external,
+        "discover_completed_run",
+        lambda path, require_internal_evidence: members,
+    )
+    monkeypatch.setattr(
+        evaluate_external,
+        "load_idest_english",
+        lambda raw_dir, strict_official_contract: benchmark,
+    )
+    monkeypatch.setattr(
+        evaluate_external,
+        "load_saved_decoder_va_model",
+        lambda path, dtype, et_cache_size: (RecordingModel(), LengthAuditTokenizer()),
+    )
+
+    def predict(model, tokenizer, texts, *, max_length, **kwargs):
+        del model, tokenizer, kwargs
+        predicted_max_lengths.append(max_length)
+        return np.full((len(texts), 2), 0.5, dtype=np.float64)
+
+    def write(
+        target,
+        benchmark_value,
+        members_value,
+        member_predictions,
+        ensemble_predictions,
+        *,
+        audited_frame,
+        overlap_report,
+        evaluation_manifest,
+        include_gold_labels,
+    ):
+        del (
+            benchmark_value,
+            members_value,
+            member_predictions,
+            ensemble_predictions,
+            overlap_report,
+            include_gold_labels,
+        )
+        captured["manifest"] = evaluation_manifest
+        captured["frame"] = audited_frame.copy()
+        target = Path(target)
+        target.mkdir()
+        (target / "metrics.json").write_text(
+            '{"ensemble":{"subsets":{"official_all":{"native_scale":'
+            '{"ccc_valence":0.1,"ccc_arousal":0.1,"ccc_mean":0.1}}}}}',
+            encoding="utf-8",
+        )
+        return target
+
+    monkeypatch.setattr(evaluate_external, "_predict_texts", predict)
+    monkeypatch.setattr(evaluate_external, "write_external_evaluation", write)
+    args = evaluate_external._build_parser().parse_args(
+        [
+            "idest-english",
+            "--run-dir",
+            str(run_dir),
+            "--raw-dir",
+            str(tmp_path / "raw"),
+            "--output-dir",
+            str(output_dir),
+            "--max-length",
+            "512",
+            "--device",
+            "cpu",
+            "--no-require-overlap-audit",
+            "--no-preflight-check",
+        ]
+    )
+
+    assert evaluate_external.run(args) == output_dir.resolve()
+    assert predicted_max_lengths == [512, 512]
+    manifest = captured["manifest"]
+    assert manifest["saved_checkpoint_max_length"] == 200
+    assert manifest["evaluation_max_length"] == 512
+    assert manifest["evaluation_protocol_classification"] == (
+        "post_hoc_length_sensitivity"
+    )
+    assert manifest["primary_benchmark_result"] is False
+    audit = manifest["tokenization_truncation_audit"]
+    assert audit["truncated_rows"] == 2
+    assert audit["evaluation_truncated_rows"] == 1
+    audited = captured["frame"]
+    assert audited["was_truncated_at_checkpoint_max_length"].tolist() == [
+        False,
+        True,
+        True,
+    ]
+    assert audited["was_truncated_at_evaluation_max_length"].tolist() == [
+        False,
+        False,
+        True,
+    ]

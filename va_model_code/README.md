@@ -571,6 +571,289 @@ CCC and mean metrics are also reported. Per-dataset reporting is generated only
 for datasets still present after filtering, so exclusions cannot trigger
 hard-coded source lookup failures.
 
+## Frozen external generalization benchmarks
+
+`evaluate_external.py` evaluates an already completed two-fold run on external
+corpora. It has no Trainer, optimizer, scheduler, backward pass, checkpoint
+selection, calibration, or fine-tuning path. OMG-Emotion and MSP-Podcast rows
+are used only after both saved models and their inference contract have already
+been fixed.
+
+The default, strongest input contract is the original server run directory,
+not a results-only review ZIP. The ZIP deliberately omits `model.safetensors`;
+external inference always requires both of these complete directories:
+
+```text
+<run-dir>/heldout_fold1/final_model/
+<run-dir>/heldout_fold2/final_model/
+```
+
+### Hugging Face model upload contract
+
+A raw-text-free Hugging Face bundle can omit every internal prediction table
+that contains fine-tuning text. Its minimum supported layout is:
+
+```text
+<bundle>/
+  training_parameters.json
+  heldout_fold1/
+    run_manifest.json
+    final_model/
+      model.safetensors
+      decoder_va_architecture.json
+      tokenizer_config.json
+      tokenizer payload and companion files saved by Trainer
+  heldout_fold2/
+    run_manifest.json
+    final_model/
+      model.safetensors
+      decoder_va_architecture.json
+      tokenizer_config.json
+      tokenizer payload and companion files saved by Trainer
+```
+
+Copy each `final_model/` directory as a whole. Do not select tokenizer files by
+guessing: `tokenizer_config.json` and at least one real tokenizer payload such
+as `tokenizer.json`, `tokenizer.model`, or `vocab.json` are required, and the
+two fold inventories must match byte for byte. Do not mix folds from different
+seeds, precisions, gaze conditions, or runs.
+
+The raw-text-free bundle deliberately excludes these raw-text or otherwise
+unnecessary artifacts:
+
+```text
+oof_predictions.tsv
+heldout_fold1/predictions.tsv
+heldout_fold2/predictions.tsv
+full_dataset_fold1.csv
+full_dataset_fold2.csv
+checkpoints/
+optimizer and scheduler state
+training_args.bin
+gpu_memory.json
+training logs
+```
+
+The three prediction TSVs contain original fine-tuning text and gold labels.
+Do not place them in a public model repository unless every source license has
+been reviewed for redistribution. A private full-run backup may retain them;
+the default preflight then also requires `oof_metrics.json`,
+`metrics_by_dataset.tsv`, and both fold `metrics.json` files.
+
+A raw-text-free bundle is evaluated explicitly with `--no-preflight-check`. Keep
+the original fold CSVs in an authorized local directory so the independent
+hash and exact-text-overlap audit can still run:
+
+```bash
+python evaluate_external.py omg-emotion \
+  --run-dir /models/<raw-text-free-hf-bundle> \
+  --training-data-dir /secure/paper7_seed42 \
+  --raw-dir data/external_benchmarks/omg-emotion \
+  --no-preflight-check \
+  --device cuda \
+  --output-dir ../results/external/<run-name>/omg-emotion/test
+```
+
+If the fold CSVs cannot be retained, add `--no-require-overlap-audit`; that is
+a weaker portability run and the result manifest records both missing gates.
+The retained JSON manifests can still contain local paths and machine metadata;
+review those fields before a public release. The evaluator rejects symlinked
+model artifacts, so materialize a Hugging Face
+download as ordinary files before passing it as `--run-dir`. The local bundle
+directory may be renamed; its recorded `run_name` must still agree internally
+with `effective_output_dir`. Verify materialization with:
+
+```bash
+find /models/<raw-text-free-hf-bundle> -type l
+```
+
+The command must print nothing. A user checkpoint repository does not need to
+duplicate the pinned Qwen base or ET2 artifacts. Reconstruction still fetches
+`Qwen/Qwen3.5-0.8B-Base` at the saved revision, and gaze runs additionally
+fetch `skboy/et_prediction_2` at the saved revision. An offline machine must
+have those exact snapshots in its local Hugging Face cache.
+
+This custom model is not a standalone `AutoModel.from_pretrained()` package.
+Keep this repository at a committed/tagged revision, record that revision in
+the Hugging Face model card, and install the matching `requirements.txt` before
+evaluation.
+
+The first model was trained on fold 2 and the second on fold 1. The evaluator
+reports both members and a prespecified, unweighted arithmetic mean of their
+`[valence, arousal]` predictions. It never selects a better member or learns
+ensemble weights from external labels. Each `final_model` is the artifact saved
+by the original completed training run; the external evaluator neither
+re-selects it nor uses an OMG/MSP label to alter it.
+
+For a saved gaze-fusion run, “gaze” in this external evaluation means frozen
+ET2 pseudo-TRT predicted solely from each benchmark transcript. It is not eye
+tracking measured from OMG-Emotion or MSP-Podcast participants, and no external
+gold label is supplied to ET2.
+
+The evaluator also reconstructs the original fine-tuning folds, verifies their
+recorded SHA-256 hashes, and reports exact normalized-text overlap. The official
+full test score remains the primary benchmark result; the fine-tuning-novel-text
+subset is a separately labeled contamination diagnostic. Base-model pretraining
+contamination cannot be established from this repository.
+
+### OMG-Emotion test
+
+The implementation pins the official repository commit
+`5931b237e92d68d04931bb932854fac6d9cd6a41` and exact hashes for
+`omg_TestTranscripts.tsv` and `omg_TestVideos_WithLabels.csv`. Despite its
+suffix, the transcript file is parsed as comma-separated CSV. Gold rows are
+left-joined one-to-one on `(video, utterance)` in official label order. All
+2,229 gold rows are retained, including 90 blank transcripts; the seven
+transcript-only rows are recorded but cannot be scored.
+
+The dataset paper states, word for word:
+
+> “The intervals, [0,1] for arousal and [-1,1] for valence”
+
+It also states:
+
+> “each annotation is based on multimodal information”
+
+Source: [The OMG-Emotion Behavior Dataset](https://www2.informatik.uni-hamburg.de/wtm/publications/2018/BCLSSW18/Barros_OMG.pdf).
+
+The current model emits both dimensions on `[0,1]`. The only permitted mapping
+is therefore fixed before evaluation:
+
+```text
+OMG valence prediction = 2 * model valence - 1
+OMG arousal prediction = model arousal
+```
+
+No observed OMG minimum, maximum, mean, validation score, or label distribution
+is used. Each input remains one current utterance transcript; previous OMG
+utterances are not added as context.
+
+First validate everything without loading either model:
+
+```bash
+python evaluate_external.py omg-emotion \
+  --run-dir ../results/<completed-run-name> \
+  --training-data-dir data/paper7_seed42 \
+  --raw-dir data/external_benchmarks/omg-emotion \
+  --download \
+  --dry-run
+```
+
+Then run frozen inference with the checkpoint-recorded precision and batch
+size:
+
+```bash
+python evaluate_external.py omg-emotion \
+  --run-dir ../results/<completed-run-name> \
+  --training-data-dir data/paper7_seed42 \
+  --raw-dir data/external_benchmarks/omg-emotion \
+  --precision checkpoint \
+  --device cuda
+```
+
+Before the external pass, each reloaded model must reproduce 32 persisted
+internal held-out predictions within a dtype-aware tolerance. BF16/FP16 uses
+the same CUDA autocast family as Trainer evaluation; FP32 disables autocast and
+TF32. Failure aborts before external scores are written. The external evaluator
+accepts only `--precision checkpoint`; a post-hoc precision sensitivity run
+cannot occupy or be mistaken for the canonical external-benchmark result.
+
+The primary OMG metric is the official-script-compatible global utterance CCC
+on the native scale. A per-video macro CCC is also written explicitly as a
+secondary, non-official diagnostic.
+
+### MSP-Podcast 2.0 Test1 and Test2
+
+MSP-Podcast is not downloaded by this repository. Obtain version 2.0 through
+the institutional Academic License procedure on the
+[official corpus page](https://www.lab-msp.com/MSP/MSP-Podcast.html), then pass
+the authorized local files directly. No MSP item data should be committed or
+redistributed.
+
+The corpus paper states:
+
+> “We use a Likert scale from 1 to 7”
+
+Source: [The MSP-Podcast Corpus](https://www.lab-msp.com/MSP/publications/Busso_2025.pdf).
+
+The fixed prediction mapping is:
+
+```text
+MSP valence prediction = 1 + 6 * model valence
+MSP arousal prediction = 1 + 6 * model arousal
+```
+
+The loader fixes the official label fields `FileName`, `Split_Set`, `EmoAct`,
+and `EmoVal`; they cannot be changed by the canonical CLI. It accepts an
+authorized transcript CSV/TSV table, a directory of per-utterance TXT files, or
+the local transcript ZIP. Missing IDs, duplicate normalized IDs, blank matched
+transcripts, values outside `[1,7]`, and incomplete version-2.0 split counts
+fail without dropping rows. Only transcript ID/text columns can be overridden
+because transcript packaging can vary across licensed releases; an explicit
+override must exist and every resolved field is recorded.
+
+The corpus paper states, word for word:
+
+> “The test 2 set was collected without the retrieval-based protocol presented in Section III-C.”
+
+Source: [The MSP-Podcast Corpus](https://www.lab-msp.com/MSP/publications/Busso_2025.pdf).
+
+Therefore, run Test2 as the primary retrieval-bias-reduced cross-corpus
+evaluation:
+
+```bash
+python evaluate_external.py msp-podcast \
+  --run-dir ../results/<completed-run-name> \
+  --training-data-dir data/paper7_seed42 \
+  --split test2 \
+  --labels-file /secure/MSP-Podcast-2.0/labels_consensus.csv \
+  --transcripts /secure/MSP-Podcast-2.0/Transcripts.zip \
+  --precision checkpoint \
+  --device cuda
+```
+
+Run Test1 separately as the secondary external evaluation:
+
+```bash
+python evaluate_external.py msp-podcast \
+  --run-dir ../results/<completed-run-name> \
+  --training-data-dir data/paper7_seed42 \
+  --split test1 \
+  --labels-file /secure/MSP-Podcast-2.0/labels_consensus.csv \
+  --transcripts /secure/MSP-Podcast-2.0/Transcripts.zip \
+  --precision checkpoint \
+  --device cuda
+```
+
+Train and Development are intentionally unavailable in this evaluator. Test3
+is also rejected because the official page states:
+
+> “The labels, speaker information, transcription, and forced alignment information have been hidden.”
+
+Test1 and Test2 are never pooled. The reported `ccc_mean_va` averages only
+valence and arousal. It is not the official MSP V/A/D leaderboard score because
+this model has no dominance output.
+
+Each completed external evaluation writes:
+
+```text
+<run-dir>/external_benchmarks/<benchmark>/<split>/
+  predictions.tsv
+  metrics.json
+  overlap_audit.json
+  external_evaluation_manifest.json
+  COMPLETED
+  *_predictions_heldout_fold1.csv
+  *_predictions_heldout_fold2.csv
+  *_predictions_ensemble.csv
+```
+
+`predictions.tsv` excludes transcript text and, by default, gold labels. Add
+`--include-gold-labels` only for a protected local item-level audit. Existing
+external result directories are never overwritten. Files are first written to
+a private sibling staging directory and published only after the `COMPLETED`
+marker is present, so a failed write cannot look like a completed evaluation.
+
 ## Methodological warning
 
 The default split intentionally preserves the old row-level shuffle-and-halves

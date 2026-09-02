@@ -24,6 +24,7 @@ from typing import Any, Iterable, Mapping, Sequence
 
 import numpy as np
 import pandas as pd
+from scipy import stats
 import torch
 from torch.utils.data import Dataset
 
@@ -45,10 +46,37 @@ from .preprocessing import FOLD_FILENAMES
 EXTERNAL_EVALUATION_SCHEMA_VERSION = 1
 OMG_NAME = "omg-emotion"
 MSP_NAME = "msp-podcast"
-EXTERNAL_BENCHMARKS = (OMG_NAME, MSP_NAME)
+IDEST_NAME = "idest-english"
+SEMEVAL_NAME = "semeval-2026-task2-subtask1"
+EXTERNAL_BENCHMARKS = (OMG_NAME, MSP_NAME, IDEST_NAME, SEMEVAL_NAME)
 OMG_REVISION = "5931b237e92d68d04931bb932854fac6d9cd6a41"
 OMG_TEST_ROWS = 2229
 MSP_OFFICIAL_TEST_ROWS = {"test1": 46294, "test2": 14822}
+IDEST_TEST_ROWS = 250
+IDEST_OSF_PROJECT = "9tga3"
+IDEST_OSF_FILE_ID = "xh4kv"
+IDEST_FILE = {
+    "filename": "IDEST_Database.csv",
+    "url": f"https://osf.io/download/{IDEST_OSF_FILE_ID}/",
+    "sha256": "91e3e05a9495833cafe6fcb59a445b3f248c7c2a3881549e9d8741a7f94bc0b7",
+}
+SEMEVAL_REVISION = "50abd23fb884d3dd693c2df479124bcf6c153086"
+SEMEVAL_TEST_ROWS = 1737
+SEMEVAL_TEST_USERS = 91
+SEMEVAL_TEST_FILES = {
+    "inputs": {
+        "filename": "test_subtask1.csv",
+        "repository_path": "datasets/TEST_RELEASE_5JAN2026/test_subtask1.csv",
+        "sha256": "61500316be2d5fcd88979e7f12885e4a42d3b9e71e1e2feb15deeda6134ff5fd",
+    },
+    "labels": {
+        "filename": "test_labels_subtask1.csv",
+        "repository_path": (
+            "datasets/TEST_LABELS_RELEASE_23FEB2026/test_labels_subtask1.csv"
+        ),
+        "sha256": "9d4734b93112c9db07144f404e013f55abb3f847c96b3cfd2550d8340cf5be3c",
+    },
+}
 MSP_CANONICAL_LABEL_COLUMNS = {
     "label_id_column": "FileName",
     "split_column": "Split_Set",
@@ -151,6 +179,8 @@ class ExternalBenchmarkData:
     source_manifest: Mapping[str, Any]
     join_report: Mapping[str, Any]
     official_group_column: str | None = None
+    context_policy: str = "one current text only"
+    prediction_metadata_columns: tuple[str, ...] = ()
 
     def labels_model_scale(self) -> np.ndarray:
         return self.frame.loc[:, ["valence", "arousal"]].to_numpy(dtype=np.float64)
@@ -442,16 +472,25 @@ def fixed_unweighted_ensemble(member_predictions: Sequence[np.ndarray]) -> np.nd
     return np.mean(np.stack(arrays, axis=0), axis=0)
 
 
-def _download_one(url: str, target: Path, expected_sha256: str) -> None:
-    """Download one pinned public OMG table atomically and verify its digest."""
+def _download_one(
+    url: str,
+    target: Path,
+    expected_sha256: str,
+    *,
+    description: str,
+) -> None:
+    """Download one pinned public benchmark file atomically and verify its digest."""
 
     if target.exists():
         if not target.is_file():
-            raise FileExistsError(f"OMG target exists and is not a file: {target}")
+            raise FileExistsError(
+                f"{description} target exists and is not a file: {target}"
+            )
         actual = sha256_file(target)
         if actual != expected_sha256:
             raise ValueError(
-                f"Existing OMG file has SHA256 {actual}, expected {expected_sha256}: {target}"
+                f"Existing {description} file has SHA256 {actual}, expected "
+                f"{expected_sha256}: {target}"
             )
         return
     target.parent.mkdir(parents=True, exist_ok=True)
@@ -464,7 +503,8 @@ def _download_one(url: str, target: Path, expected_sha256: str) -> None:
         actual = sha256_file(temporary)
         if actual != expected_sha256:
             raise ValueError(
-                f"Downloaded OMG file has SHA256 {actual}, expected {expected_sha256}."
+                f"Downloaded {description} file has SHA256 {actual}, expected "
+                f"{expected_sha256}."
             )
         temporary.replace(target)
     except Exception:
@@ -484,7 +524,12 @@ def download_pinned_omg_test(raw_dir: str | Path) -> dict[str, Path]:
             "https://raw.githubusercontent.com/knowledgetechnologyuhh/"
             f"OMGEmotionChallenge/{OMG_REVISION}/{contract['filename']}"
         )
-        _download_one(url, target, contract["sha256"])
+        _download_one(
+            url,
+            target,
+            contract["sha256"],
+            description=f"OMG {role}",
+        )
         resolved[role] = target
     return resolved
 
@@ -664,6 +709,472 @@ def load_omg_emotion_test(
             "join_validation": "one_to_one; gold-left; official gold order preserved",
         },
         official_group_column="video",
+        context_policy="one current utterance transcript only",
+        prediction_metadata_columns=("video", "utterance"),
+    )
+
+
+def download_pinned_idest_english(raw_dir: str | Path) -> Path:
+    """Download the pinned OSF IDEST CSV without vendoring the public dataset."""
+
+    directory = Path(raw_dir).expanduser().resolve()
+    target = directory / IDEST_FILE["filename"]
+    _download_one(
+        IDEST_FILE["url"],
+        target,
+        IDEST_FILE["sha256"],
+        description="IDEST English database",
+    )
+    return target
+
+
+def load_idest_english(
+    raw_dir: str | Path,
+    *,
+    strict_official_contract: bool = True,
+) -> ExternalBenchmarkData:
+    """Load all 250 English IDEST stories with their published English mean VA."""
+
+    directory = Path(raw_dir).expanduser().resolve()
+    path = directory / IDEST_FILE["filename"]
+    if not path.is_file():
+        raise FileNotFoundError(f"IDEST database file not found: {path}")
+    digest = sha256_file(path)
+    if strict_official_contract and digest != IDEST_FILE["sha256"]:
+        raise ValueError(
+            f"IDEST SHA256 mismatch: {digest}; expected {IDEST_FILE['sha256']}. "
+            f"Use pinned OSF file {IDEST_OSF_FILE_ID}."
+        )
+
+    raw = pd.read_csv(
+        path,
+        sep=";",
+        quotechar='"',
+        encoding="cp1252",
+        keep_default_na=False,
+        dtype=str,
+    )
+    required = (
+        "code",
+        "country",
+        "language",
+        "text_english",
+        "number_raters_English",
+        "valence_mean_English",
+        "arousal_mean_English",
+        "characters_English",
+        "words_English",
+        "StoryType",
+    )
+    _require_columns(raw, required, "IDEST database")
+    blank_cells = raw.apply(lambda column: column.astype(str).str.strip().eq(""))
+    fully_blank = blank_cells.all(axis=1).to_numpy(dtype=bool)
+    if fully_blank.any():
+        first_blank = int(np.flatnonzero(fully_blank)[0])
+        if bool((~fully_blank[first_blank:]).any()):
+            raise ValueError("IDEST fully blank rows must be trailing rows only.")
+    selected = raw.loc[~fully_blank].copy().reset_index(drop=True)
+    if strict_official_contract and len(selected) != IDEST_TEST_ROWS:
+        raise ValueError(
+            f"IDEST English must contain {IDEST_TEST_ROWS} stories; got {len(selected)}."
+        )
+
+    for column in ("code", "language", "text_english"):
+        if selected[column].astype(str).str.strip().eq("").any():
+            raise ValueError(f"IDEST database contains a blank {column} value.")
+    if selected["code"].duplicated(keep=False).any():
+        examples = selected.loc[
+            selected["code"].duplicated(keep=False), "code"
+        ].head(10).tolist()
+        raise ValueError(f"IDEST story codes are not unique: {examples}.")
+
+    native_valence = _numeric_column(
+        selected, "valence_mean_English", "IDEST English"
+    )
+    native_arousal = _numeric_column(
+        selected, "arousal_mean_English", "IDEST English"
+    )
+    _require_range(
+        native_valence,
+        lower=1.0,
+        upper=9.0,
+        name="valence",
+        description="IDEST English",
+    )
+    _require_range(
+        native_arousal,
+        lower=1.0,
+        upper=9.0,
+        name="arousal",
+        description="IDEST English",
+    )
+    number_raters = _numeric_column(
+        selected, "number_raters_English", "IDEST English"
+    )
+    characters = _numeric_column(selected, "characters_English", "IDEST English")
+    words = _numeric_column(selected, "words_English", "IDEST English")
+    story_type = _numeric_column(selected, "StoryType", "IDEST English")
+    if bool((number_raters <= 0).any()):
+        raise ValueError("IDEST English number_raters_English must be positive.")
+    if bool((characters <= 0).any() or (words <= 0).any()):
+        raise ValueError("IDEST English character and word counts must be positive.")
+    if bool((story_type < 1).any() or (story_type > 8).any()):
+        raise ValueError("IDEST English StoryType must stay in [1, 8].")
+
+    text = selected["text_english"].astype(str)
+    normalized_text = text.map(normalize_overlap_text)
+    frame = pd.DataFrame(
+        {
+            "index": selected["code"].astype(str),
+            "benchmark_id": selected["code"].astype(str),
+            "text": text,
+            "text_sha256": [_text_sha256(value) for value in text],
+            "is_empty_text": text.str.strip().eq("").to_numpy(dtype=bool),
+            "dataset_of_origin": "IDEST English",
+            "split": "all-250-zero-shot-test",
+            "idest_code": selected["code"].astype(str),
+            "source_country": selected["country"].astype(str),
+            "source_language": selected["language"].astype(str),
+            "number_raters_english": number_raters,
+            "characters_english": characters,
+            "words_english": words,
+            "story_type": story_type.astype(np.int64),
+            "valence": (native_valence - 1.0) / 8.0,
+            "arousal": (native_arousal - 1.0) / 8.0,
+            "native_valence": native_valence,
+            "native_arousal": native_arousal,
+        }
+    )
+    return ExternalBenchmarkData(
+        name=IDEST_NAME,
+        version=(
+            f"osf-{IDEST_OSF_FILE_ID}-v1"
+            if strict_official_contract
+            else "unverified-local"
+        ),
+        split="all-250-zero-shot-test",
+        frame=frame,
+        native_scale={"valence": (1.0, 9.0), "arousal": (1.0, 9.0)},
+        model_to_native_scale=(8.0, 8.0),
+        model_to_native_offset=(1.0, 1.0),
+        source_manifest={
+            "canonical_contract_verified": bool(strict_official_contract),
+            "osf_project": IDEST_OSF_PROJECT,
+            "osf_file_id": IDEST_OSF_FILE_ID,
+            "file": {
+                "path": str(path),
+                "sha256": digest,
+                "delimiter": "semicolon",
+                "encoding": "Windows-1252",
+                "encoding_note": (
+                    "the OSF README calls the file Latin1, but its smart-punctuation "
+                    "bytes use Windows-1252 code points"
+                ),
+            },
+            "english_input_column": "text_english",
+            "english_valence_column": "valence_mean_English",
+            "english_arousal_column": "arousal_mean_English",
+            "license": (
+                "OSF node has no explicit dataset license metadata; obtain from the "
+                "public source and cite Kaakinen et al. (2022); do not redistribute "
+                "from evaluation outputs"
+            ),
+            "source_url": f"https://osf.io/{IDEST_OSF_PROJECT}/",
+        },
+        join_report={
+            "raw_csv_rows": int(len(raw)),
+            "fully_blank_trailing_rows_ignored": int(fully_blank.sum()),
+            "english_story_rows": int(len(frame)),
+            "unique_story_codes": int(frame["benchmark_id"].nunique()),
+            "unique_normalized_english_texts": int(normalized_text.nunique()),
+            "duplicate_normalized_english_text_rows": int(
+                normalized_text.duplicated(keep=False).sum()
+            ),
+            "row_policy": "official nonblank code rows in source-file order",
+            "label_policy": "published English-translation mean ratings only",
+        },
+        official_group_column=None,
+        context_policy="one English translated short story only",
+        prediction_metadata_columns=(
+            "idest_code",
+            "source_country",
+            "source_language",
+            "number_raters_english",
+            "characters_english",
+            "words_english",
+            "story_type",
+        ),
+    )
+
+
+def download_pinned_semeval_subtask1_test(raw_dir: str | Path) -> dict[str, Path]:
+    """Download only pinned SemEval Subtask 1 test inputs and released gold labels."""
+
+    directory = Path(raw_dir).expanduser().resolve()
+    resolved: dict[str, Path] = {}
+    root = (
+        "https://raw.githubusercontent.com/semeval2026task2/"
+        f"EmotionValArouTimeVariation2026/{SEMEVAL_REVISION}"
+    )
+    for role, contract in SEMEVAL_TEST_FILES.items():
+        target = directory / contract["filename"]
+        _download_one(
+            f"{root}/{contract['repository_path']}",
+            target,
+            contract["sha256"],
+            description=f"SemEval Subtask 1 {role}",
+        )
+        resolved[role] = target
+    return resolved
+
+
+def _strict_boolean_column(
+    frame: pd.DataFrame,
+    name: str,
+    description: str,
+) -> np.ndarray:
+    """Parse a canonical True/False CSV field without Python truthiness guessing."""
+
+    normalized = frame[name].astype(str).str.strip().str.casefold()
+    invalid = ~normalized.isin(("true", "false"))
+    if invalid.any():
+        examples = frame.loc[invalid, name].head(10).tolist()
+        raise ValueError(
+            f"{description} column {name!r} must contain only True/False; found "
+            f"{examples}."
+        )
+    return normalized.eq("true").to_numpy(dtype=bool)
+
+
+def load_semeval_2026_subtask1_test(
+    raw_dir: str | Path,
+    *,
+    strict_official_contract: bool = True,
+) -> ExternalBenchmarkData:
+    """Join pinned SemEval-2026 Task 2 Subtask 1 test text to released gold VA."""
+
+    directory = Path(raw_dir).expanduser().resolve()
+    paths = {
+        role: directory / contract["filename"]
+        for role, contract in SEMEVAL_TEST_FILES.items()
+    }
+    for role, path in paths.items():
+        if not path.is_file():
+            raise FileNotFoundError(f"SemEval Subtask 1 {role} file not found: {path}")
+    hashes = {role: sha256_file(path) for role, path in paths.items()}
+    if strict_official_contract:
+        for role, actual in hashes.items():
+            expected = SEMEVAL_TEST_FILES[role]["sha256"]
+            if actual != expected:
+                raise ValueError(
+                    f"SemEval Subtask 1 {role} SHA256 mismatch: {actual}; expected "
+                    f"{expected}. Use pinned revision {SEMEVAL_REVISION}."
+                )
+
+    inputs = pd.read_csv(paths["inputs"], keep_default_na=False, dtype=str)
+    labels = pd.read_csv(paths["labels"], keep_default_na=False, dtype=str)
+    key_columns = ["user_id", "text_id"]
+    shared_columns = [
+        "text",
+        "timestamp",
+        "collection_phase",
+        "is_words",
+        "is_seen_user",
+    ]
+    input_columns = tuple(key_columns + shared_columns)
+    label_columns = tuple(
+        key_columns
+        + ["text", "timestamp", "collection_phase", "is_words"]
+        + ["valence", "arousal", "is_seen_user"]
+    )
+    _require_columns(inputs, input_columns, "SemEval Subtask 1 test inputs")
+    _require_columns(labels, label_columns, "SemEval Subtask 1 test labels")
+    for description, table in (("inputs", inputs), ("labels", labels)):
+        blank_key = table.loc[:, key_columns].apply(
+            lambda column: column.astype(str).str.strip().eq("")
+        )
+        if bool(blank_key.any(axis=None)):
+            raise ValueError(f"SemEval Subtask 1 {description} contains a blank key.")
+        duplicated = table.duplicated(key_columns, keep=False)
+        if duplicated.any():
+            examples = table.loc[duplicated, key_columns].head(10).to_dict("records")
+            raise ValueError(
+                f"SemEval Subtask 1 {description} keys are not unique: {examples}."
+            )
+
+    inputs = inputs.copy()
+    inputs["_official_row"] = np.arange(len(inputs), dtype=np.int64)
+    joined = inputs.merge(
+        labels,
+        on=key_columns,
+        how="outer",
+        sort=False,
+        suffixes=("", "_gold"),
+        indicator=True,
+        validate="one_to_one",
+    )
+    unmatched = joined["_merge"].ne("both")
+    if unmatched.any():
+        examples = joined.loc[unmatched, key_columns + ["_merge"]].head(10)
+        raise ValueError(
+            "SemEval Subtask 1 input/label keys do not match one-to-one: "
+            f"{examples.to_dict('records')}."
+        )
+    for column in shared_columns:
+        mismatch = joined[column].astype(str).ne(joined[f"{column}_gold"].astype(str))
+        if mismatch.any():
+            examples = joined.loc[mismatch, key_columns].head(10).to_dict("records")
+            raise ValueError(
+                f"SemEval Subtask 1 input/label {column} values disagree: {examples}."
+            )
+    joined = joined.sort_values("_official_row", kind="stable").reset_index(drop=True)
+    if strict_official_contract and len(joined) != SEMEVAL_TEST_ROWS:
+        raise ValueError(
+            f"SemEval Subtask 1 test must contain {SEMEVAL_TEST_ROWS} rows; "
+            f"got {len(joined)}."
+        )
+
+    if joined["text"].astype(str).str.strip().eq("").any():
+        raise ValueError("SemEval Subtask 1 test contains blank text.")
+    try:
+        pd.to_datetime(joined["timestamp"], errors="raise", format="mixed")
+    except (TypeError, ValueError) as exc:
+        raise ValueError("SemEval Subtask 1 contains an invalid timestamp.") from exc
+    collection_phase = _numeric_column(
+        joined, "collection_phase", "SemEval Subtask 1 test"
+    )
+    if bool(
+        (collection_phase < 1).any()
+        or (collection_phase > 7).any()
+        or (collection_phase != np.floor(collection_phase)).any()
+    ):
+        raise ValueError("SemEval Subtask 1 collection_phase must be an integer in [1, 7].")
+    is_words = _strict_boolean_column(joined, "is_words", "SemEval Subtask 1 test")
+    is_seen_user = _strict_boolean_column(
+        joined, "is_seen_user", "SemEval Subtask 1 test"
+    )
+    seen_by_user = pd.DataFrame(
+        {"user_id": joined["user_id"].astype(str), "is_seen_user": is_seen_user}
+    ).groupby("user_id", sort=False)["is_seen_user"].nunique()
+    if bool((seen_by_user != 1).any()):
+        raise ValueError("SemEval Subtask 1 is_seen_user must be constant within a user.")
+    user_count = int(joined["user_id"].astype(str).nunique())
+    if strict_official_contract and user_count != SEMEVAL_TEST_USERS:
+        raise ValueError(
+            f"SemEval Subtask 1 test must contain {SEMEVAL_TEST_USERS} users; "
+            f"got {user_count}."
+        )
+
+    native_valence = _numeric_column(joined, "valence", "SemEval Subtask 1 test")
+    native_arousal = _numeric_column(joined, "arousal", "SemEval Subtask 1 test")
+    _require_range(
+        native_valence,
+        lower=-2.0,
+        upper=2.0,
+        name="valence",
+        description="SemEval Subtask 1 released test",
+    )
+    _require_range(
+        native_arousal,
+        lower=0.0,
+        upper=2.0,
+        name="arousal",
+        description="SemEval Subtask 1 released test",
+    )
+
+    user_id = joined["user_id"].astype(str)
+    text_id = joined["text_id"].astype(str)
+    benchmark_id = [
+        f"{user}::{text}" for user, text in zip(user_id.tolist(), text_id.tolist())
+    ]
+    text = joined["text"].astype(str)
+    normalized_text = text.map(normalize_overlap_text)
+    frame = pd.DataFrame(
+        {
+            "index": benchmark_id,
+            "benchmark_id": benchmark_id,
+            "text": text,
+            "text_sha256": [_text_sha256(value) for value in text],
+            "is_empty_text": text.str.strip().eq("").to_numpy(dtype=bool),
+            "dataset_of_origin": "SemEval-2026 Task 2 Subtask 1",
+            "split": "official-test-zero-shot",
+            "user_id": user_id,
+            "text_id": text_id,
+            "timestamp": joined["timestamp"].astype(str),
+            "collection_phase": collection_phase.astype(np.int64),
+            "is_words": is_words,
+            "is_seen_user": is_seen_user,
+            "valence": (native_valence + 2.0) / 4.0,
+            "arousal": native_arousal / 2.0,
+            "native_valence": native_valence,
+            "native_arousal": native_arousal,
+        }
+    )
+    return ExternalBenchmarkData(
+        name=SEMEVAL_NAME,
+        version=f"official-github-{SEMEVAL_REVISION}" if strict_official_contract else "unverified-local",
+        split="official-test-zero-shot",
+        frame=frame,
+        native_scale={"valence": (-2.0, 2.0), "arousal": (0.0, 2.0)},
+        model_to_native_scale=(4.0, 2.0),
+        model_to_native_offset=(-2.0, 0.0),
+        source_manifest={
+            "canonical_contract_verified": bool(strict_official_contract),
+            "official_reference_revision": SEMEVAL_REVISION,
+            "files": {
+                role: {
+                    "path": str(paths[role]),
+                    "repository_path": SEMEVAL_TEST_FILES[role]["repository_path"],
+                    "sha256": hashes[role],
+                    "delimiter": "comma",
+                    "encoding": "UTF-8",
+                }
+                for role in ("inputs", "labels")
+            },
+            "license": "CC0-1.0 at the official task repository",
+            "source_url": (
+                "https://github.com/semeval2026task2/"
+                f"EmotionValArouTimeVariation2026/tree/{SEMEVAL_REVISION}"
+            ),
+            "label_scale_note": (
+                "the pinned train and released test-label CSVs use centered valence "
+                "[-2,2] and arousal [0,2], although the task paper describes original "
+                "valence [0,4]; the pinned files control this evaluator"
+            ),
+            "target_training_data_used": False,
+        },
+        join_report={
+            "test_input_rows": int(len(inputs)),
+            "gold_label_rows": int(len(labels)),
+            "matched_rows": int(len(frame)),
+            "users": user_count,
+            "official_seen_user_rows": int(is_seen_user.sum()),
+            "official_unseen_user_rows": int((~is_seen_user).sum()),
+            "essay_rows": int((~is_words).sum()),
+            "feeling_word_rows": int(is_words.sum()),
+            "unique_normalized_texts": int(normalized_text.nunique()),
+            "duplicate_normalized_text_rows": int(
+                normalized_text.duplicated(keep=False).sum()
+            ),
+            "join_keys": key_columns,
+            "join_validation": (
+                "one_to_one; exact shared metadata match; official test-input order "
+                "preserved"
+            ),
+        },
+        official_group_column="user_id",
+        context_policy=(
+            "one current test text only; user ID, timestamp, history, is_seen_user, "
+            "and gold labels are excluded from model inputs"
+        ),
+        prediction_metadata_columns=(
+            "user_id",
+            "text_id",
+            "timestamp",
+            "collection_phase",
+            "is_words",
+            "is_seen_user",
+        ),
     )
 
 
@@ -1154,6 +1665,8 @@ def load_msp_podcast_test(
             "join_validation": "many-source-to-selected one_to_one; label order preserved",
         },
         official_group_column=None,
+        context_policy="one current utterance transcript only",
+        prediction_metadata_columns=("file_name",),
     )
 
 
@@ -1718,6 +2231,18 @@ def reject_benchmark_training_sources(
     aliases = {
         OMG_NAME: ("omg", "omgemotion", "oneminutegradualemotion"),
         MSP_NAME: ("msppodcast", "msp podcast"),
+        IDEST_NAME: (
+            "idest",
+            "internationaldatabaseofemotionalshorttexts",
+            "international database of emotional short texts",
+        ),
+        SEMEVAL_NAME: (
+            "semeval",
+            "semeval2026",
+            "semeval2026task2",
+            "emotionvalaroutimevariation",
+            "ecological essays",
+        ),
     }[benchmark_name]
     matched = []
     for member in members:
@@ -1860,6 +2385,158 @@ def macro_group_metrics(
     return result
 
 
+def _semeval_subtask1_dimension_metrics(
+    labels: Sequence[float],
+    predictions: Sequence[float],
+    user_ids: Sequence[object],
+) -> dict[str, Any]:
+    """Reproduce the official Subtask 1 scorer for one affect dimension."""
+
+    target = np.asarray(labels, dtype=np.float64).reshape(-1)
+    estimate = np.asarray(predictions, dtype=np.float64).reshape(-1)
+    users = np.asarray(list(user_ids), dtype=str).reshape(-1)
+    if target.size == 0:
+        raise ValueError("SemEval Subtask 1 metrics require at least one row.")
+    if target.shape != estimate.shape or target.shape != users.shape:
+        raise ValueError("SemEval labels, predictions, and user IDs must align.")
+    if not np.isfinite(target).all() or not np.isfinite(estimate).all():
+        raise ValueError("SemEval labels and predictions must be finite.")
+    if bool(pd.Series(users).str.strip().eq("").any()):
+        raise ValueError("SemEval user IDs must be nonblank.")
+
+    unique_users = np.unique(users)
+    within_correlations: list[float] = []
+    within_p_values: list[float] = []
+    within_mae: list[float] = []
+    user_prediction_means: list[float] = []
+    user_label_means: list[float] = []
+    skipped_short = 0
+    skipped_constant_gold = 0
+    constant_prediction_users = 0
+    for user in unique_users:
+        mask = users == user
+        user_target = target[mask]
+        user_estimate = estimate[mask]
+        within_mae.append(float(np.mean(np.abs(user_estimate - user_target))))
+        user_prediction_means.append(float(np.mean(user_estimate)))
+        user_label_means.append(float(np.mean(user_target)))
+        if int(mask.sum()) < 2:
+            skipped_short += 1
+            continue
+        if float(np.ptp(user_target)) == 0.0:
+            skipped_constant_gold += 1
+            continue
+        if float(np.ptp(user_estimate)) == 0.0:
+            constant_prediction_users += 1
+            within_correlations.append(0.0)
+            within_p_values.append(1e-10)
+            continue
+        correlation = stats.pearsonr(user_estimate, user_target)
+        within_correlations.append(float(correlation.statistic))
+        within_p_values.append(float(correlation.pvalue))
+
+    r_within = (
+        float(np.mean(within_correlations))
+        if within_correlations
+        else float("nan")
+    )
+    p_within = (
+        float(
+            len(within_p_values)
+            / sum(1.0 / max(value, 1e-10) for value in within_p_values)
+        )
+        if within_p_values
+        else None
+    )
+
+    between_predictions = np.asarray(user_prediction_means, dtype=np.float64)
+    between_labels = np.asarray(user_label_means, dtype=np.float64)
+    if (
+        len(unique_users) < 2
+        or float(np.ptp(estimate)) == 0.0
+        or float(np.ptp(between_predictions)) == 0.0
+        or float(np.ptp(between_labels)) == 0.0
+    ):
+        r_between = float("nan")
+        p_between = None
+    else:
+        between = stats.pearsonr(between_predictions, between_labels)
+        r_between = float(between.statistic)
+        p_between = float(between.pvalue)
+
+    mae_within = float(np.mean(within_mae))
+    mae_between = float(np.mean(np.abs(between_predictions - between_labels)))
+    with np.errstate(divide="ignore", invalid="ignore"):
+        r_composite = float(
+            np.tanh(0.5 * (np.arctanh(r_within) + np.arctanh(r_between)))
+        )
+        official_mae_composite = float(
+            np.tanh(0.5 * (np.arctanh(mae_within) + np.arctanh(mae_between)))
+        )
+    return {
+        "r_within": r_within,
+        "p_within": p_within,
+        "r_between": r_between,
+        "p_between": p_between,
+        "r_composite": r_composite,
+        "mae_within": mae_within,
+        "mae_between": mae_between,
+        "mae_composite_official_implementation": official_mae_composite,
+        "n_users": int(len(unique_users)),
+        "n_users_defined_within_correlation": int(len(within_correlations)),
+        "n_users_skipped_fewer_than_two_rows": int(skipped_short),
+        "n_users_skipped_constant_gold": int(skipped_constant_gold),
+        "n_users_constant_prediction_scored_zero": int(constant_prediction_users),
+    }
+
+
+def semeval_subtask1_official_metrics(
+    labels_native: np.ndarray,
+    predictions_native: np.ndarray,
+    user_ids: Sequence[object],
+) -> dict[str, Any]:
+    """Calculate the released SemEval Subtask 1 V/A ranking score exactly."""
+
+    labels = np.asarray(labels_native, dtype=np.float64)
+    predictions = np.asarray(predictions_native, dtype=np.float64)
+    if labels.ndim != 2 or labels.shape[1] != 2:
+        raise ValueError(f"SemEval labels must have shape [examples, 2], got {labels.shape}.")
+    if predictions.shape != labels.shape:
+        raise ValueError(
+            "SemEval predictions must have the same [examples, 2] shape as labels."
+        )
+    if labels.shape[0] != len(user_ids):
+        raise ValueError("SemEval user IDs must align with labels and predictions.")
+    if not np.isfinite(labels).all() or not np.isfinite(predictions).all():
+        raise ValueError("SemEval labels and predictions must contain finite values.")
+
+    dimensions = {
+        name: _semeval_subtask1_dimension_metrics(
+            labels[:, index], predictions[:, index], user_ids
+        )
+        for index, name in enumerate(MODEL_OUTPUT_NAMES)
+    }
+    r_values = [dimensions[name]["r_composite"] for name in MODEL_OUTPUT_NAMES]
+    mae_values = [
+        dimensions[name]["mae_composite_official_implementation"]
+        for name in MODEL_OUTPUT_NAMES
+    ]
+    return {
+        "definition": (
+            "released SemEval-2026 Task 2 Subtask 1 scorer: mean of valence and "
+            "arousal r_composite; each r_composite is Fisher-z mean of within-user "
+            "and between-user Pearson r"
+        ),
+        "dimensions": dimensions,
+        "r_composite_mean_va": float(np.mean(r_values)),
+        "mae_composite_mean_va_official_implementation": float(np.mean(mae_values)),
+        "official_mae_warning": (
+            "the released scorer applies Fisher atanh/tanh to MAE; ordinary flat "
+            "native-scale MAE is reported separately under subsets"
+        ),
+    }
+
+
 def _aligned_audited_frame(
     benchmark: ExternalBenchmarkData,
     audited_frame: pd.DataFrame | None,
@@ -1884,6 +2561,15 @@ def _aligned_audited_frame(
         )
     for column in ("split", "text_sha256", "is_empty_text"):
         if frame[column].tolist() != benchmark.frame[column].tolist():
+            raise ValueError(
+                f"Audited benchmark frame changed canonical {column} values/order."
+            )
+    for column in benchmark.prediction_metadata_columns:
+        _require_columns(benchmark.frame, (column,), "canonical benchmark frame")
+        _require_columns(frame, (column,), "audited benchmark frame")
+        canonical = benchmark.frame[column].reset_index(drop=True)
+        audited = frame[column].reset_index(drop=True)
+        if not audited.equals(canonical):
             raise ValueError(
                 f"Audited benchmark frame changed canonical {column} values/order."
             )
@@ -1914,6 +2600,13 @@ def calculate_external_metrics(
         overlap = frame["overlap_with_any_finetuning_text"].to_numpy(dtype=bool)
         masks["finetuning_novel_text"] = ~overlap
         masks["finetuning_overlap_text"] = overlap
+    if benchmark.name == SEMEVAL_NAME:
+        seen_user = frame["is_seen_user"].to_numpy(dtype=bool)
+        is_words = frame["is_words"].to_numpy(dtype=bool)
+        masks["official_seen_user"] = seen_user
+        masks["official_unseen_user"] = ~seen_user
+        masks["essay_text"] = ~is_words
+        masks["feeling_word_text"] = is_words
     subsets: dict[str, Any] = {}
     for subset_name, mask in masks.items():
         count = int(mask.sum())
@@ -1958,6 +2651,36 @@ def calculate_external_metrics(
             "VA-only mean CCC; not the official MSP V/A/D leaderboard score because "
             "the current model has no dominance output"
         )
+    elif benchmark.name == IDEST_NAME:
+        result["score_scope"] = (
+            "all 250 English translations; no official train/test split or leaderboard "
+            "score is defined, so native-scale global VA regression metrics are primary"
+        )
+    elif benchmark.name == SEMEVAL_NAME:
+        result["official_subtask1"] = semeval_subtask1_official_metrics(
+            labels_native,
+            predictions_native,
+            frame["user_id"],
+        )
+        diagnostic_strata: dict[str, Any] = {}
+        for subset_name in (
+            "official_seen_user",
+            "official_unseen_user",
+            "essay_text",
+            "feeling_word_text",
+        ):
+            mask = masks[subset_name]
+            diagnostic_strata[subset_name] = semeval_subtask1_official_metrics(
+                labels_native[mask],
+                predictions_native[mask],
+                frame.loc[mask, "user_id"],
+            )
+        result["diagnostic_official_formula_strata"] = diagnostic_strata
+        result["primary"] = "official_subtask1.r_composite_mean_va"
+        result["score_scope"] = (
+            "official Subtask 1 test rows and released user-aware r_composite formula; "
+            "seen/unseen-user and essay/feeling-word scores are diagnostic strata"
+        )
     return _json_ready(result)
 
 
@@ -1974,9 +2697,10 @@ def build_prediction_report(
     frame = _aligned_audited_frame(benchmark, audited_frame)
     metadata_columns = ["benchmark_id", "split", "text_sha256", "is_empty_text"]
     for optional in (
-        "video",
-        "utterance",
-        "file_name",
+        *benchmark.prediction_metadata_columns,
+        "token_count_before_truncation",
+        "was_truncated",
+        "was_truncated_at_checkpoint_max_length",
         "overlap_with_heldout_fold1_training",
         "overlap_with_heldout_fold2_training",
         "overlap_with_any_finetuning_text",
@@ -2075,7 +2799,7 @@ def _write_external_evaluation_payload(
             "training run before external evaluation"
         ),
         "ensemble": "fixed unweighted arithmetic mean of both fold members on model [0,1] scale",
-        "context_policy": "one current utterance transcript only",
+        "context_policy": benchmark.context_policy,
         "normalization_policy": "documented fixed affine scale only; no observed benchmark statistics",
         "model_output_order": list(MODEL_OUTPUT_NAMES),
         "model_output_scale": {"valence": [0.0, 1.0], "arousal": [0.0, 1.0]},
@@ -2140,6 +2864,37 @@ def _write_external_evaluation_payload(
                 }
             )
             va_only.to_csv(output / f"msp_va_only_predictions_{name}.csv", index=False)
+    elif benchmark.name == IDEST_NAME:
+        for name, predictions in {
+            **dict(member_predictions),
+            "ensemble": ensemble_predictions,
+        }.items():
+            native = benchmark.predictions_to_native(predictions)
+            ide_st = pd.DataFrame(
+                {
+                    "code": benchmark.frame["idest_code"],
+                    "pred_valence": native[:, 0],
+                    "pred_arousal": native[:, 1],
+                }
+            )
+            ide_st.to_csv(output / f"idest_predictions_{name}.csv", index=False)
+    elif benchmark.name == SEMEVAL_NAME:
+        for name, predictions in {
+            **dict(member_predictions),
+            "ensemble": ensemble_predictions,
+        }.items():
+            native = benchmark.predictions_to_native(predictions)
+            submission = pd.DataFrame(
+                {
+                    "user_id": benchmark.frame["user_id"],
+                    "text_id": benchmark.frame["text_id"],
+                    "pred_valence": native[:, 0],
+                    "pred_arousal": native[:, 1],
+                }
+            )
+            submission.to_csv(
+                output / f"semeval_subtask1_predictions_{name}.csv", index=False
+            )
     return output
 
 
@@ -2229,9 +2984,11 @@ def write_external_evaluation(
 __all__ = [
     "EXTERNAL_BENCHMARKS",
     "ExternalBenchmarkData",
+    "IDEST_NAME",
     "MSP_NAME",
     "OMG_NAME",
     "OMG_REVISION",
+    "SEMEVAL_NAME",
     "SavedRunMember",
     "TextBatchCollator",
     "TokenizedTextDataset",
@@ -2239,14 +2996,19 @@ __all__ = [
     "build_prediction_report",
     "calculate_external_metrics",
     "discover_completed_run",
+    "download_pinned_idest_english",
     "download_pinned_omg_test",
+    "download_pinned_semeval_subtask1_test",
     "fixed_unweighted_ensemble",
+    "load_idest_english",
     "load_msp_podcast_test",
     "load_msp_transcript_mapping",
     "load_omg_emotion_test",
+    "load_semeval_2026_subtask1_test",
     "macro_group_metrics",
     "model_predictions_to_native",
     "normalize_overlap_text",
     "reject_benchmark_training_sources",
+    "semeval_subtask1_official_metrics",
     "write_external_evaluation",
 ]

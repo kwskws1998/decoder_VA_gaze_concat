@@ -5,9 +5,14 @@ from .evaluation import calculate_va_metrics, write_oof_reports
 from .external_benchmarks import (
     audit_finetuning_text_overlap,
     discover_completed_run,
+    download_pinned_idest_english,
+    download_pinned_semeval_subtask1_test,
     fixed_unweighted_ensemble,
+    load_idest_english,
     load_msp_podcast_test,
     load_omg_emotion_test,
+    load_semeval_2026_subtask1_test,
+    semeval_subtask1_official_metrics,
 )
 from .filters import collect_exclude_patterns, load_filtered_folds
 from .gaze import ET2GazeProvider
@@ -29,10 +34,15 @@ __all__ = [
     "collect_exclude_patterns",
     "audit_finetuning_text_overlap",
     "discover_completed_run",
+    "download_pinned_idest_english",
+    "download_pinned_semeval_subtask1_test",
     "fixed_unweighted_ensemble",
+    "load_idest_english",
     "load_msp_podcast_test",
     "load_omg_emotion_test",
+    "load_semeval_2026_subtask1_test",
     "load_saved_decoder_va_model",
     "load_filtered_folds",
+    "semeval_subtask1_official_metrics",
     "write_oof_reports",
 ]

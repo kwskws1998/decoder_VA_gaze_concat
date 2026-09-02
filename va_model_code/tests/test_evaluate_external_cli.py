@@ -55,6 +55,25 @@ class OrderedTokenizer:
         }
 
 
+class LengthAuditTokenizer:
+    """Return deterministic untruncated lengths and record label-free calls."""
+
+    def __init__(self) -> None:
+        self.calls: list[dict[str, object]] = []
+
+    def __call__(self, text, max_length, truncation, padding):
+        self.calls.append(
+            {
+                "text": text,
+                "max_length": max_length,
+                "truncation": truncation,
+                "padding": padding,
+            }
+        )
+        count = int(str(text))
+        return {"input_ids": list(range(count)), "attention_mask": [1] * count}
+
+
 class RecordingModel(torch.nn.Module):
     """Record inference state and emit deterministic bounded VA predictions."""
 
@@ -171,6 +190,118 @@ def test_parser_rejects_noncanonical_msp_label_column_override() -> None:
     assert error.value.code == 2
 
 
+@pytest.mark.parametrize(
+    "benchmark",
+    ["idest-english", "semeval-2026-task2-subtask1"],
+)
+def test_parser_accepts_new_text_benchmarks_without_training_options(
+    benchmark: str,
+) -> None:
+    """Expose only raw-data download and frozen-inference controls."""
+
+    parser = evaluate_external._build_parser()
+    args = parser.parse_args(
+        [benchmark, "--run-dir", "run", "--raw-dir", "raw", "--download"]
+    )
+    assert args.benchmark == benchmark
+    assert args.raw_dir == "raw"
+    assert args.download is True
+    for forbidden in (
+        "epochs",
+        "learning_rate",
+        "finetuning_mode",
+        "gradient_accumulation_steps",
+        "resume_from_checkpoint",
+    ):
+        assert not hasattr(args, forbidden)
+
+
+@pytest.mark.parametrize(
+    "benchmark",
+    ["idest-english", "semeval-2026-task2-subtask1"],
+)
+def test_parser_requires_raw_dir_for_new_text_benchmarks(benchmark: str) -> None:
+    """Do not guess mutable benchmark-data locations."""
+
+    parser = evaluate_external._build_parser()
+    with pytest.raises(SystemExit) as error:
+        parser.parse_args([benchmark, "--run-dir", "run"])
+    assert error.value.code == 2
+
+
+def test_new_text_benchmark_dispatch_is_explicit(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Prevent either new command from falling through to the MSP loader."""
+
+    calls: list[tuple[str, object]] = []
+    idest_result = object()
+    semeval_result = object()
+    monkeypatch.setattr(
+        evaluate_external,
+        "download_pinned_idest_english",
+        lambda raw_dir: calls.append(("download-idest", raw_dir)),
+    )
+    monkeypatch.setattr(
+        evaluate_external,
+        "load_idest_english",
+        lambda raw_dir, strict_official_contract: (
+            calls.append(("load-idest", strict_official_contract)) or idest_result
+        ),
+    )
+    monkeypatch.setattr(
+        evaluate_external,
+        "download_pinned_semeval_subtask1_test",
+        lambda raw_dir: calls.append(("download-semeval", raw_dir)),
+    )
+    monkeypatch.setattr(
+        evaluate_external,
+        "load_semeval_2026_subtask1_test",
+        lambda raw_dir, strict_official_contract: (
+            calls.append(("load-semeval", strict_official_contract)) or semeval_result
+        ),
+    )
+    monkeypatch.setattr(
+        evaluate_external,
+        "load_msp_podcast_test",
+        lambda *args, **kwargs: pytest.fail("new commands must never call the MSP loader"),
+    )
+    parser = evaluate_external._build_parser()
+
+    idest_args = parser.parse_args(
+        [
+            "idest-english",
+            "--run-dir",
+            "run",
+            "--raw-dir",
+            "idest-raw",
+            "--download",
+        ]
+    )
+    assert evaluate_external._load_external_benchmark(idest_args) is idest_result
+    assert calls == [
+        ("download-idest", "idest-raw"),
+        ("load-idest", True),
+    ]
+
+    calls.clear()
+    semeval_args = parser.parse_args(
+        [
+            "semeval-2026-task2-subtask1",
+            "--run-dir",
+            "run",
+            "--raw-dir",
+            "semeval-raw",
+            "--download",
+        ]
+    )
+    assert evaluate_external._load_external_benchmark(semeval_args) is semeval_result
+    assert calls == [
+        ("download-semeval", "semeval-raw"),
+        ("load-semeval", True),
+    ]
+
+
 def test_validate_args_rejects_programmatic_precision_override() -> None:
     """Reject callers that bypass argparse's immutable precision choices."""
 
@@ -195,6 +326,7 @@ def test_bf16_dry_run_returns_before_device_or_dtype_checks(
         name="omg-emotion",
         split="test",
         frame=pd.DataFrame({"text": ["hello"], "is_empty_text": [False]}),
+        context_policy="one current utterance transcript only",
     )
     member = SimpleNamespace(
         name="heldout_fold1",
@@ -292,6 +424,27 @@ def test_predict_texts_preserves_order_and_is_strictly_label_free() -> None:
     assert all(call["inference_mode"] is True for call in model.calls)
     assert model.training is False
     assert all(parameter.requires_grad is False for parameter in model.parameters())
+
+
+def test_tokenizer_truncation_audit_is_label_free_and_keeps_saved_limit() -> None:
+    """Audit full token lengths without truncating or selecting a new max_length."""
+
+    tokenizer = LengthAuditTokenizer()
+    summary, counts, truncated = evaluate_external._tokenizer_truncation_audit(
+        tokenizer,
+        ["0", "3", "5", "9"],
+        max_length=5,
+    )
+
+    np.testing.assert_array_equal(counts, np.array([0, 3, 5, 9]))
+    np.testing.assert_array_equal(truncated, np.array([False, False, False, True]))
+    assert summary["checkpoint_max_length"] == 5
+    assert summary["truncated_rows"] == 1
+    assert summary["truncated_fraction"] == pytest.approx(0.25)
+    assert summary["token_count_max"] == 9
+    assert all(call["max_length"] == 5 for call in tokenizer.calls)
+    assert all(call["truncation"] is False for call in tokenizer.calls)
+    assert all(call["padding"] is False for call in tokenizer.calls)
 
 
 def test_preflight_rejects_persisted_id_order_before_inference(
@@ -496,3 +649,138 @@ def test_full_cpu_run_predicts_both_members_and_atomically_writes_results(
     assert manifest["training_performed"] is False
     assert manifest["preflight_required"] is False
     assert "raw-text-free model bundle" in manifest["internal_evidence_validation"]
+
+
+def test_full_semeval_run_audits_truncation_and_reports_official_score(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """Integrate explicit SemEval dispatch, fold-1 audit, scoring, and manifest output."""
+
+    run_dir = tmp_path / "portable-bundle"
+    run_dir.mkdir()
+    output_dir = tmp_path / "semeval-output"
+    frame = pd.DataFrame(
+        {
+            "index": ["a::0", "a::1", "b::0", "b::1"],
+            "benchmark_id": ["a::0", "a::1", "b::0", "b::1"],
+            "text": ["0", "1", "2", "3"],
+            "text_sha256": ["a", "b", "c", "d"],
+            "is_empty_text": [False] * 4,
+            "dataset_of_origin": ["SemEval-2026 Task 2 Subtask 1"] * 4,
+            "split": ["official-test-zero-shot"] * 4,
+            "user_id": ["a", "a", "b", "b"],
+            "text_id": ["0", "1", "0", "1"],
+            "timestamp": ["2026-01-01"] * 4,
+            "collection_phase": [1, 1, 2, 2],
+            "is_words": [False, True, False, True],
+            "is_seen_user": [True, True, False, False],
+            "valence": [0.0, 0.25, 0.5, 1.0],
+            "arousal": [0.0, 0.5, 0.0, 1.0],
+            "native_valence": [-2.0, -1.0, 0.0, 2.0],
+            "native_arousal": [0.0, 1.0, 0.0, 2.0],
+        }
+    )
+    context_policy = (
+        "one current test text only; user ID, timestamp, history, is_seen_user, "
+        "and gold labels are excluded from model inputs"
+    )
+    benchmark = ExternalBenchmarkData(
+        name="semeval-2026-task2-subtask1",
+        version="fixture",
+        split="official-test-zero-shot",
+        frame=frame,
+        native_scale={"valence": (-2.0, 2.0), "arousal": (0.0, 2.0)},
+        model_to_native_scale=(4.0, 2.0),
+        model_to_native_offset=(-2.0, 0.0),
+        source_manifest={"canonical_contract_verified": True},
+        join_report={"matched_rows": 4},
+        official_group_column="user_id",
+        context_policy=context_policy,
+        prediction_metadata_columns=(
+            "user_id",
+            "text_id",
+            "timestamp",
+            "collection_phase",
+            "is_words",
+            "is_seen_user",
+        ),
+    )
+    common_manifest = {
+        "data_dir": None,
+        "dtype": "float32",
+        "eval_batch_size": 2,
+        "max_length": 12,
+        "dataset_counts_after_filter": {"Emobank": 4},
+        "finetuning_mode": "full",
+        "gaze_fusion": "none",
+        "gaze_features": [],
+        "et_revision": "fixture",
+    }
+    members = tuple(
+        SimpleNamespace(
+            name=f"heldout_fold{fold}",
+            held_out_fold=fold,
+            training_fold=2 if fold == 1 else 1,
+            model_dir=run_dir / f"heldout_fold{fold}" / "final_model",
+            run_manifest={**common_manifest, "held_out_fold": fold},
+            file_sha256={"model_weights": str(fold) * 64},
+        )
+        for fold in (1, 2)
+    )
+    loaded_tokenizers: list[OrderedTokenizer] = []
+
+    def load_model(path, *, dtype, et_cache_size):
+        del path, dtype, et_cache_size
+        tokenizer = OrderedTokenizer()
+        loaded_tokenizers.append(tokenizer)
+        return RecordingModel(), tokenizer
+
+    monkeypatch.setattr(
+        evaluate_external,
+        "discover_completed_run",
+        lambda path, require_internal_evidence: members,
+    )
+    monkeypatch.setattr(
+        evaluate_external,
+        "load_semeval_2026_subtask1_test",
+        lambda raw_dir, strict_official_contract: benchmark,
+    )
+    monkeypatch.setattr(evaluate_external, "load_saved_decoder_va_model", load_model)
+    args = evaluate_external._build_parser().parse_args(
+        [
+            "semeval-2026-task2-subtask1",
+            "--run-dir",
+            str(run_dir),
+            "--raw-dir",
+            str(tmp_path / "raw"),
+            "--output-dir",
+            str(output_dir),
+            "--device",
+            "cpu",
+            "--batch-size",
+            "2",
+            "--no-require-overlap-audit",
+            "--no-preflight-check",
+        ]
+    )
+
+    written = evaluate_external.run(args)
+
+    assert written == output_dir.resolve()
+    assert len(loaded_tokenizers) == 2
+    manifest = pd.read_json(
+        output_dir / "external_evaluation_manifest.json",
+        typ="series",
+    )
+    audit = manifest["tokenization_truncation_audit"]
+    assert audit["status"] == "completed"
+    assert audit["tokenizer_member"] == "heldout_fold1"
+    assert audit["checkpoint_max_length"] == 12
+    assert audit["truncated_rows"] == 0
+    assert manifest["input_context_policy"] == context_policy
+    predictions = pd.read_csv(output_dir / "predictions.tsv", sep="\t")
+    assert predictions["token_count_before_truncation"].tolist() == [1, 1, 1, 1]
+    assert not predictions["was_truncated_at_checkpoint_max_length"].any()
+    assert "Official ensemble r_composite" in capsys.readouterr().out

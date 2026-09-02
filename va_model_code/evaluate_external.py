@@ -1,4 +1,4 @@
-"""Inference-only zero-shot evaluation on OMG-Emotion and MSP-Podcast 2.0."""
+"""Inference-only zero-shot evaluation on supported external VA benchmarks."""
 
 from __future__ import annotations
 
@@ -18,16 +18,22 @@ import torch
 from torch.utils.data import DataLoader
 
 from decoder_va.external_benchmarks import (
+    IDEST_NAME,
     MSP_NAME,
     OMG_NAME,
+    SEMEVAL_NAME,
     TextBatchCollator,
     TokenizedTextDataset,
     audit_finetuning_text_overlap,
     discover_completed_run,
+    download_pinned_idest_english,
     download_pinned_omg_test,
+    download_pinned_semeval_subtask1_test,
     fixed_unweighted_ensemble,
+    load_idest_english,
     load_msp_podcast_test,
     load_omg_emotion_test,
+    load_semeval_2026_subtask1_test,
     reject_benchmark_training_sources,
     write_external_evaluation,
 )
@@ -40,7 +46,7 @@ DEVICE_CHOICES = ("auto", "cuda", "cpu")
 
 
 def _add_common_arguments(parser: argparse.ArgumentParser) -> None:
-    """Add options shared by both immutable external benchmark protocols."""
+    """Add options shared by every immutable external benchmark protocol."""
 
     parser.add_argument(
         "--run-dir",
@@ -186,6 +192,44 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     msp.add_argument("--transcript-id-column")
     msp.add_argument("--transcript-text-column")
+
+    idest = subparsers.add_parser(
+        IDEST_NAME,
+        help="Public IDEST English-story VA transfer on all 250 stories.",
+    )
+    _add_common_arguments(idest)
+    idest.add_argument(
+        "--raw-dir",
+        required=True,
+        help="Local directory containing the pinned IDEST_Database.csv file.",
+    )
+    idest.add_argument(
+        "--download",
+        action="store_true",
+        help="Download the pinned public IDEST CSV from OSF into --raw-dir.",
+    )
+
+    semeval = subparsers.add_parser(
+        SEMEVAL_NAME,
+        help=(
+            "Official SemEval-2026 Task 2 Subtask 1 test-only transfer with the "
+            "released gold labels used strictly after prediction."
+        ),
+    )
+    _add_common_arguments(semeval)
+    semeval.add_argument(
+        "--raw-dir",
+        required=True,
+        help="Local directory for the two pinned official Subtask 1 test CSV files.",
+    )
+    semeval.add_argument(
+        "--download",
+        action="store_true",
+        help=(
+            "Download the pinned official Subtask 1 test inputs and released gold "
+            "labels into --raw-dir."
+        ),
+    )
     return parser
 
 
@@ -203,6 +247,95 @@ def _validate_args(args: argparse.Namespace) -> None:
         raise ValueError("--et-cache-size cannot be negative.")
     if args.preflight_rows <= 0:
         raise ValueError("--preflight-rows must be positive.")
+
+
+def _load_external_benchmark(args: argparse.Namespace):
+    """Dispatch only to the explicitly selected immutable benchmark loader."""
+
+    if args.benchmark == OMG_NAME:
+        if args.download:
+            download_pinned_omg_test(args.raw_dir)
+        return load_omg_emotion_test(
+            args.raw_dir,
+            strict_official_contract=True,
+        )
+    if args.benchmark == MSP_NAME:
+        return load_msp_podcast_test(
+            args.labels_file,
+            args.transcripts,
+            split=args.split,
+            transcript_id_column=args.transcript_id_column,
+            transcript_text_column=args.transcript_text_column,
+            strict_official_count=True,
+        )
+    if args.benchmark == IDEST_NAME:
+        if args.download:
+            download_pinned_idest_english(args.raw_dir)
+        return load_idest_english(
+            args.raw_dir,
+            strict_official_contract=True,
+        )
+    if args.benchmark == SEMEVAL_NAME:
+        if args.download:
+            download_pinned_semeval_subtask1_test(args.raw_dir)
+        return load_semeval_2026_subtask1_test(
+            args.raw_dir,
+            strict_official_contract=True,
+        )
+    raise ValueError(f"Unsupported external benchmark: {args.benchmark!r}.")
+
+
+def _tokenizer_truncation_audit(
+    tokenizer,
+    texts: Sequence[object],
+    *,
+    max_length: int,
+) -> tuple[dict[str, Any], np.ndarray, np.ndarray]:
+    """Measure label-free token lengths without altering checkpoint inference length."""
+
+    if int(max_length) <= 0:
+        raise ValueError("max_length must be positive.")
+    counts: list[int] = []
+    for text in texts:
+        encoded = tokenizer(
+            "" if text is None else str(text),
+            max_length=int(max_length),
+            truncation=False,
+            padding=False,
+        )
+        if "input_ids" not in encoded:
+            raise ValueError("Tokenizer output is missing input_ids during length audit.")
+        input_ids = encoded["input_ids"]
+        tensor = input_ids if torch.is_tensor(input_ids) else torch.as_tensor(input_ids)
+        if tensor.ndim == 2 and tensor.shape[0] == 1:
+            tensor = tensor.squeeze(0)
+        if tensor.ndim != 1:
+            raise ValueError(
+                "Tokenizer returned non-vector input_ids for one audited example."
+            )
+        counts.append(int(tensor.numel()))
+    if not counts:
+        raise ValueError("Cannot audit tokenizer truncation for an empty benchmark.")
+
+    count_array = np.asarray(counts, dtype=np.int64)
+    truncated = count_array > int(max_length)
+    summary = {
+        "status": "completed",
+        "policy": (
+            "label-free tokenization with truncation disabled; inference retains the "
+            "saved checkpoint max_length"
+        ),
+        "rows": int(len(count_array)),
+        "checkpoint_max_length": int(max_length),
+        "token_count_min": int(count_array.min()),
+        "token_count_median": float(np.median(count_array)),
+        "token_count_mean": float(count_array.mean()),
+        "token_count_p95": float(np.percentile(count_array, 95)),
+        "token_count_max": int(count_array.max()),
+        "truncated_rows": int(truncated.sum()),
+        "truncated_fraction": float(truncated.mean()),
+    }
+    return summary, count_array, truncated
 
 
 def _package_version(distribution: str) -> str | None:
@@ -531,19 +664,7 @@ def run(args: argparse.Namespace) -> Path | None:
         run_dir,
         require_internal_evidence=bool(args.preflight_check),
     )
-    if args.benchmark == OMG_NAME:
-        if args.download:
-            download_pinned_omg_test(args.raw_dir)
-        benchmark = load_omg_emotion_test(args.raw_dir, strict_official_contract=True)
-    else:
-        benchmark = load_msp_podcast_test(
-            args.labels_file,
-            args.transcripts,
-            split=args.split,
-            transcript_id_column=args.transcript_id_column,
-            transcript_text_column=args.transcript_text_column,
-            strict_official_count=True,
-        )
+    benchmark = _load_external_benchmark(args)
     reject_benchmark_training_sources(members, benchmark.name)
 
     needs_training_folds = bool(args.require_overlap_audit or args.preflight_check)
@@ -592,6 +713,7 @@ def run(args: argparse.Namespace) -> Path | None:
         "External protocol: zero gradient updates, no calibration, no checkpoint "
         "selection, fixed two-member arithmetic mean."
     )
+    print(f"Model input context: {benchmark.context_policy}.")
     if runtime_compatibility["mismatches"]:
         mismatch_names = ", ".join(runtime_compatibility["mismatches"])
         warning_suffix = (
@@ -634,6 +756,12 @@ def run(args: argparse.Namespace) -> Path | None:
     member_predictions: dict[str, np.ndarray] = {}
     member_runtime: dict[str, Any] = {}
     preflight_report: dict[str, Any] = {}
+    needs_tokenizer_audit = benchmark.name in {IDEST_NAME, SEMEVAL_NAME}
+    tokenization_audit: dict[str, Any] = {
+        "status": "not_applicable",
+        "reason": "short-utterance benchmark; dedicated long-text audit not requested",
+    }
+    tokenizer_audit_completed = False
     for member in members:
         print(f"Loading frozen member: {member.model_dir}")
         if device.type == "cuda":
@@ -652,6 +780,29 @@ def run(args: argparse.Namespace) -> Path | None:
         )
         if trainable_after_freeze != 0:
             raise RuntimeError("External evaluator failed to freeze every saved-model parameter.")
+        if needs_tokenizer_audit and int(member.held_out_fold) == 1:
+            if tokenizer_audit_completed:
+                raise RuntimeError("The fold-1 tokenizer truncation audit ran more than once.")
+            tokenization_audit, token_counts, was_truncated = _tokenizer_truncation_audit(
+                tokenizer,
+                benchmark.frame["text"].tolist(),
+                max_length=int(member.run_manifest["max_length"]),
+            )
+            tokenization_audit.update(
+                {
+                    "tokenizer_member": member.name,
+                    "tokenizer_model_dir": str(member.model_dir),
+                }
+            )
+            audited_frame = audited_frame.copy()
+            audited_frame["token_count_before_truncation"] = token_counts
+            audited_frame["was_truncated_at_checkpoint_max_length"] = was_truncated
+            tokenizer_audit_completed = True
+            print(
+                "Tokenizer truncation audit: "
+                f"{tokenization_audit['truncated_rows']:,}/{tokenization_audit['rows']:,} "
+                f"rows exceed max_length={tokenization_audit['checkpoint_max_length']}."
+            )
         if args.preflight_check:
             if fold_frames is None:
                 raise RuntimeError("Internal preflight requires verified training fold frames.")
@@ -703,6 +854,9 @@ def run(args: argparse.Namespace) -> Path | None:
         if device.type == "cuda":
             torch.cuda.empty_cache()
 
+    if needs_tokenizer_audit and not tokenizer_audit_completed:
+        raise RuntimeError("The completed run did not provide a heldout_fold1 tokenizer.")
+
     ensemble = fixed_unweighted_ensemble(list(member_predictions.values()))
     evaluation_manifest = {
         "run_dir": str(run_dir),
@@ -714,6 +868,8 @@ def run(args: argparse.Namespace) -> Path | None:
         "tf32_enabled": False,
         "batch_size": int(batch_size),
         "max_length_source": "saved run manifest",
+        "input_context_policy": benchmark.context_policy,
+        "tokenization_truncation_audit": tokenization_audit,
         "et_cache_size_override": args.et_cache_size,
         "preflight": preflight_report,
         "runtime_compatibility": runtime_compatibility,
@@ -745,12 +901,21 @@ def run(args: argparse.Namespace) -> Path | None:
     )
     with open(written / "metrics.json", "r", encoding="utf-8") as input_file:
         metrics = json.load(input_file)
-    primary = metrics["ensemble"]["subsets"]["official_all"]["native_scale"]
-    print(
-        f"Completed {benchmark.name} {benchmark.split}. Ensemble CCC: "
-        f"V={primary['ccc_valence']:.6f}, A={primary['ccc_arousal']:.6f}, "
-        f"mean={primary['ccc_mean']:.6f}."
-    )
+    if benchmark.name == SEMEVAL_NAME:
+        primary = metrics["ensemble"]["official_subtask1"]
+        print(
+            f"Completed {benchmark.name} {benchmark.split}. Official ensemble "
+            f"r_composite: V={primary['dimensions']['valence']['r_composite']:.6f}, "
+            f"A={primary['dimensions']['arousal']['r_composite']:.6f}, "
+            f"mean={primary['r_composite_mean_va']:.6f}."
+        )
+    else:
+        primary = metrics["ensemble"]["subsets"]["official_all"]["native_scale"]
+        print(
+            f"Completed {benchmark.name} {benchmark.split}. Ensemble CCC: "
+            f"V={primary['ccc_valence']:.6f}, A={primary['ccc_arousal']:.6f}, "
+            f"mean={primary['ccc_mean']:.6f}."
+        )
     print(f"Results: {written}")
     return written
 

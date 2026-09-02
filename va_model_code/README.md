@@ -575,9 +575,9 @@ hard-coded source lookup failures.
 
 `evaluate_external.py` evaluates an already completed two-fold run on external
 corpora. It has no Trainer, optimizer, scheduler, backward pass, checkpoint
-selection, calibration, or fine-tuning path. OMG-Emotion and MSP-Podcast rows
-are used only after both saved models and their inference contract have already
-been fixed.
+selection, calibration, or fine-tuning path. OMG-Emotion, MSP-Podcast, IDEST
+English, and SemEval-2026 Task 2 Subtask 1 rows are used only after both saved
+models and their inference contract have already been fixed.
 
 The default, strongest input contract is the original server run directory,
 not a results-only review ZIP. The ZIP deliberately omits `model.safetensors`;
@@ -683,18 +683,238 @@ reports both members and a prespecified, unweighted arithmetic mean of their
 `[valence, arousal]` predictions. It never selects a better member or learns
 ensemble weights from external labels. Each `final_model` is the artifact saved
 by the original completed training run; the external evaluator neither
-re-selects it nor uses an OMG/MSP label to alter it.
+re-selects it nor uses an external benchmark label to alter it.
 
 For a saved gaze-fusion run, “gaze” in this external evaluation means frozen
 ET2 pseudo-TRT predicted solely from each benchmark transcript. It is not eye
-tracking measured from OMG-Emotion or MSP-Podcast participants, and no external
-gold label is supplied to ET2.
+tracking measured from any external-benchmark participant, and no external gold
+label is supplied to ET2.
 
 The evaluator also reconstructs the original fine-tuning folds, verifies their
 recorded SHA-256 hashes, and reports exact normalized-text overlap. The official
 full test score remains the primary benchmark result; the fine-tuning-novel-text
 subset is a separately labeled contamination diagnostic. Base-model pretraining
 contamination cannot be established from this repository.
+
+### Current seed-43 BF16 checkpoint paths on the Vast.ai server
+
+The following commands use the two raw-text-free Hugging Face runs already
+materialized on the benchmark server. Set the paths once from the repository's
+`va_model_code` directory:
+
+```bash
+cd /workspace/decoder_VA_gaze_concat/va_model_code
+
+BASE_RUN=/workspace/models/seed43_bf16/runs/paper7_no_iemocap_qwen_full_baseline_bf16_gc_b16_seed43_20260829_195414
+TRT_RUN=/workspace/models/seed43_bf16/runs/paper7_no_iemocap_qwen_full_gaze_TRT_bf16_gc_b16_seed43_20260830_104257
+TRAIN_DATA=/workspace/decoder_VA_gaze_concat/va_model_code/data/paper7_seed42
+IDEST_RAW=/workspace/data/external_benchmarks/idest-english
+SEMEVAL_RAW=/workspace/data/external_benchmarks/semeval-2026-task2-subtask1
+
+mkdir -p /workspace/results/external
+```
+
+These bundles intentionally omit the internal prediction tables, so the
+commands below use `--no-preflight-check`. They retain
+`--training-data-dir` and the default overlap audit. Do not add
+`--no-require-overlap-audit` unless the original fold files truly are
+unavailable, because doing so weakens the contamination audit.
+
+### IDEST English: all 250 stories
+
+The IDEST paper states, word for word:
+
+> “We introduce a database (IDEST) of 250 short stories rated for valence,
+> arousal, and comprehensibility in two languages.”
+
+Source: [International Database of Emotional Short Texts](https://journals.plos.org/plosone/article?id=10.1371/journal.pone.0274480).
+
+The evaluator downloads only the public `IDEST_Database.csv` from OSF file
+`xh4kv` in project `9tga3`. The fixed file SHA-256 is
+`91e3e05a9495833cafe6fcb59a445b3f248c7c2a3881549e9d8741a7f94bc0b7`.
+`--download` is on-demand and idempotent: an existing file is reused only after
+its hash matches. All 250 nonblank source rows are evaluated in source-file
+order; IDEST has no official held-out split, so this is an all-items frozen
+zero-shot test rather than a leaderboard split.
+
+Only `text_english` enters the model. The published English mean valence and
+arousal ratings stay on the fixed 1–9 native scale and are mapped into the
+model scale without dataset statistics:
+
+```text
+model target = (IDEST English mean rating - 1) / 8
+native-scale prediction = 1 + 8 * model prediction
+```
+
+No IDEST example is trained on, and IDEST labels are not used for calibration,
+checkpoint selection, member weighting, or model input. The primary report is
+global native-scale VA regression over all 250 stories; IDEST does not define
+an official leaderboard score for this protocol.
+
+Validate data, hashes, checkpoints, and fine-tuning-text overlap for each run
+without loading either model:
+
+```bash
+python evaluate_external.py idest-english \
+  --run-dir "$BASE_RUN" \
+  --training-data-dir "$TRAIN_DATA" \
+  --raw-dir "$IDEST_RAW" \
+  --download \
+  --no-preflight-check \
+  --precision checkpoint \
+  --device cuda \
+  --output-dir /workspace/results/external/seed43_bf16_baseline/idest-english-all-250 \
+  --dry-run
+```
+
+```bash
+python evaluate_external.py idest-english \
+  --run-dir "$TRT_RUN" \
+  --training-data-dir "$TRAIN_DATA" \
+  --raw-dir "$IDEST_RAW" \
+  --download \
+  --no-preflight-check \
+  --precision checkpoint \
+  --device cuda \
+  --output-dir /workspace/results/external/seed43_bf16_trt/idest-english-all-250 \
+  --dry-run
+```
+
+Run the two real frozen GPU evaluations:
+
+```bash
+python evaluate_external.py idest-english \
+  --run-dir "$BASE_RUN" \
+  --training-data-dir "$TRAIN_DATA" \
+  --raw-dir "$IDEST_RAW" \
+  --download \
+  --no-preflight-check \
+  --precision checkpoint \
+  --device cuda \
+  --output-dir /workspace/results/external/seed43_bf16_baseline/idest-english-all-250
+```
+
+```bash
+python evaluate_external.py idest-english \
+  --run-dir "$TRT_RUN" \
+  --training-data-dir "$TRAIN_DATA" \
+  --raw-dir "$IDEST_RAW" \
+  --download \
+  --no-preflight-check \
+  --precision checkpoint \
+  --device cuda \
+  --output-dir /workspace/results/external/seed43_bf16_trt/idest-english-all-250
+```
+
+IDEST stories are substantially longer than the utterances in the original
+benchmarks. On a real run, the evaluator tokenizes every story once without
+truncation, records its token count, and reports how many exceed the checkpoint's
+saved `max_length` (currently 200). Inference still uses that immutable saved
+limit. The audit is label-free and is not performed by `--dry-run`, because a
+dry run deliberately does not load the saved tokenizer.
+
+### SemEval-2026 Task 2 Subtask 1: official test only
+
+The SemEval paper states, word for word:
+
+> “Systems are ranked using the average of rcomposite across V & A scores for
+> Subtask 1”
+
+Source: [SemEval-2026 Task 2 paper](https://aclanthology.org/2026.semeval-1.451/).
+
+The evaluator pins the official repository revision
+`50abd23fb884d3dd693c2df479124bcf6c153086` and downloads exactly these two
+released files:
+
+```text
+datasets/TEST_RELEASE_5JAN2026/test_subtask1.csv
+SHA256 61500316be2d5fcd88979e7f12885e4a42d3b9e71e1e2feb15deeda6134ff5fd
+
+datasets/TEST_LABELS_RELEASE_23FEB2026/test_labels_subtask1.csv
+SHA256 9d4734b93112c9db07144f404e013f55abb3f847c96b3cfd2550d8340cf5be3c
+```
+
+The released files contain 1,737 official test rows from 91 users. The loader
+joins one-to-one on `(user_id, text_id)`, preserves official input order, and
+rejects missing, duplicate, or metadata-inconsistent rows. The pinned released
+CSV—not an observed min/max—fixes native valence to `[-2,2]` and arousal to
+`[0,2]`:
+
+```text
+model valence target = (native valence + 2) / 4
+model arousal target = native arousal / 2
+native valence prediction = 4 * model valence - 2
+native arousal prediction = 2 * model arousal
+```
+
+No SemEval train or development item is loaded, and no target example is used
+for training, calibration, checkpoint selection, or ensemble weighting. Gold
+test labels are joined only for schema/range validation and post-prediction
+metrics. The primary score is the official user-aware Subtask 1
+`r_composite`, reported for valence and arousal and averaged across V/A;
+seen/unseen-user and essay/feeling-word results are diagnostics only.
+
+Validate both runs without model loading:
+
+```bash
+python evaluate_external.py semeval-2026-task2-subtask1 \
+  --run-dir "$BASE_RUN" \
+  --training-data-dir "$TRAIN_DATA" \
+  --raw-dir "$SEMEVAL_RAW" \
+  --download \
+  --no-preflight-check \
+  --precision checkpoint \
+  --device cuda \
+  --output-dir /workspace/results/external/seed43_bf16_baseline/semeval-2026-task2-subtask1-test \
+  --dry-run
+```
+
+```bash
+python evaluate_external.py semeval-2026-task2-subtask1 \
+  --run-dir "$TRT_RUN" \
+  --training-data-dir "$TRAIN_DATA" \
+  --raw-dir "$SEMEVAL_RAW" \
+  --download \
+  --no-preflight-check \
+  --precision checkpoint \
+  --device cuda \
+  --output-dir /workspace/results/external/seed43_bf16_trt/semeval-2026-task2-subtask1-test \
+  --dry-run
+```
+
+Run the two real frozen GPU evaluations:
+
+```bash
+python evaluate_external.py semeval-2026-task2-subtask1 \
+  --run-dir "$BASE_RUN" \
+  --training-data-dir "$TRAIN_DATA" \
+  --raw-dir "$SEMEVAL_RAW" \
+  --download \
+  --no-preflight-check \
+  --precision checkpoint \
+  --device cuda \
+  --output-dir /workspace/results/external/seed43_bf16_baseline/semeval-2026-task2-subtask1-test
+```
+
+```bash
+python evaluate_external.py semeval-2026-task2-subtask1 \
+  --run-dir "$TRT_RUN" \
+  --training-data-dir "$TRAIN_DATA" \
+  --raw-dir "$SEMEVAL_RAW" \
+  --download \
+  --no-preflight-check \
+  --precision checkpoint \
+  --device cuda \
+  --output-dir /workspace/results/external/seed43_bf16_trt/semeval-2026-task2-subtask1-test
+```
+
+The present model receives one current row's `text` only. It does not receive
+`user_id`, timestamps, prior user texts, collection phase, seen-user status, or
+essay/feeling-word flags; those fields are retained only for alignment and
+post-prediction reporting. This is therefore a strict current-text-only
+zero-shot test, not a reproduction of history-aware SemEval systems. A real run
+performs the same label-free, checkpoint-`max_length` truncation audit described
+for IDEST and records it in `external_evaluation_manifest.json`.
 
 ### OMG-Emotion test
 

@@ -14,8 +14,12 @@ import torch
 from va_model_code.decoder_va.downloads import sha256_file
 from va_model_code.decoder_va.external_benchmarks import (
     EXTERNAL_EVALUATION_COMPLETION_MARKER,
+    IDEST_FILE,
+    IDEST_NAME,
     MSP_NAME,
     OMG_NAME,
+    SEMEVAL_NAME,
+    SEMEVAL_TEST_FILES,
     ExternalBenchmarkData,
     TextBatchCollator,
     TokenizedTextDataset,
@@ -24,13 +28,16 @@ from va_model_code.decoder_va.external_benchmarks import (
     calculate_external_metrics,
     discover_completed_run,
     fixed_unweighted_ensemble,
+    load_idest_english,
     load_msp_podcast_test,
     load_msp_transcript_mapping,
     load_omg_emotion_test,
+    load_semeval_2026_subtask1_test,
     model_predictions_to_native,
     normalize_msp_file_id,
     normalize_overlap_text,
     reject_benchmark_training_sources,
+    semeval_subtask1_official_metrics,
     write_external_evaluation,
     _atomic_publish_directory_no_replace,
     _validate_zip_members,
@@ -110,6 +117,127 @@ def _write_omg_fixture(
     )
     transcripts.to_csv(directory / "omg_TestTranscripts.tsv", index=False)
     labels.to_csv(directory / "omg_TestVideos_WithLabels.csv", index=False)
+
+
+def _write_idest_fixture(
+    directory: Path,
+    *,
+    duplicate_code: bool = False,
+    blank_english_text: bool = False,
+    invalid_valence: bool = False,
+) -> None:
+    """Write the smallest structurally valid IDEST-style semicolon table."""
+
+    directory.mkdir(parents=True, exist_ok=True)
+    frame = pd.DataFrame(
+        {
+            "code": ["story-3", "story-1", "story-2"],
+            "country": ["Finland", "Germany", "Spain"],
+            "language": ["Finnish", "German", "Spanish"],
+            "text_original": [
+                "alkuperainen kolme",
+                "urspruenglich eins",
+                "original dos",
+            ],
+            "text_english": [
+                "English translation three",
+                "English translation one",
+                "English translation two",
+            ],
+            "number_raters_English": ["20", "21", "22"],
+            "valence_mean_English": ["1", "5", "9"],
+            "arousal_mean_English": ["9", "5", "1"],
+            "characters_English": ["25", "23", "23"],
+            "words_English": ["3", "3", "3"],
+            "StoryType": ["1", "2", "8"],
+        }
+    )
+    if duplicate_code:
+        frame.loc[2, "code"] = frame.loc[0, "code"]
+    if blank_english_text:
+        frame.loc[1, "text_english"] = "   "
+    if invalid_valence:
+        frame.loc[1, "valence_mean_English"] = "9.01"
+    frame.to_csv(
+        directory / IDEST_FILE["filename"],
+        sep=";",
+        index=False,
+        encoding="cp1252",
+    )
+
+
+def _semeval_fixture_tables() -> tuple[pd.DataFrame, pd.DataFrame]:
+    """Return valid input-order and deliberately shuffled-gold task tables."""
+
+    inputs = pd.DataFrame(
+        {
+            "user_id": ["u2", "u1", "u1"],
+            "text_id": ["t3", "t1", "t2"],
+            "text": ["third in input order", "first text", "second text"],
+            "timestamp": [
+                "2025-01-03T12:00:00",
+                "2025-01-01T12:00:00",
+                "2025-01-02T12:00:00",
+            ],
+            "collection_phase": ["2", "1", "1"],
+            "is_words": ["True", "False", "True"],
+            "is_seen_user": ["False", "True", "True"],
+        }
+    )
+    labels = inputs.iloc[[2, 0, 1]].copy().reset_index(drop=True)
+    native_by_key = {
+        ("u2", "t3"): (-2.0, 2.0),
+        ("u1", "t1"): (0.0, 1.0),
+        ("u1", "t2"): (2.0, 0.0),
+    }
+    labels["valence"] = [
+        native_by_key[(user, text)][0]
+        for user, text in labels[["user_id", "text_id"]].itertuples(index=False)
+    ]
+    labels["arousal"] = [
+        native_by_key[(user, text)][1]
+        for user, text in labels[["user_id", "text_id"]].itertuples(index=False)
+    ]
+    return inputs, labels
+
+
+def _write_semeval_fixture(
+    directory: Path,
+    *,
+    duplicate_input_key: bool = False,
+    unmatched_gold_key: bool = False,
+    mismatched_shared_metadata: bool = False,
+    invalid_valence: bool = False,
+    invalid_arousal: bool = False,
+    invalid_boolean: bool = False,
+) -> None:
+    """Write minimal SemEval Subtask 1 inputs and released-gold fixtures."""
+
+    directory.mkdir(parents=True, exist_ok=True)
+    inputs, labels = _semeval_fixture_tables()
+    if duplicate_input_key:
+        inputs = pd.concat((inputs, inputs.iloc[[0]]), ignore_index=True)
+    if unmatched_gold_key:
+        labels.loc[0, "text_id"] = "gold-only"
+    if mismatched_shared_metadata:
+        labels.loc[0, "text"] = "metadata disagreement"
+    if invalid_valence:
+        labels.loc[0, "valence"] = 2.01
+    if invalid_arousal:
+        labels.loc[0, "arousal"] = -0.01
+    if invalid_boolean:
+        inputs.loc[0, "is_words"] = "yes"
+        matching = (
+            labels["user_id"].eq(inputs.loc[0, "user_id"])
+            & labels["text_id"].eq(inputs.loc[0, "text_id"])
+        )
+        labels.loc[matching, "is_words"] = "yes"
+    inputs.to_csv(
+        directory / SEMEVAL_TEST_FILES["inputs"]["filename"], index=False
+    )
+    labels.to_csv(
+        directory / SEMEVAL_TEST_FILES["labels"]["filename"], index=False
+    )
 
 
 def _small_benchmark() -> ExternalBenchmarkData:
@@ -388,6 +516,168 @@ def test_omg_strict_contract_rejects_unpinned_fixture(tmp_path):
 
     with pytest.raises(ValueError, match="SHA256 mismatch"):
         load_omg_emotion_test(tmp_path, strict_official_contract=True)
+
+
+def test_idest_loader_uses_english_text_source_order_and_fixed_scale(tmp_path):
+    _write_idest_fixture(tmp_path)
+
+    data = load_idest_english(tmp_path, strict_official_contract=False)
+
+    assert data.name == IDEST_NAME
+    assert data.version == "unverified-local"
+    assert data.frame["benchmark_id"].tolist() == [
+        "story-3",
+        "story-1",
+        "story-2",
+    ]
+    assert data.frame["text"].tolist() == [
+        "English translation three",
+        "English translation one",
+        "English translation two",
+    ]
+    assert not data.frame["text"].str.contains("urspruenglich").any()
+    np.testing.assert_allclose(
+        data.frame[["valence", "arousal"]].to_numpy(),
+        [[0.0, 1.0], [0.5, 0.5], [1.0, 0.0]],
+    )
+    np.testing.assert_allclose(
+        data.predictions_to_native(np.array([[0.0, 0.0], [1.0, 1.0]])),
+        [[1.0, 1.0], [9.0, 9.0]],
+    )
+    assert data.join_report["english_story_rows"] == 3
+    assert data.source_manifest["english_input_column"] == "text_english"
+    assert data.source_manifest["canonical_contract_verified"] is False
+
+
+@pytest.mark.parametrize(
+    "fixture_kwargs,error",
+    (
+        ({"duplicate_code": True}, "story codes are not unique"),
+        ({"blank_english_text": True}, "blank text_english"),
+        ({"invalid_valence": True}, r"valence must stay in \[1, 9\]"),
+    ),
+)
+def test_idest_loader_rejects_invalid_rows(tmp_path, fixture_kwargs, error):
+    _write_idest_fixture(tmp_path, **fixture_kwargs)
+
+    with pytest.raises(ValueError, match=error):
+        load_idest_english(tmp_path, strict_official_contract=False)
+
+
+def test_idest_strict_contract_rejects_wrong_row_count_after_hash_check(
+    tmp_path, monkeypatch
+):
+    _write_idest_fixture(tmp_path)
+    path = tmp_path / IDEST_FILE["filename"]
+    monkeypatch.setitem(IDEST_FILE, "sha256", sha256_file(path))
+
+    with pytest.raises(ValueError, match="must contain 250 stories; got 3"):
+        load_idest_english(tmp_path, strict_official_contract=True)
+
+
+def test_semeval_loader_preserves_input_order_and_maps_pinned_native_scales(
+    tmp_path,
+):
+    _write_semeval_fixture(tmp_path)
+
+    data = load_semeval_2026_subtask1_test(
+        tmp_path, strict_official_contract=False
+    )
+
+    assert data.name == SEMEVAL_NAME
+    assert data.version == "unverified-local"
+    assert data.frame["benchmark_id"].tolist() == [
+        "u2::t3",
+        "u1::t1",
+        "u1::t2",
+    ]
+    assert data.frame["text"].tolist() == [
+        "third in input order",
+        "first text",
+        "second text",
+    ]
+    np.testing.assert_allclose(
+        data.frame[["native_valence", "native_arousal"]].to_numpy(),
+        [[-2.0, 2.0], [0.0, 1.0], [2.0, 0.0]],
+    )
+    np.testing.assert_allclose(
+        data.frame[["valence", "arousal"]].to_numpy(),
+        [[0.0, 1.0], [0.5, 0.5], [1.0, 0.0]],
+    )
+    np.testing.assert_allclose(
+        data.predictions_to_native(np.array([[0.0, 0.0], [1.0, 1.0]])),
+        [[-2.0, 0.0], [2.0, 2.0]],
+    )
+    assert data.frame["is_seen_user"].tolist() == [False, True, True]
+    assert data.frame["is_words"].tolist() == [True, False, True]
+    assert data.join_report["join_validation"].startswith("one_to_one")
+    assert data.source_manifest["canonical_contract_verified"] is False
+
+
+@pytest.mark.parametrize(
+    "fixture_kwargs,error",
+    (
+        ({"duplicate_input_key": True}, "inputs keys are not unique"),
+        ({"unmatched_gold_key": True}, "keys do not match one-to-one"),
+        ({"mismatched_shared_metadata": True}, "text values disagree"),
+        ({"invalid_valence": True}, r"valence must stay in \[-2, 2\]"),
+        ({"invalid_arousal": True}, r"arousal must stay in \[0, 2\]"),
+        ({"invalid_boolean": True}, "must contain only True/False"),
+    ),
+)
+def test_semeval_loader_rejects_contract_violations(
+    tmp_path, fixture_kwargs, error
+):
+    _write_semeval_fixture(tmp_path, **fixture_kwargs)
+
+    with pytest.raises(ValueError, match=error):
+        load_semeval_2026_subtask1_test(
+            tmp_path, strict_official_contract=False
+        )
+
+
+def test_semeval_strict_contract_rejects_wrong_row_count_after_hash_check(
+    tmp_path, monkeypatch
+):
+    _write_semeval_fixture(tmp_path)
+    for role, contract in SEMEVAL_TEST_FILES.items():
+        path = tmp_path / contract["filename"]
+        monkeypatch.setitem(contract, "sha256", sha256_file(path))
+
+    with pytest.raises(ValueError, match="must contain 1737 rows; got 3"):
+        load_semeval_2026_subtask1_test(
+            tmp_path, strict_official_contract=True
+        )
+
+
+def test_semeval_official_scorer_matches_reference_calculation():
+    users = np.array(["a", "a", "a", "b", "b", "b", "c", "c", "c"])
+    labels_one_dimension = np.array([0, 1, 2, 1, 2, 4, 2, 4, 5], dtype=float)
+    predictions_one_dimension = np.array(
+        [0.2, 1.7, 1.3, 1.4, 1.6, 3.8, 2.5, 3.6, 5.3],
+        dtype=float,
+    )
+    labels = np.column_stack((labels_one_dimension, labels_one_dimension))
+    predictions = np.column_stack(
+        (predictions_one_dimension, predictions_one_dimension)
+    )
+
+    metrics = semeval_subtask1_official_metrics(labels, predictions, users)
+
+    assert metrics["r_composite_mean_va"] == pytest.approx(0.9820382176998993)
+    assert metrics[
+        "mae_composite_mean_va_official_implementation"
+    ] == pytest.approx(0.26340028566258467)
+    for dimension in ("valence", "arousal"):
+        result = metrics["dimensions"][dimension]
+        assert result["r_within"] == pytest.approx(0.875417724795919)
+        assert result["r_between"] == pytest.approx(0.9975304945757417)
+        assert result["r_composite"] == pytest.approx(0.9820382176998993)
+        assert result["mae_within"] == pytest.approx(0.4222222222222222)
+        assert result["mae_between"] == pytest.approx(0.0888888888888888)
+        assert result[
+            "mae_composite_official_implementation"
+        ] == pytest.approx(0.26340028566258467)
 
 
 def test_msp_loader_maps_official_columns_and_preserves_test_order(tmp_path):
@@ -768,6 +1058,23 @@ def test_external_outputs_reject_shuffled_audited_benchmark_ids(operation):
             )
 
 
+def test_external_metrics_reject_tampered_semeval_group_metadata(tmp_path):
+    _write_semeval_fixture(tmp_path)
+    benchmark = load_semeval_2026_subtask1_test(
+        tmp_path,
+        strict_official_contract=False,
+    )
+    audited = benchmark.frame.copy()
+    audited.loc[0, "user_id"] = "tampered-user"
+
+    with pytest.raises(ValueError, match="changed canonical user_id"):
+        calculate_external_metrics(
+            benchmark,
+            benchmark.labels_model_scale(),
+            audited_frame=audited,
+        )
+
+
 def test_prediction_report_excludes_raw_text_and_gold_by_default():
     benchmark = _small_benchmark()
     first = np.full((3, 2), 0.25)
@@ -933,6 +1240,43 @@ def test_reject_benchmark_training_source_names():
     )
     with pytest.raises(ValueError, match="appears in fine-tuning sources"):
         reject_benchmark_training_sources((spelled_out,), OMG_NAME)
+
+
+@pytest.mark.parametrize(
+    "benchmark_name,training_source",
+    (
+        (IDEST_NAME, "IDEST"),
+        (
+            IDEST_NAME,
+            "International Database of Emotional Short Texts",
+        ),
+        (SEMEVAL_NAME, "SemEval"),
+        (SEMEVAL_NAME, "SemEval 2026"),
+        (SEMEVAL_NAME, "SemEval 2026 Task 2"),
+        (SEMEVAL_NAME, "EmotionValArouTimeVariation"),
+        (SEMEVAL_NAME, "Ecological Essays"),
+    ),
+)
+def test_reject_new_benchmark_training_source_aliases(
+    benchmark_name, training_source
+):
+    member = SimpleNamespace(
+        run_manifest={"dataset_counts_after_filter": {training_source: 3}}
+    )
+
+    with pytest.raises(ValueError, match="appears in fine-tuning sources"):
+        reject_benchmark_training_sources((member,), benchmark_name)
+
+
+@pytest.mark.parametrize("benchmark_name", (IDEST_NAME, SEMEVAL_NAME))
+def test_new_benchmark_source_rejection_allows_unrelated_training_data(
+    benchmark_name,
+):
+    member = SimpleNamespace(
+        run_manifest={"dataset_counts_after_filter": {"Emobank": 3}}
+    )
+
+    reject_benchmark_training_sources((member,), benchmark_name)
 
 
 def test_write_external_evaluation_is_non_overwriting_and_manifest_says_no_training(

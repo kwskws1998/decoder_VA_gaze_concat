@@ -104,6 +104,139 @@ sigmoid output activation. Training requires an explicit choice
 of `mse`, `ccc`, or the legacy-compatible 50:50 `mse+ccc`; no uncertainty or
 log-variance head is used. The commands below use MSE as the simplest baseline.
 
+## Gaze redistribution
+
+`--gaze-redistribution` is an independent optional transformation, not a new
+concat architecture. The default is `none`, which preserves the existing raw
+gaze path and adds no learned parameters. `asym-gaussian` requires
+`--gaze-fusion prefix-concat` and TRT among `--gaze-features`; invalid
+combinations fail before model downloads.
+
+The active implementation is `decoder_va/redistribution.py`. Its position in
+the model is:
+
+```text
+frozen ET2 -> Qwen alignment + gaze mask -> raw-aligned-feature cache
+          -> optional TRT redistribution -> unchanged gaze projector
+          -> unchanged gaze-prefix packing -> Qwen -> VA head
+```
+
+The cache contains only raw ET2 predictions. Redistribution is outside ET2's
+inference-only context and executes on every forward pass, so its two learned
+log-width parameters receive VA-loss gradients in both full and LoRA modes.
+`--redistribution-sigma-left` and `--redistribution-sigma-right` default to
+`1.0`; the positive width is `exp(log_sigma) + min_sigma`, with
+`--redistribution-min-sigma 1e-6`. Kernel calculations use FP32 even during BF16
+autocast. Only the selected TRT channel is replaced at valid gaze positions;
+other selected channels are unchanged there. Masked rows are zeroed before
+projection, including non-TRT channels, so invalid NaN/Inf padding cannot poison
+projector gradients. No gaze-value clipping, renormalization of the input features,
+or ET2 fine-tuning is introduced.
+
+Mask handling is mandatory. The model passes the provider's explicit
+`gaze_mask`, which marks valid mapped first subwords, rather than deriving a
+mask from `TRT != 0` or using only the text padding mask. Both sources and
+destinations are masked. Padding, special tokens, continuation subwords, and
+unmapped positions neither contribute nor receive TRT. Valid zero-valued TRT
+positions remain eligible destinations. Each valid source's Gaussian weights
+sum to one across valid destinations, preserving the total valid signed TRT
+up to numerical roundoff; an all-masked row returns zeros.
+
+The recorded geometry is `aligned_qwen_tokens`: Gaussian distance uses the
+original aligned Qwen token indices, retaining gaps at masked positions.
+Redistribution happens before gaze-prefix compaction. It does not use compact
+word ranks, character distances, or the ET2 tokenizer's positions. This is an
+explicit adaptation to this model's alignment, not a claim of numerical
+equivalence to redistribution in a different tokenizer.
+
+Source audit (2026-09-04): the supplied
+`34755_Leveraging_Psychophysica_Supplementary Material (1).zip` has SHA256
+`6d8fef30b7f8a0ad9cd2f6d81220a7d5b16c73ea1f3523896762de2be5228e61`;
+its `models/asym_gaussian_redistributor.py` member has SHA256
+`284db3253abf8f9d399bd314c394eff67109c0ef0a72c721582321d99044b714`.
+That inspected kernel already implements source/destination masking. The
+`MyRewardBase.process_fixations` ET2 branch in `models/reward_model_base.py`
+checks whether TRT is selected but does not check
+`self.use_asym_gaussian_redistributor`, unlike its ET1 branch. Thus its ET2
+path can apply redistribution even when the enable flag is false, a separate
+integration issue from the kernel's masking support. This implementation
+explicitly wires the requested option and the original sparse gaze mask into
+the model; it does not assume that an unobserved historical run used the
+inspected mask-aware code.
+
+Schema-7 run and architecture manifests record the canonical
+`gaze_redistribution` configuration; `model.safetensors` stores the two learned
+width parameters alongside the existing model weights. Initialization values
+in JSON are not the learned final widths. New default run names and archive
+condition names distinguish raw gaze from redistribution. Legacy schema-5/6
+models retain disabled redistribution; a schema-7 checkpoint must record the
+setting explicitly. Resume requires the same configuration and cannot add or
+remove redistribution. Enabled resume supports ordinary single-file Trainer
+`model.safetensors` checkpoints, not adapter-only, pickle, sharded, or symlinked
+weight layouts. Before replacing any fold manifest, it safely inspects the two
+named Gaussian-width tensors and requires finite FP32 scalars, preventing
+silent initialization when width state is absent or incompatible. External
+evaluation reconstructs and freezes the saved
+condition: there is no benchmark-time switch for retrofitting redistribution
+onto a previously trained raw-TRT checkpoint.
+Final-model reload uses the same finite-FP32-scalar validator before loading the
+backbone; corrupted or silently cast Gaussian-width state is rejected.
+
+Run a new full-fine-tuning BF16 condition from `va_model_code`, reusing the
+existing paper-protocol data and all matched training settings:
+
+```bash
+SEED=43
+RUN_NAME="paper7_no_iemocap_qwen_full_gaze_TRT_redistribution_asym-gaussian_bf16_gc_b16_seed${SEED}_$(date +%Y%m%d_%H%M%S)"
+mkdir -p ../results
+set -o pipefail
+
+python train_model.py qwen3.5-0.8b mse \
+  --data-dir data/paper7_seed42 \
+  --finetuning-mode full \
+  --precision bf16 \
+  --gaze-fusion prefix-concat \
+  --gaze-features TRT \
+  --gaze-redistribution asym-gaussian \
+  --redistribution-sigma-left 1.0 \
+  --redistribution-sigma-right 1.0 \
+  --redistribution-min-sigma 1e-6 \
+  --et-model-id skboy/et_prediction_2 \
+  --et-cache-size 70000 \
+  --no-iemocap \
+  --held-out-folds 1 2 \
+  --max-length 200 \
+  --train-batch-size 16 \
+  --eval-batch-size 16 \
+  --gradient-accumulation-steps 1 \
+  --epochs 10 \
+  --max-steps -1 \
+  --learning-rate 6e-6 \
+  --weight-decay 0.01 \
+  --warmup-ratio 0.1 \
+  --logging-steps 200 \
+  --save-total-limit 1 \
+  --group-by-length \
+  --gradient-checkpointing \
+  --seed "$SEED" \
+  --run-name "$RUN_NAME" \
+  2>&1 | tee "../results/${RUN_NAME}.log"
+```
+
+For the matched raw-TRT control, use `--gaze-redistribution none`, omit the three
+sigma options, and remove `redistribution_asym-gaussian` from its new run name.
+Do not regenerate `data/paper7_seed42` when changing only the training seed.
+
+FP32 uses the same redistribution interface: change `--precision bf16` to
+`--precision fp32` and the run-name precision tag. If memory requires a smaller
+physical batch, `--train-batch-size 8 --eval-batch-size 8
+--gradient-accumulation-steps 2` retains effective batch size 16; record this
+change and match it in the corresponding control. The new redistribution
+condition has not been trained or GPU-memory-profiled here. Two additional
+parameters do not imply zero activation-memory cost: the kernel uses
+quadratic token-pair weights. Start with the smoke test below and inspect
+`heldout_fold*/gpu_memory.json`; fitting a 24 GB device is not guaranteed.
+
 ## Environment
 
 Qwen3.5 requires a newer Transformers build than the original code:

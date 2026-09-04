@@ -51,6 +51,7 @@ from va_model_code.decoder_va.model import (
     DEFAULT_GAZE_PROJECTION_DROPOUT,
     SAFE_WEIGHTS_FILENAME,
 )
+from va_model_code.decoder_va.redistribution import redistribution_contract
 from va_model_code.decoder_va.preprocessing import FOLD_FILENAMES
 
 
@@ -282,6 +283,7 @@ def _run_contract_fields(root: Path) -> dict:
         "model_revision": "a" * 40,
         "finetuning_mode": "full",
         "gaze_fusion": "prefix-concat",
+        "gaze_redistribution": {"method": "none"},
         "gaze_features": ["TRT"],
         "gaze_feature_indices": [3],
         "features_used": [0, 0, 0, 1, 0],
@@ -324,9 +326,25 @@ def _saved_metrics(frame: pd.DataFrame, *, prefix: str = "") -> dict:
     }
 
 
-def _write_completed_run(root: Path, *, mismatch: bool = False) -> None:
+def _write_completed_run(
+    root: Path,
+    *,
+    mismatch: bool = False,
+    schema_version: int = ARCHITECTURE_MANIFEST_VERSION,
+    gaze_redistribution: dict | None = None,
+) -> None:
     root.mkdir(parents=True, exist_ok=True)
     parameters = _run_contract_fields(root)
+    parameters["architecture_manifest_version"] = schema_version
+    if schema_version == 6:
+        parameters.pop("gaze_redistribution")
+    if gaze_redistribution is not None:
+        parameters["gaze_redistribution"] = gaze_redistribution
+    redistribution_metadata = (
+        {"gaze_redistribution": parameters["gaze_redistribution"]}
+        if "gaze_redistribution" in parameters
+        else {}
+    )
     (root / "training_parameters.json").write_text(
         json.dumps(parameters), encoding="utf-8"
     )
@@ -370,7 +388,8 @@ def _write_completed_run(root: Path, *, mismatch: bool = False) -> None:
             json.dumps(manifest), encoding="utf-8"
         )
         architecture = {
-            "schema_version": ARCHITECTURE_MANIFEST_VERSION,
+            "schema_version": schema_version,
+            **redistribution_metadata,
             "decoder_model_id": parameters["model_id"],
             "decoder_commit": parameters["model_revision"],
             "finetuning_mode": parameters["finetuning_mode"],
@@ -391,6 +410,7 @@ def _write_completed_run(root: Path, *, mismatch: bool = False) -> None:
             "output_activation": "hard_sigmoid",
             "output_names": ["valence", "arousal"],
             "reconstruction": {
+                **redistribution_metadata,
                 "decoder_model_id": parameters["model_id"],
                 "decoder_revision": parameters["model_revision"],
                 "finetuning_mode": parameters["finetuning_mode"],
@@ -1279,11 +1299,13 @@ def test_new_benchmark_source_rejection_allows_unrelated_training_data(
     reject_benchmark_training_sources((member,), benchmark_name)
 
 
+@pytest.mark.parametrize("redistribution_method", ["none", "asym-gaussian"])
 def test_write_external_evaluation_is_non_overwriting_and_manifest_says_no_training(
-    tmp_path,
+    tmp_path, redistribution_method,
 ):
     run_root = tmp_path / "run"
-    _write_completed_run(run_root)
+    saved_redistribution = redistribution_contract(redistribution_method)
+    _write_completed_run(run_root, gaze_redistribution=saved_redistribution)
     members = discover_completed_run(run_root)
     benchmark = _small_benchmark()
     audited = benchmark.frame.copy()
@@ -1312,6 +1334,10 @@ def test_write_external_evaluation_is_non_overwriting_and_manifest_says_no_train
     assert manifest["gradient_updates"] == 0
     assert manifest["calibration_performed"] is False
     assert manifest["external_model_selection"] is False
+    assert all(
+        member["gaze_redistribution"] == saved_redistribution
+        for member in manifest["members"]
+    )
     assert "saved by the original completed training run" in manifest["checkpoint_origin"]
     assert "text" not in predictions
     completion = json.loads(
@@ -1430,3 +1456,89 @@ def test_atomic_publish_never_replaces_an_existing_empty_directory(tmp_path):
     assert staged.is_dir()
     assert target.is_dir()
     assert list(target.iterdir()) == []
+
+
+@pytest.mark.parametrize("version,method", [(6, None), (7, "none"), (7, "asym-gaussian")])
+def test_discover_completed_run_preserves_legacy_and_active_redistribution(
+    tmp_path, version, method
+):
+    """Accept original schema-six bundles and fully declared new conditions."""
+
+    contract = None if method is None else redistribution_contract(method)
+    _write_completed_run(tmp_path, schema_version=version, gaze_redistribution=contract)
+
+    members = discover_completed_run(tmp_path)
+
+    assert len(members) == 2
+    for member in members:
+        assert member.architecture_manifest["schema_version"] == version
+        assert member.run_manifest.get("gaze_redistribution", {"method": "none"}) == (
+            {"method": "none"} if contract is None else contract
+        )
+
+
+def _edit_redistribution_metadata(root: Path, target: str, value, *, remove=False) -> None:
+    """Tamper one independent artifact without altering other provenance copies."""
+
+    if target == "root":
+        path = root / "training_parameters.json"
+    elif target.startswith("fold"):
+        path = root / f"heldout_{target}" / "run_manifest.json"
+    else:
+        path = root / "heldout_fold2" / "final_model" / ARCHITECTURE_MANIFEST_FILENAME
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    container = payload["reconstruction"] if target == "reconstruction" else payload
+    if remove:
+        container.pop("gaze_redistribution")
+    else:
+        container["gaze_redistribution"] = value
+    path.write_text(json.dumps(payload), encoding="utf-8")
+
+
+@pytest.mark.parametrize("target", ["root", "fold1", "fold2", "architecture", "reconstruction"])
+@pytest.mark.parametrize("method", ["none", "asym-gaussian"])
+def test_discover_schema7_rejects_missing_redistribution(tmp_path, target, method):
+    """Never infer disabled behavior from a missing new-schema condition field."""
+
+    _write_completed_run(tmp_path, gaze_redistribution=redistribution_contract(method))
+    _edit_redistribution_metadata(tmp_path, target, None, remove=True)
+
+    with pytest.raises(ValueError, match="gaze_redistribution"):
+        discover_completed_run(tmp_path)
+
+
+@pytest.mark.parametrize("target", ["root", "fold1", "fold2", "architecture", "reconstruction"])
+def test_discover_rejects_redistribution_disagreement(tmp_path, target):
+    """Require all provenance copies and both ensemble folds to describe one condition."""
+
+    _write_completed_run(tmp_path, gaze_redistribution=redistribution_contract("asym-gaussian"))
+    _edit_redistribution_metadata(tmp_path, target, {"method": "none"})
+
+    with pytest.raises(ValueError, match="gaze_redistribution"):
+        discover_completed_run(tmp_path)
+
+
+@pytest.mark.parametrize("target", ["root", "fold1", "fold2", "architecture", "reconstruction"])
+def test_discover_rejects_redistribution_in_schema6(tmp_path, target):
+    """Reject claiming learned redistribution parameters in pre-feature artifacts."""
+
+    _write_completed_run(tmp_path, schema_version=6)
+    _edit_redistribution_metadata(tmp_path, target, redistribution_contract("asym-gaussian"))
+
+    with pytest.raises(ValueError, match="schema 6 cannot enable"):
+        discover_completed_run(tmp_path)
+
+
+@pytest.mark.parametrize(
+    "field,value",
+    [("mask_policy", "targets_only"), ("trainable", False), ("init_sigma_left", -1), ("feature", "FFD")],
+)
+def test_discover_rejects_malformed_redistribution(tmp_path, field, value):
+    """Validate contract semantics in addition to equality across saved artifacts."""
+
+    contract = redistribution_contract("asym-gaussian")
+    contract[field] = value
+    _write_completed_run(tmp_path, gaze_redistribution=contract)
+
+    with pytest.raises(ValueError, match="redistribution|sigma"):
+        discover_completed_run(tmp_path)

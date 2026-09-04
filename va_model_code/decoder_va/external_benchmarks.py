@@ -38,9 +38,11 @@ from .model import (
     DEFAULT_GAZE_PROJECTION_DIM,
     DEFAULT_GAZE_PROJECTION_DROPOUT,
     OUTPUT_ACTIVATION,
+    PRE_REDISTRIBUTION_MANIFEST_VERSION,
     SAFE_WEIGHTS_FILENAME,
 )
 from .preprocessing import FOLD_FILENAMES
+from .redistribution import validate_redistribution_contract
 
 
 EXTERNAL_EVALUATION_SCHEMA_VERSION = 1
@@ -1745,6 +1747,27 @@ def _require_recorded_metrics(
             )
 
 
+def _saved_redistribution_contract(
+    metadata: Mapping[str, Any],
+    parameters: Mapping[str, Any],
+    *,
+    label: str,
+) -> dict[str, Any]:
+    """Read a schema-aware redistribution identity without guessing new metadata."""
+
+    version = parameters["architecture_manifest_version"]
+    if "gaze_redistribution" not in metadata and version != PRE_REDISTRIBUTION_MANIFEST_VERSION:
+        raise ValueError(f"{label} is missing gaze_redistribution.")
+    contract = validate_redistribution_contract(
+        metadata.get("gaze_redistribution", {"method": "none"}),
+        gaze_fusion=parameters["gaze_fusion"],
+        feature_indices=parameters["gaze_feature_indices"],
+    )
+    if version == PRE_REDISTRIBUTION_MANIFEST_VERSION and contract["method"] != "none":
+        raise ValueError(f"{label}: schema 6 cannot enable gaze_redistribution.")
+    return contract
+
+
 def _validate_architecture_provenance(
     architecture: Mapping[str, Any],
     parameters: Mapping[str, Any],
@@ -1780,6 +1803,20 @@ def _validate_architecture_provenance(
         raise ValueError(
             f"Held-out fold {held_out_fold} architecture reconstruction must be an object."
         )
+    expected_redistribution = _saved_redistribution_contract(
+        parameters, parameters, label="training_parameters.json"
+    )
+    for source, label in (
+        (architecture, "architecture"),
+        (reconstruction, "architecture reconstruction"),
+    ):
+        if _saved_redistribution_contract(
+            source, parameters, label=f"Held-out fold {held_out_fold} {label}"
+        ) != expected_redistribution:
+            raise ValueError(
+                f"Held-out fold {held_out_fold} {label} disagrees with "
+                "training provenance for gaze_redistribution."
+            )
     uses_lora = parameters["finetuning_mode"] == "lora"
     expected_reconstruction = {
         "decoder_model_id": parameters["model_id"],
@@ -1914,7 +1951,9 @@ def _validate_root_run_parameters(root: Path, parameters: Mapping[str, Any]) -> 
         raise ValueError(
             "External evaluation requires the complete held-out folds 1 and 2."
         )
-    if parameters["architecture_manifest_version"] != ARCHITECTURE_MANIFEST_VERSION:
+    if type(parameters["architecture_manifest_version"]) is not int or parameters[
+        "architecture_manifest_version"
+    ] not in {PRE_REDISTRIBUTION_MANIFEST_VERSION, ARCHITECTURE_MANIFEST_VERSION}:
         raise ValueError(
             "training_parameters.json uses an unsupported architecture manifest version."
         )
@@ -1926,6 +1965,9 @@ def _validate_root_run_parameters(root: Path, parameters: Mapping[str, Any]) -> 
         raise ValueError("Saved finetuning_mode must be full or lora.")
     if parameters["gaze_fusion"] not in {"none", "prefix-concat"}:
         raise ValueError("Saved gaze_fusion must be none or prefix-concat.")
+    _saved_redistribution_contract(
+        parameters, parameters, label="training_parameters.json"
+    )
     if isinstance(parameters["seed"], bool) or not isinstance(parameters["seed"], int):
         raise ValueError("training_parameters.json seed must be an integer.")
     for field in ("max_length", "eval_batch_size"):
@@ -2076,6 +2118,15 @@ def discover_completed_run(
         architecture_path = model_dir / ARCHITECTURE_MANIFEST_FILENAME
         weights_path = model_dir / SAFE_WEIGHTS_FILENAME
         run_manifest = _read_json_object(run_manifest_path, "fold run manifest")
+        if _saved_redistribution_contract(
+            run_manifest, training_parameters, label=str(run_manifest_path)
+        ) != _saved_redistribution_contract(
+            training_parameters, training_parameters, label="training_parameters.json"
+        ):
+            raise ValueError(
+                f"Fold manifest disagrees with training_parameters.json for "
+                f"gaze_redistribution: {run_manifest_path}"
+            )
         _require_regular_artifact(architecture_path, "architecture manifest")
         architecture = _read_json_object(architecture_path, "architecture manifest")
         if not weights_path.is_file():
@@ -2836,6 +2887,11 @@ def _write_external_evaluation_payload(
                 "dtype": member.run_manifest.get("dtype"),
                 "gaze_fusion": member.run_manifest.get("gaze_fusion"),
                 "gaze_features": member.run_manifest.get("gaze_features"),
+                "gaze_redistribution": _saved_redistribution_contract(
+                    member.run_manifest,
+                    member.run_manifest,
+                    label=f"{member.name} run manifest",
+                ),
                 "et_revision": member.run_manifest.get("et_revision"),
                 "max_length": member.run_manifest.get("max_length"),
             }

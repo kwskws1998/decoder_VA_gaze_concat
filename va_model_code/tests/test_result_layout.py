@@ -11,6 +11,7 @@ import zipfile
 
 import pytest
 
+from va_model_code.decoder_va.redistribution import redistribution_contract
 from va_model_code.decoder_va.paths import (
     condition_slug,
     default_run_name,
@@ -51,12 +52,18 @@ def _perfect_metrics(count: int, *, prefix: str = "") -> dict[str, int | float]:
     return {f"{prefix}{name}": value for name, value in values.items()}
 
 
-def _write_completed_run(run_dir: Path, *, gaze_fusion: str = "none") -> None:
+def _write_completed_run(
+    run_dir: Path,
+    *,
+    gaze_fusion: str = "none",
+    schema_version: int = 6,
+    gaze_redistribution: dict | None = None,
+) -> None:
     """Create the smallest complete two-fold artifact tree used by packaging tests."""
 
     gaze_features = [] if gaze_fusion == "none" else ["TRT"]
     parameters = {
-        "architecture_manifest_version": 6,
+        "architecture_manifest_version": schema_version,
         "model": "qwen3.5-0.8b",
         "model_id": "Qwen/fake",
         "model_revision": "a" * 40,
@@ -109,6 +116,17 @@ def _write_completed_run(run_dir: Path, *, gaze_fusion: str = "none") -> None:
         "run_name": run_dir.name,
         "effective_output_dir": str(run_dir),
     }
+    if schema_version >= 7 or gaze_redistribution is not None:
+        parameters["gaze_redistribution"] = (
+            {"method": "none"}
+            if gaze_redistribution is None
+            else gaze_redistribution
+        )
+    redistribution_metadata = (
+        {"gaze_redistribution": parameters["gaze_redistribution"]}
+        if "gaze_redistribution" in parameters
+        else {}
+    )
     run_dir.mkdir(parents=True)
     (run_dir / "training_parameters.json").write_text(
         json.dumps(parameters),
@@ -179,7 +197,8 @@ def _write_completed_run(run_dir: Path, *, gaze_fusion: str = "none") -> None:
         (fold_dir / "final_model" / "decoder_va_architecture.json").write_text(
             json.dumps(
                 {
-                    "schema_version": 6,
+                    "schema_version": schema_version,
+                    **redistribution_metadata,
                     "decoder_model_id": parameters["model_id"],
                     "decoder_commit": parameters["model_revision"],
                     "finetuning_mode": parameters["finetuning_mode"],
@@ -204,6 +223,7 @@ def _write_completed_run(run_dir: Path, *, gaze_fusion: str = "none") -> None:
                     "output_activation": parameters["output_activation"],
                     "output_names": ["valence", "arousal"],
                     "reconstruction": {
+                        **redistribution_metadata,
                         "decoder_model_id": parameters["model_id"],
                         "decoder_revision": parameters["model_revision"],
                         "finetuning_mode": parameters["finetuning_mode"],
@@ -861,3 +881,111 @@ def test_results_only_package_labels_explicit_iemocap_exclusion(
     archive = package_results(run_dir, results_root=tmp_path)
 
     assert "_no_iemocap_" in archive.name
+
+
+@pytest.mark.parametrize("version,method", [(6, None), (6, "none"), (7, "none"), (7, "asym-gaussian")])
+def test_package_records_distinct_redistribution_condition(tmp_path, version, method):
+    """Keep legacy archive names while distinguishing the learned redistribution arm."""
+
+    run_dir = tmp_path / "run"
+    contract = None if method is None else redistribution_contract(method)
+    _write_completed_run(
+        run_dir,
+        gaze_fusion="prefix-concat",
+        schema_version=version,
+        gaze_redistribution=contract,
+    )
+
+    archive_path = package_results(run_dir, results_root=tmp_path)
+
+    assert ("redistribution_asym-gaussian" in archive_path.name) == (method == "asym-gaussian")
+    with zipfile.ZipFile(archive_path) as archive:
+        manifest = json.loads(archive.read(f"{run_dir.name}/results_manifest.json"))
+        assert manifest["condition"]["gaze_fusion"] == "prefix-concat"
+        assert manifest["condition"]["gaze_redistribution"] == (
+            {"method": "none"} if contract is None else contract
+        )
+
+
+def _tamper_redistribution(run_dir, target, value, *, remove=False):
+    """Modify one persisted contract copy to test rejection before ZIP publication."""
+
+    if target == "root":
+        path = run_dir / "training_parameters.json"
+    elif target.startswith("fold"):
+        path = run_dir / f"heldout_{target}" / "run_manifest.json"
+    else:
+        path = run_dir / "heldout_fold2" / "final_model" / "decoder_va_architecture.json"
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    container = payload["reconstruction"] if target == "reconstruction" else payload
+    if remove:
+        container.pop("gaze_redistribution")
+    else:
+        container["gaze_redistribution"] = value
+    path.write_text(json.dumps(payload), encoding="utf-8")
+
+
+@pytest.mark.parametrize("target", ["root", "fold1", "fold2", "architecture", "reconstruction"])
+@pytest.mark.parametrize("method", ["none", "asym-gaussian"])
+def test_package_schema7_rejects_missing_redistribution(tmp_path, target, method):
+    """Require explicit disabled metadata too, preventing silent condition downgrades."""
+
+    run_dir = tmp_path / "run"
+    _write_completed_run(
+        run_dir,
+        gaze_fusion="prefix-concat",
+        schema_version=7,
+        gaze_redistribution=redistribution_contract(method),
+    )
+    _tamper_redistribution(run_dir, target, None, remove=True)
+
+    with pytest.raises(ValueError, match="gaze_redistribution"):
+        package_results(run_dir, results_root=tmp_path)
+    assert not list(run_dir.glob("*.zip"))
+
+
+@pytest.mark.parametrize("target", ["root", "fold1", "fold2", "architecture", "reconstruction"])
+def test_package_rejects_redistribution_disagreement(tmp_path, target):
+    """Prevent a concat result from being relabeled as a redistribution result."""
+
+    run_dir = tmp_path / "run"
+    _write_completed_run(
+        run_dir,
+        gaze_fusion="prefix-concat",
+        schema_version=7,
+        gaze_redistribution=redistribution_contract("asym-gaussian"),
+    )
+    _tamper_redistribution(run_dir, target, {"method": "none"})
+
+    with pytest.raises(ValueError, match="gaze_redistribution"):
+        package_results(run_dir, results_root=tmp_path)
+
+
+@pytest.mark.parametrize("target", ["root", "fold1", "fold2", "architecture", "reconstruction"])
+def test_package_rejects_redistribution_in_schema6(tmp_path, target):
+    """Legacy files cannot claim a trainable component they could not have saved."""
+
+    run_dir = tmp_path / "run"
+    _write_completed_run(run_dir, gaze_fusion="prefix-concat")
+    _tamper_redistribution(run_dir, target, redistribution_contract("asym-gaussian"))
+
+    with pytest.raises(ValueError, match="schema 6 cannot enable"):
+        package_results(run_dir, results_root=tmp_path)
+
+
+@pytest.mark.parametrize(
+    "field,value",
+    [("normalization", "none"), ("compute_dtype", "float16"), ("min_sigma", 0), ("trainable", 1)],
+)
+def test_package_rejects_malformed_redistribution(tmp_path, field, value):
+    """Reject invalid semantics even when every provenance copy contains the same edit."""
+
+    run_dir = tmp_path / "run"
+    contract = redistribution_contract("asym-gaussian")
+    contract[field] = value
+    _write_completed_run(
+        run_dir, gaze_fusion="prefix-concat", schema_version=7, gaze_redistribution=contract
+    )
+
+    with pytest.raises(ValueError, match="redistribution|sigma"):
+        package_results(run_dir, results_root=tmp_path)

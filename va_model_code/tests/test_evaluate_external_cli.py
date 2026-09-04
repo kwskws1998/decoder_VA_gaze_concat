@@ -20,6 +20,7 @@ if str(VA_MODEL_CODE) not in sys.path:
 
 evaluate_external = importlib.import_module("evaluate_external")
 from decoder_va.external_benchmarks import ExternalBenchmarkData
+from decoder_va.model import ARCHITECTURE_MANIFEST_VERSION
 
 
 class OrderedTokenizer:
@@ -163,6 +164,25 @@ def test_parser_rejects_fp32_precision_override() -> None:
                 "--precision",
                 "fp32",
             ]
+        )
+    assert error.value.code == 2
+
+
+@pytest.mark.parametrize(
+    "option,value",
+    [
+        ("--gaze-redistribution", "asym-gaussian"),
+        ("--redistribution-sigma-left", "2.0"),
+        ("--redistribution-sigma-right", "2.0"),
+    ],
+)
+def test_parser_cannot_override_saved_redistribution(option, value) -> None:
+    """Keep learned redistribution frozen instead of adding inference-time switches."""
+
+    parser = evaluate_external._build_parser()
+    with pytest.raises(SystemExit) as error:
+        parser.parse_args(
+            ["idest-english", "--run-dir", "run", "--raw-dir", "raw", option, value]
         )
     assert error.value.code == 2
 
@@ -609,6 +629,9 @@ def test_full_cpu_run_predicts_both_members_and_atomically_writes_results(
         official_group_column="video",
     )
     common_manifest = {
+        "architecture_manifest_version": ARCHITECTURE_MANIFEST_VERSION,
+        "gaze_redistribution": {"method": "none"},
+        "gaze_feature_indices": [],
         "data_dir": None,
         "dtype": "float32",
         "eval_batch_size": 2,
@@ -743,6 +766,9 @@ def test_full_semeval_run_audits_truncation_and_reports_official_score(
         ),
     )
     common_manifest = {
+        "architecture_manifest_version": ARCHITECTURE_MANIFEST_VERSION,
+        "gaze_redistribution": {"method": "none"},
+        "gaze_feature_indices": [],
         "data_dir": None,
         "dtype": "float32",
         "eval_batch_size": 2,
@@ -858,6 +884,9 @@ def test_full_idest_length_sensitivity_uses_override_and_marks_nonprimary(
         prediction_metadata_columns=("idest_code",),
     )
     common_manifest = {
+        "architecture_manifest_version": ARCHITECTURE_MANIFEST_VERSION,
+        "gaze_redistribution": {"method": "none"},
+        "gaze_feature_indices": [],
         "data_dir": None,
         "dtype": "float32",
         "eval_batch_size": 2,

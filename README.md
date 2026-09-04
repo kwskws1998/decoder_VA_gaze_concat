@@ -62,6 +62,36 @@ python va_model_code/train_model.py --dry-run \
   --gaze-features TRT
 ```
 
+## Optional gaze redistribution
+
+Gaze concat and gaze redistribution are separate settings. Existing commands
+still use raw ET2 features because `--gaze-redistribution none` is the default.
+To learn an asymmetric Gaussian TRT transformation before the same gaze-prefix
+projection, add:
+
+```bash
+python va_model_code/train_model.py --dry-run \
+  --data-dir va_model_code/data/paper7_seed42 \
+  --finetuning-mode full \
+  --gaze-fusion prefix-concat \
+  --gaze-features TRT \
+  --gaze-redistribution asym-gaussian \
+  --redistribution-sigma-left 1.0 \
+  --redistribution-sigma-right 1.0
+```
+
+The independent `decoder_va/redistribution.py` module uses the mapped gaze mask
+for both source and destination tokens, including interior unmapped positions.
+It introduces two learned Gaussian-width parameters and leaves frozen ET2,
+the other selected gaze channels, data preprocessing, and evaluation unchanged.
+Configuration is recorded in training and architecture manifests; learned
+parameters are stored with the model weights. Existing checkpoints keep their
+original raw-gaze behavior: train a new condition to enable redistribution.
+
+See [the implementation details and full BF16 command](va_model_code/README.md#gaze-redistribution)
+for mask semantics, source provenance, and the FP32 variant. GPU memory for the
+new condition has not been measured; 24 GB is not a verified memory guarantee.
+
 ## Result-path contract
 
 Training accepts a single directory name through `--run-name`. Regardless of

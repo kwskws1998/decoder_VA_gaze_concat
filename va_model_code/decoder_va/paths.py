@@ -5,7 +5,10 @@ from __future__ import annotations
 from datetime import datetime
 from pathlib import Path
 import re
-from typing import Sequence
+from typing import Mapping, Sequence
+
+from .gaze import et2_feature_indices_from_names
+from .redistribution import validate_redistribution_contract
 
 
 ACTIVE_CODE_ROOT = Path(__file__).resolve().parents[1]
@@ -45,6 +48,7 @@ def condition_slug(
     gaze_features: Sequence[str],
     seed: int,
     no_iemocap: bool = False,
+    gaze_redistribution: Mapping[str, object] | None = None,
 ) -> str:
     """Build a condition-identifying slug from the actual training contract."""
 
@@ -64,6 +68,17 @@ def condition_slug(
             for value in gaze_features
         )
         condition = f"gaze_{feature_slug}"
+    redistribution = validate_redistribution_contract(
+        {"method": "none"} if gaze_redistribution is None else gaze_redistribution,
+        gaze_fusion=gaze_fusion,
+        feature_indices=(
+            et2_feature_indices_from_names(gaze_features)
+            if gaze_fusion == "prefix-concat"
+            else ()
+        ),
+    )
+    if redistribution["method"] != "none":
+        condition += f"_redistribution_{redistribution['method']}"
     exclusion = "_no_iemocap" if no_iemocap else ""
     return f"{model_slug}_{mode_slug}_{condition}{exclusion}_seed{int(seed)}"
 
@@ -77,6 +92,7 @@ def default_run_name(
     seed: int,
     no_iemocap: bool = False,
     timestamp: datetime | None = None,
+    gaze_redistribution: Mapping[str, object] | None = None,
 ) -> str:
     """Create a sortable, collision-resistant, condition-aware run name."""
 
@@ -89,6 +105,7 @@ def default_run_name(
         gaze_features=gaze_features,
         seed=seed,
         no_iemocap=no_iemocap,
+        gaze_redistribution=gaze_redistribution,
     )
     return f"{prefix}_{condition}"
 

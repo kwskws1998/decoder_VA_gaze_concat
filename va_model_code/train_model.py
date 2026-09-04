@@ -44,6 +44,7 @@ from decoder_va.model import (
     GAZE_PREFIX_POOLING,
     LEGACY_LORA_MANIFEST_VERSION,
     OUTPUT_ACTIVATION,
+    PRE_REDISTRIBUTION_MANIFEST_VERSION,
     build_qwen_va_model,
 )
 from decoder_va.paths import (
@@ -51,6 +52,11 @@ from decoder_va.paths import (
     default_run_name,
     resolve_run_directory,
     validate_run_name,
+)
+from decoder_va.redistribution import (
+    redistribution_contract,
+    validate_redistribution_contract,
+    validate_redistribution_state_file,
 )
 from decoder_va.trainer import VARegressionTrainer
 
@@ -110,6 +116,15 @@ def _build_parser() -> argparse.ArgumentParser:
             f"{', '.join(ET2_FEATURE_NAMES)}; default: TRT."
         ),
     )
+    parser.add_argument(
+        "--gaze-redistribution",
+        choices=("none", "asym-gaussian"),
+        default="none",
+        help="Optional mask-aware TRT transformation before gaze-prefix projection.",
+    )
+    parser.add_argument("--redistribution-sigma-left", type=float, default=1.0)
+    parser.add_argument("--redistribution-sigma-right", type=float, default=1.0)
+    parser.add_argument("--redistribution-min-sigma", type=float, default=1e-6)
     parser.add_argument("--et-model-id", default="skboy/et_prediction_2")
     parser.add_argument("--et-revision", default=DEFAULT_ET2_REVISION)
     parser.add_argument(
@@ -193,12 +208,36 @@ def _build_parser() -> argparse.ArgumentParser:
     return parser
 
 
+def _redistribution_config(args: argparse.Namespace) -> dict[str, object]:
+    """Resolve CLI redistribution options into the persisted model contract."""
+
+    return redistribution_contract(
+        args.gaze_redistribution,
+        init_sigma_left=args.redistribution_sigma_left,
+        init_sigma_right=args.redistribution_sigma_right,
+        min_sigma=args.redistribution_min_sigma,
+        gaze_fusion=args.gaze_fusion,
+        feature_indices=(
+            args.gaze_feature_indices if args.gaze_fusion == "prefix-concat" else ()
+        ),
+    )
+
+
 def _validate_args(args: argparse.Namespace) -> None:
     """Fail before downloading models when a run configuration is invalid."""
 
     gaze_feature_indices = et2_feature_indices_from_names(args.gaze_features)
     args.gaze_feature_indices = gaze_feature_indices
     args.gaze_features = et2_feature_names_from_indices(gaze_feature_indices)
+    if args.gaze_redistribution == "none" and (
+        args.redistribution_sigma_left != 1.0
+        or args.redistribution_sigma_right != 1.0
+        or args.redistribution_min_sigma != 1e-6
+    ):
+        raise ValueError(
+            "Redistribution sigma options require --gaze-redistribution asym-gaussian."
+        )
+    _redistribution_config(args)
     if args.run_name:
         args.run_name = validate_run_name(args.run_name)
         normalized_run_name = args.run_name.lower()
@@ -210,6 +249,13 @@ def _validate_args(args: argparse.Namespace) -> None:
         if "gaze" in run_name_tokens and args.gaze_fusion == "none":
             raise ValueError(
                 "--run-name says gaze but --gaze-fusion is none."
+            )
+        if (
+            "redistribution" in run_name_tokens
+            and args.gaze_redistribution == "none"
+        ):
+            raise ValueError(
+                "--run-name says redistribution but --gaze-redistribution is none."
             )
         if "full" in run_name_tokens and args.finetuning_mode != "full":
             raise ValueError(
@@ -341,6 +387,7 @@ def _resolve_output_dir(args: argparse.Namespace) -> Path:
             finetuning_mode=args.finetuning_mode,
             gaze_fusion=args.gaze_fusion,
             gaze_features=args.gaze_features,
+            gaze_redistribution=_redistribution_config(args),
             seed=args.seed,
             no_iemocap=args.no_iemocap or args.no_ieomcap,
         )
@@ -401,6 +448,37 @@ def _cuda_memory_snapshot(use_cpu: bool) -> dict[str, object]:
     }
 
 
+def _validate_redistribution_checkpoint(checkpoint_path: Path) -> None:
+    """Check learned Gaussian widths without deserializing unsafe checkpoint files."""
+
+    weights_path = checkpoint_path / "model.safetensors"
+    if weights_path.is_symlink() or not weights_path.is_file():
+        raise ValueError(
+            "Enabled gaze_redistribution resume requires a regular single-file "
+            f"model.safetensors checkpoint: {weights_path}."
+        )
+    unsupported_names = (
+        "model.safetensors.index.json",
+        "pytorch_model.bin",
+        "pytorch_model.bin.index.json",
+        "adapter_model.safetensors",
+        "adapter_model.bin",
+        "adapter_model.safetensors.index.json",
+    )
+    unsupported = [
+        name
+        for name in unsupported_names
+        if (checkpoint_path / name).exists() or (checkpoint_path / name).is_symlink()
+    ]
+    if unsupported:
+        raise ValueError(
+            "Enabled gaze_redistribution resume supports only ordinary single-file "
+            "Trainer safetensors; unsupported or ambiguous weight layout: "
+            + ", ".join(unsupported)
+        )
+    validate_redistribution_state_file(weights_path)
+
+
 def _validate_resume_contract(
     args: argparse.Namespace,
     fold_output: Path,
@@ -455,6 +533,7 @@ def _validate_resume_contract(
         "model_revision",
         "finetuning_mode",
         "gaze_fusion",
+        "gaze_redistribution",
         "gaze_features",
         "gaze_feature_indices",
         "features_used",
@@ -482,16 +561,56 @@ def _validate_resume_contract(
         "excluded_dataset_names",
         "dataset_counts_after_filter",
     )
-    if (
-        recorded_manifest.get("architecture_manifest_version")
-        == LEGACY_LORA_MANIFEST_VERSION
-        and "finetuning_mode" not in recorded_manifest
-        and expected_manifest.get("finetuning_mode") == "lora"
+    expected_manifest = dict(expected_manifest)
+    legacy_versions = {
+        LEGACY_LORA_MANIFEST_VERSION,
+        PRE_REDISTRIBUTION_MANIFEST_VERSION,
+    }
+    for label, manifest in (
+        ("recorded", recorded_manifest),
+        ("expected", expected_manifest),
     ):
-        recorded_manifest["architecture_manifest_version"] = (
-            ARCHITECTURE_MANIFEST_VERSION
+        schema_version = manifest.get("architecture_manifest_version")
+        if schema_version not in legacy_versions | {ARCHITECTURE_MANIFEST_VERSION}:
+            raise ValueError(
+                "Resume checkpoint contract mismatch; refusing to reinterpret "
+                f"unsupported {label} architecture_manifest_version={schema_version!r}."
+            )
+        if "gaze_redistribution" not in manifest:
+            if schema_version not in legacy_versions:
+                raise ValueError(
+                    f"Resume {label} manifest is missing gaze_redistribution."
+                )
+            manifest["gaze_redistribution"] = {"method": "none"}
+        manifest["gaze_redistribution"] = validate_redistribution_contract(
+            manifest["gaze_redistribution"],
+            gaze_fusion=manifest["gaze_fusion"],
+            feature_indices=manifest["gaze_feature_indices"],
         )
-        recorded_manifest["finetuning_mode"] = "lora"
+        if (
+            schema_version in legacy_versions
+            and manifest["gaze_redistribution"] != {"method": "none"}
+        ):
+            raise ValueError(
+                "Legacy resume manifests cannot enable gaze_redistribution. "
+                "Start a new training condition instead."
+            )
+    if recorded_manifest["architecture_manifest_version"] in legacy_versions:
+        if expected_manifest["gaze_redistribution"] != {"method": "none"}:
+            raise ValueError(
+                "Cannot resume a legacy checkpoint with gaze_redistribution enabled; "
+                "start a new training condition instead."
+            )
+        if (
+            recorded_manifest["architecture_manifest_version"]
+            == LEGACY_LORA_MANIFEST_VERSION
+            and "finetuning_mode" not in recorded_manifest
+            and expected_manifest.get("finetuning_mode") == "lora"
+        ):
+            recorded_manifest["finetuning_mode"] = "lora"
+        recorded_manifest["architecture_manifest_version"] = (
+            expected_manifest["architecture_manifest_version"]
+        )
     if expected_manifest.get("finetuning_mode") == "lora":
         contract_fields += ("lora_rank", "lora_alpha", "lora_dropout")
     mismatches = []
@@ -511,6 +630,8 @@ def _validate_resume_contract(
             "incompatible weights:\n- "
             + "\n- ".join(mismatches)
         )
+    if expected_manifest["gaze_redistribution"]["method"] != "none":
+        _validate_redistribution_checkpoint(checkpoint_path)
 
 
 def _print_dataset_counts(title: str, counts: dict[str, int]) -> None:
@@ -665,6 +786,7 @@ def run(args: argparse.Namespace) -> Path | None:
             f"precision: {args.precision} -> {str(dtype).replace('torch.', '')}; "
             f"learning rate: {args.learning_rate:g}"
         )
+        print(f"Gaze redistribution: {_redistribution_config(args)}")
         print(
             "Dry run complete; Trainer arguments are compatible and no tokenizer "
             "or model was downloaded."
@@ -710,6 +832,7 @@ def run(args: argparse.Namespace) -> Path | None:
 
     run_manifest = {
         **vars(args),
+        "gaze_redistribution": _redistribution_config(args),
         "architecture_manifest_version": ARCHITECTURE_MANIFEST_VERSION,
         "loss": loss_name,
         "output_dim": 2,
@@ -805,6 +928,7 @@ def run(args: argparse.Namespace) -> Path | None:
             model_revision=args.model_revision,
             finetuning_mode=args.finetuning_mode,
             gaze_fusion=args.gaze_fusion,
+            gaze_redistribution=run_manifest["gaze_redistribution"],
             et_repo_id=args.et_model_id,
             et_revision=args.et_revision,
             et_filename=args.et_filename,

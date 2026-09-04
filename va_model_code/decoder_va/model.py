@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import copy
 import json
+from collections.abc import Mapping
 from pathlib import Path
 from typing import Any, Sequence
 
@@ -23,6 +24,11 @@ from .gaze import (
     normalize_et2_feature_indices,
 )
 from .packing import pack_prefix_gaze
+from .redistribution import (
+    GazeRedistributor,
+    validate_redistribution_contract,
+    validate_redistribution_state_file,
+)
 
 
 DEFAULT_DECODER_MODEL_ID = "Qwen/Qwen3.5-0.8B-Base"
@@ -39,7 +45,8 @@ GAZE_PREFIX_ORDER = "eye_start, compact_selected_gaze, eye_end, text"
 GAZE_PREFIX_POOLING = "last_valid_text_token_after_gaze_prefix"
 OUTPUT_ACTIVATION = "hard_sigmoid"
 ARCHITECTURE_MANIFEST_FILENAME = "decoder_va_architecture.json"
-ARCHITECTURE_MANIFEST_VERSION = 6
+ARCHITECTURE_MANIFEST_VERSION = 7
+PRE_REDISTRIBUTION_MANIFEST_VERSION = 6
 LEGACY_LORA_MANIFEST_VERSION = 5
 SAFE_WEIGHTS_FILENAME = "model.safetensors"
 
@@ -99,6 +106,7 @@ class DecoderVARegressor(nn.Module):
         *,
         gaze_provider: ET2GazeProvider | Any | None = None,
         gaze_fusion: str = "prefix-concat",
+        gaze_redistribution: Mapping | None = None,
         gaze_projection_dim: int = DEFAULT_GAZE_PROJECTION_DIM,
         gaze_projection_dropout: tuple[
             float,
@@ -134,6 +142,17 @@ class DecoderVARegressor(nn.Module):
             raise ValueError("prefix-concat requires an ET2 gaze provider.")
         if self.gaze_fusion == "none" and self.gaze_provider is not None:
             raise ValueError("gaze_provider must be None when gaze_fusion='none'.")
+        provider_indices = getattr(self.gaze_provider, "feature_indices", None)
+        self.gaze_redistribution = validate_redistribution_contract(
+            {"method": "none"} if gaze_redistribution is None else gaze_redistribution,
+            gaze_fusion=self.gaze_fusion,
+            feature_indices=() if provider_indices is None else provider_indices,
+        )
+        self.gaze_redistributor = (
+            GazeRedistributor(self.gaze_redistribution, provider_indices)
+            if self.gaze_redistribution["method"] != "none"
+            else None
+        )
         if self.gaze_projection_dim <= 0:
             raise ValueError("gaze_projection_dim must be positive.")
         if len(self.gaze_projection_dropout) != 2:
@@ -181,6 +200,7 @@ class DecoderVARegressor(nn.Module):
         self.config.num_labels = self.output_dim
         self.config.problem_type = "regression"
         self.config.gaze_fusion = self.gaze_fusion
+        self.config.gaze_redistribution = copy.deepcopy(self.gaze_redistribution)
         self.config.gaze_feature_count = self.gaze_feature_count
         self.config.gaze_concat_order = (
             GAZE_PREFIX_ORDER if self.gaze_fusion == "prefix-concat" else None
@@ -261,9 +281,18 @@ class DecoderVARegressor(nn.Module):
         attention_mask: torch.Tensor,
         text_embeddings: torch.Tensor,
     ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
-        """Infer selected frozen ET2 channels and prefix their compact projection."""
+        """Infer raw ET2 channels, optionally redistribute TRT, then project/pack."""
 
         raw_gaze, gaze_mask = self.gaze_provider.compute(input_ids, attention_mask)
+        if self.gaze_redistributor is not None:
+            if gaze_mask.shape != attention_mask.shape:
+                raise ValueError("gaze_mask must match the text attention_mask shape.")
+            if gaze_mask.device != attention_mask.device:
+                raise ValueError("gaze_mask and attention_mask must share a device.")
+            if bool((gaze_mask.bool() & ~attention_mask.bool()).any().item()):
+                raise ValueError("Valid gaze positions must also be valid text positions.")
+            raw_gaze = self.gaze_redistributor(raw_gaze, gaze_mask)
+            raw_gaze = torch.where(gaze_mask.bool().unsqueeze(-1), raw_gaze, 0.0)
         projector_dtype = next(self.gaze_projector.parameters()).dtype
         projected_gaze = self.gaze_projector(
             raw_gaze.to(device=text_embeddings.device, dtype=projector_dtype)
@@ -341,6 +370,15 @@ class DecoderVARegressor(nn.Module):
             "total_parameters": int(total),
             "trainable_parameters": int(trainable),
             "trainable_fraction": float(trainable / total) if total else 0.0,
+            "gaze_redistribution_trainable_parameters": sum(
+                parameter.numel()
+                for parameter in (
+                    self.gaze_redistributor.parameters()
+                    if self.gaze_redistributor is not None
+                    else ()
+                )
+                if parameter.requires_grad
+            ),
         }
 
     def save_architecture_manifest(self, output_dir: str | Path) -> Path:
@@ -376,6 +414,7 @@ class DecoderVARegressor(nn.Module):
             "decoder_commit": self._reconstruction_config["decoder_revision"],
             "finetuning_mode": self._reconstruction_config["finetuning_mode"],
             "gaze_fusion": self.gaze_fusion,
+            "gaze_redistribution": copy.deepcopy(self.gaze_redistribution),
             "gaze_features": list(active_names),
             "gaze_feature_indices": list(active_indices),
             "features_used": list(features_used),
@@ -530,6 +569,7 @@ def build_qwen_va_model(
     model_id: str = DEFAULT_DECODER_MODEL_ID,
     model_revision: str = DEFAULT_DECODER_REVISION,
     gaze_fusion: str = "prefix-concat",
+    gaze_redistribution: Mapping | None = None,
     et_repo_id: str = DEFAULT_ET2_REPO_ID,
     et_revision: str = DEFAULT_ET2_REVISION,
     et_filename: str = DEFAULT_ET2_FILENAME,
@@ -556,6 +596,11 @@ def build_qwen_va_model(
         normalize_et2_feature_indices(gaze_feature_indices)
         if normalized_fusion == "prefix-concat"
         else ()
+    )
+    normalized_redistribution = validate_redistribution_contract(
+        {"method": "none"} if gaze_redistribution is None else gaze_redistribution,
+        gaze_fusion=normalized_fusion,
+        feature_indices=active_feature_indices,
     )
     active_feature_names = (
         et2_feature_names_from_indices(active_feature_indices)
@@ -593,6 +638,7 @@ def build_qwen_va_model(
         backbone,
         gaze_provider=gaze_provider,
         gaze_fusion=normalized_fusion,
+        gaze_redistribution=normalized_redistribution,
         gaze_projection_dim=gaze_projection_dim,
         gaze_projection_dropout=gaze_projection_dropout,
         classifier_dropout=classifier_dropout,
@@ -605,6 +651,7 @@ def build_qwen_va_model(
         "decoder_revision": str(model_revision),
         "finetuning_mode": normalized_finetuning_mode,
         "gaze_fusion": normalized_fusion,
+        "gaze_redistribution": copy.deepcopy(normalized_redistribution),
         "et_repo_id": str(et_repo_id),
         "et_revision": str(et_revision),
         "et_filename": str(et_filename),
@@ -652,6 +699,7 @@ def load_saved_decoder_va_model(
     manifest_version = manifest.get("schema_version")
     if manifest_version not in {
         LEGACY_LORA_MANIFEST_VERSION,
+        PRE_REDISTRIBUTION_MANIFEST_VERSION,
         ARCHITECTURE_MANIFEST_VERSION,
     }:
         raise ValueError(
@@ -740,6 +788,21 @@ def load_saved_decoder_va_model(
         if raw_feature_indices:
             raise ValueError("Text-only models must not declare active ET2 features.")
         saved_feature_indices = ()
+    redistribution_configs = []
+    for owner, metadata in (("architecture", manifest), ("reconstruction", reconstruction)):
+        if manifest_version == ARCHITECTURE_MANIFEST_VERSION and "gaze_redistribution" not in metadata:
+            raise ValueError(f"Missing gaze_redistribution in {owner} metadata.")
+        configuration = validate_redistribution_contract(
+            metadata.get("gaze_redistribution", {"method": "none"}),
+            gaze_fusion=saved_fusion,
+            feature_indices=saved_feature_indices,
+        )
+        if manifest_version != ARCHITECTURE_MANIFEST_VERSION and configuration["method"] != "none":
+            raise ValueError("Legacy manifests cannot enable gaze redistribution.")
+        redistribution_configs.append(configuration)
+    if redistribution_configs[0] != redistribution_configs[1]:
+        raise ValueError("Architecture gaze_redistribution disagrees with reconstruction metadata.")
+    saved_redistribution = redistribution_configs[0]
     if reconstruction["output_dim"] != 2:
         raise ValueError("Only the two-output valence/arousal head is supported.")
     if reconstruction["output_activation"] != OUTPUT_ACTIVATION:
@@ -835,6 +898,9 @@ def load_saved_decoder_va_model(
     elif et_model is not None:
         raise ValueError("Text-only models must not declare ET2 model metadata.")
 
+    if saved_redistribution["method"] != "none":
+        validate_redistribution_state_file(weights_path)
+
     if tokenizer is None:
         from transformers import AutoTokenizer
 
@@ -857,6 +923,7 @@ def load_saved_decoder_va_model(
         model_revision=str(reconstruction["decoder_revision"]),
         finetuning_mode=saved_finetuning_mode,
         gaze_fusion=str(reconstruction["gaze_fusion"]),
+        gaze_redistribution=saved_redistribution,
         et_repo_id=str(reconstruction["et_repo_id"]),
         et_revision=str(reconstruction["et_revision"]),
         et_filename=str(reconstruction["et_filename"]),

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from datetime import datetime
 from importlib import import_module
 import json
 from pathlib import Path
@@ -72,6 +73,10 @@ def test_cli_defaults_to_prefix_and_requires_explicit_training_loss():
 
     assert defaults.gaze_fusion == "prefix-concat"
     assert defaults.gaze_features == ("TRT",)
+    assert defaults.gaze_redistribution == "none"
+    assert train_model_module._redistribution_config(
+        SimpleNamespace(**vars(defaults), gaze_feature_indices=(3,))
+    ) == {"method": "none"}
     assert defaults.finetuning_mode == "lora"
     assert defaults.precision == "auto"
     assert defaults.group_by_length is True
@@ -228,6 +233,168 @@ def test_cli_canonicalizes_named_gaze_subsets_and_rejects_duplicates():
     )
     with pytest.raises(ValueError, match="duplicates"):
         train_model_module._validate_args(duplicate_args)
+
+
+def test_cli_redistribution_config_and_names_keep_raw_condition_unchanged():
+    from decoder_va.paths import condition_slug, default_run_name
+
+    parser = train_model_module._build_parser()
+    args = parser.parse_args(
+        [
+            "qwen3.5-0.8b", "mse", "--gaze-redistribution", "asym-gaussian",
+            "--redistribution-sigma-left", "0.75",
+            "--redistribution-sigma-right", "1.5",
+            "--gaze-features", "TRT", "nFix",
+        ]
+    )
+    train_model_module._validate_args(args)
+    train_model_module._validate_args(args)
+    contract = train_model_module._redistribution_config(args)
+    assert contract["method"] == "asym-gaussian"
+    assert contract["init_sigma_left"] == 0.75
+    assert contract["init_sigma_right"] == 1.5
+    assert contract["feature"] == "TRT"
+    assert contract["mask_policy"] == "valid_gaze_sources_and_targets"
+    shared = {
+        "model": "qwen3.5-0.8b",
+        "finetuning_mode": "full",
+        "gaze_fusion": "prefix-concat",
+        "gaze_features": ("TRT",),
+        "seed": 43,
+        "no_iemocap": True,
+    }
+    original = condition_slug(**shared)
+    assert original == "qwen3.5-0.8b_full_gaze_TRT_no_iemocap_seed43"
+    assert condition_slug(**shared, gaze_redistribution={"method": "none"}) == original
+    enabled = condition_slug(**shared, gaze_redistribution=contract)
+    assert enabled != original
+    assert "gaze_TRT_redistribution_asym-gaussian" in enabled
+    timestamp = datetime(2026, 9, 4, 12)
+    assert default_run_name(
+        **shared, timestamp=timestamp, gaze_redistribution=contract
+    ).endswith(enabled)
+
+
+@pytest.mark.parametrize(
+    "options",
+    (
+        ["--gaze-fusion", "none"],
+        ["--gaze-features", "FFD", "GPT"],
+        ["--redistribution-sigma-left", "0"],
+        ["--redistribution-sigma-right", "-1"],
+        ["--redistribution-min-sigma", "0"],
+        ["--redistribution-sigma-left", "nan"],
+        ["--redistribution-sigma-right", "inf"],
+        ["--redistribution-min-sigma", "nan"],
+    ),
+)
+def test_cli_rejects_invalid_redistribution_before_loading(options):
+    args = train_model_module._build_parser().parse_args(
+        ["qwen3.5-0.8b", "mse", "--gaze-redistribution", "asym-gaussian", *options]
+    )
+    with pytest.raises((TypeError, ValueError)):
+        train_model_module._validate_args(args)
+
+
+@pytest.mark.parametrize(
+    "option", ("--redistribution-sigma-left", "--redistribution-sigma-right", "--redistribution-min-sigma")
+)
+def test_cli_rejects_ignored_redistribution_options(option):
+    args = train_model_module._build_parser().parse_args(
+        ["qwen3.5-0.8b", "mse", option, "0.5"]
+    )
+    with pytest.raises(ValueError, match="require --gaze-redistribution"):
+        train_model_module._validate_args(args)
+
+
+def test_cli_rejects_redistribution_name_when_disabled():
+    args = train_model_module._build_parser().parse_args(
+        ["qwen3.5-0.8b", "mse", "--run-name", "qwen_gaze_TRT_redistribution_seed42"]
+    )
+    with pytest.raises(ValueError, match="says redistribution"):
+        train_model_module._validate_args(args)
+
+
+@pytest.mark.parametrize("method", ("none", "asym-gaussian"))
+def test_training_records_and_passes_canonical_redistribution(tmp_path, monkeypatch, method):
+    """Run the real two-fold orchestration with offline model/trainer stand-ins."""
+
+    import pandas as pd
+
+    data_root = tmp_path / "data"
+    data_root.mkdir()
+    for fold in (1, 2):
+        pd.DataFrame(
+            {
+                "index": [fold * 2, fold * 2 + 1],
+                "text": [f"short text {fold}", f"second text {fold}"],
+                "dataset_of_origin": ["fake", "fake"],
+                "valence": [0.2, 0.8],
+                "arousal": [0.3, 0.7],
+            }
+        ).to_csv(data_root / f"full_dataset_fold{fold}.csv", sep="\t", index=False)
+    build_contracts = []
+    run_root = tmp_path / "test_run"
+
+    class FakeModel:
+        def __init__(self, config):
+            self.config = config
+
+        def trainable_parameter_summary(self):
+            return {
+                "total_parameters": 8,
+                "trainable_parameters": 8,
+                "trainable_fraction": 1.0,
+                "gaze_redistribution_trainable_parameters": 2 if method != "none" else 0,
+            }
+
+        def save_architecture_manifest(self, directory):
+            Path(directory, "decoder_va_architecture.json").write_text(
+                json.dumps({"gaze_redistribution": self.config}), encoding="utf-8"
+            )
+
+    class FakeTrainer:
+        def __init__(self, **kwargs):
+            self.model = kwargs["model"]
+
+        def train(self, resume_from_checkpoint):
+            assert resume_from_checkpoint is None
+
+        def save_model(self, directory):
+            Path(directory).mkdir()
+
+        def predict(self, frame):
+            labels = frame[["valence", "arousal"]].to_numpy()
+            return SimpleNamespace(label_ids=labels, predictions=labels, metrics={})
+
+    def build_model(tokenizer, **kwargs):
+        build_contracts.append(kwargs["gaze_redistribution"])
+        return FakeModel(kwargs["gaze_redistribution"])
+
+    monkeypatch.setattr(train_model_module, "_resolve_output_dir", lambda args: run_root)
+    monkeypatch.setattr(train_model_module, "load_auto_tokenizer", lambda *args, **kwargs: SimpleNamespace())
+    monkeypatch.setattr(train_model_module, "VABatchCollator", lambda *args, **kwargs: None)
+    monkeypatch.setattr(train_model_module, "TokenizedVADataset", lambda frame, *args, **kwargs: frame)
+    monkeypatch.setattr(train_model_module, "_training_arguments", lambda *args, **kwargs: None)
+    monkeypatch.setattr(train_model_module, "build_qwen_va_model", build_model)
+    monkeypatch.setattr(train_model_module, "VARegressionTrainer", FakeTrainer)
+    args = train_model_module._build_parser().parse_args(
+        [
+            "qwen3.5-0.8b", "mse", "--data-dir", str(data_root),
+            "--finetuning-mode", "full", "--precision", "fp32", "--use-cpu",
+            "--gaze-redistribution", method, "--run-name", "test_run",
+        ]
+    )
+    assert train_model_module.run(args) == run_root
+    expected = train_model_module.redistribution_contract(method)
+    assert build_contracts == [expected, expected]
+    root_manifest = json.loads((run_root / "training_parameters.json").read_text())
+    assert root_manifest["architecture_manifest_version"] == 7
+    assert root_manifest["gaze_redistribution"] == expected
+    for fold in (1, 2):
+        fold_manifest = json.loads((run_root / f"heldout_fold{fold}" / "run_manifest.json").read_text())
+        assert fold_manifest["gaze_redistribution"] == expected
+        assert fold_manifest["gaze_redistribution_trainable_parameters"] == (2 if method != "none" else 0)
 
 
 def test_cli_rejects_misleading_condition_names() -> None:
@@ -531,6 +698,170 @@ def test_resume_contract_accepts_legacy_v5_lora_checkpoint(tmp_path):
     args = SimpleNamespace(resume_from_checkpoint=str(checkpoint))
 
     train_model_module._validate_resume_contract(args, fold_output, expected)
+
+
+def _check_resume_pair(tmp_path, recorded, expected, checkpoint_tensors=None):
+    """Exercise the real resume gate on two supplied on-disk contracts."""
+
+    fold_output = tmp_path / "run" / "heldout_fold1"
+    checkpoint = fold_output / "checkpoints" / "checkpoint-10"
+    checkpoint.mkdir(parents=True)
+    if checkpoint_tensors is not None:
+        from safetensors.torch import save_file
+
+        save_file(checkpoint_tensors, checkpoint / "model.safetensors")
+    (fold_output / "run_manifest.json").write_text(json.dumps(recorded), encoding="utf-8")
+    train_model_module._validate_resume_contract(
+        SimpleNamespace(resume_from_checkpoint=str(checkpoint)), fold_output, expected
+    )
+
+
+def _current_resume_manifest(method="none"):
+    """Build an explicit schema-7 contract for compatibility regression tests."""
+
+    manifest = _expected_resume_manifest()
+    manifest["architecture_manifest_version"] = train_model_module.ARCHITECTURE_MANIFEST_VERSION
+    manifest["gaze_redistribution"] = train_model_module.redistribution_contract(
+        method, gaze_fusion="prefix-concat", feature_indices=(0, 3)
+    )
+    return manifest
+
+
+@pytest.mark.parametrize("legacy_version", (5, 6))
+def test_resume_legacy_checkpoints_only_upgrade_with_redistribution_disabled(tmp_path, legacy_version):
+    recorded = _expected_resume_manifest()
+    recorded["architecture_manifest_version"] = legacy_version
+    if legacy_version == 5:
+        recorded.pop("finetuning_mode")
+    _check_resume_pair(tmp_path, recorded, _current_resume_manifest())
+
+
+@pytest.mark.parametrize("method", ("none", "asym-gaussian"))
+def test_resume_current_requires_explicit_redistribution_metadata(tmp_path, method):
+    recorded = _current_resume_manifest(method)
+    recorded.pop("gaze_redistribution")
+    with pytest.raises(ValueError, match="missing gaze_redistribution"):
+        _check_resume_pair(tmp_path, recorded, _current_resume_manifest(method))
+
+
+@pytest.mark.parametrize("legacy_version", (5, 6))
+def test_resume_legacy_cannot_reset_into_redistribution(tmp_path, legacy_version):
+    recorded = _expected_resume_manifest()
+    recorded["architecture_manifest_version"] = legacy_version
+    if legacy_version == 5:
+        recorded.pop("finetuning_mode")
+    with pytest.raises(ValueError, match="gaze_redistribution"):
+        _check_resume_pair(tmp_path, recorded, _current_resume_manifest("asym-gaussian"))
+
+
+def test_resume_rejects_enabled_contract_falsely_tagged_as_legacy(tmp_path):
+    recorded = _current_resume_manifest("asym-gaussian")
+    recorded["architecture_manifest_version"] = 6
+    with pytest.raises(ValueError, match="Legacy resume manifests"):
+        _check_resume_pair(tmp_path, recorded, _current_resume_manifest("asym-gaussian"))
+
+
+@pytest.mark.parametrize("field", ("method", "init_sigma_left", "init_sigma_right", "min_sigma"))
+def test_resume_rejects_changed_redistribution_configuration(tmp_path, field):
+    recorded = _current_resume_manifest("asym-gaussian")
+    expected = _current_resume_manifest("asym-gaussian")
+    if field == "method":
+        expected["gaze_redistribution"] = {"method": "none"}
+    else:
+        expected["gaze_redistribution"][field] *= 2
+    with pytest.raises(ValueError, match="gaze_redistribution"):
+        _check_resume_pair(tmp_path, recorded, expected)
+
+
+def test_resume_accepts_matching_enabled_contract(tmp_path):
+    _check_resume_pair(
+        tmp_path,
+        _current_resume_manifest("asym-gaussian"),
+        _current_resume_manifest("asym-gaussian"),
+        checkpoint_tensors=_sigma_checkpoint_tensors(),
+    )
+
+
+def _sigma_checkpoint_tensors():
+    """Build safe scalar learned-width state, deliberately different from initialization."""
+
+    torch = train_model_module.torch
+    return {
+        "gaze_redistributor.kernel.log_sigma_left": torch.tensor(-0.6, dtype=torch.float32),
+        "gaze_redistributor.kernel.log_sigma_right": torch.tensor(0.8, dtype=torch.float32),
+        "backbone.dummy": torch.zeros(1),
+    }
+
+
+def test_enabled_resume_rejects_missing_safe_weights_before_metadata_mutation(tmp_path):
+    recorded = _current_resume_manifest("asym-gaussian")
+    with pytest.raises(ValueError, match="regular single-file"):
+        _check_resume_pair(tmp_path, recorded, dict(recorded))
+    assert json.loads((tmp_path / "run" / "heldout_fold1" / "run_manifest.json").read_text()) == recorded
+
+
+@pytest.mark.parametrize(
+    "defect, error",
+    (
+        ("both_missing", "state keys mismatch"),
+        ("left_missing", "state keys mismatch"),
+        ("unexpected_key", "state keys mismatch"),
+        ("vector", "must be scalar"),
+        ("bf16", "must be FP32"),
+        ("fp64", "must be FP32"),
+        ("nan", "must be finite"),
+        ("inf", "must be finite"),
+    ),
+)
+def test_enabled_resume_rejects_corrupt_sigma_state(tmp_path, defect, error):
+    torch = train_model_module.torch
+    state = _sigma_checkpoint_tensors()
+    left = "gaze_redistributor.kernel.log_sigma_left"
+    right = "gaze_redistributor.kernel.log_sigma_right"
+    if defect == "both_missing":
+        state.pop(left)
+        state.pop(right)
+    elif defect == "left_missing":
+        state.pop(left)
+    elif defect == "unexpected_key":
+        state["gaze_redistributor.sigma_left"] = torch.tensor(1.0)
+    elif defect == "vector":
+        state[left] = torch.tensor([0.0])
+    elif defect == "bf16":
+        state[right] = state[right].to(torch.bfloat16)
+    elif defect == "fp64":
+        state[left] = state[left].to(torch.float64)
+    else:
+        state[left] = torch.tensor(float(defect), dtype=torch.float32)
+    recorded = _current_resume_manifest("asym-gaussian")
+    with pytest.raises(ValueError, match=error):
+        _check_resume_pair(tmp_path, recorded, dict(recorded), checkpoint_tensors=state)
+    assert json.loads((tmp_path / "run" / "heldout_fold1" / "run_manifest.json").read_text()) == recorded
+
+
+@pytest.mark.parametrize("defect", ("symlink", "malformed", "sharded", "pickle", "adapter"))
+def test_enabled_resume_rejects_unsafe_or_unsupported_weight_layout(tmp_path, defect):
+    from safetensors.torch import save_file
+
+    checkpoint = tmp_path / "checkpoint-10"
+    checkpoint.mkdir()
+    weights = checkpoint / "model.safetensors"
+    if defect == "symlink":
+        target = tmp_path / "linked.safetensors"
+        save_file(_sigma_checkpoint_tensors(), target)
+        weights.symlink_to(target)
+    elif defect == "malformed":
+        weights.write_bytes(b"not safetensors")
+    else:
+        save_file(_sigma_checkpoint_tensors(), weights)
+        alternate = {
+            "sharded": "model.safetensors.index.json",
+            "pickle": "pytorch_model.bin",
+            "adapter": "adapter_model.safetensors",
+        }[defect]
+        (checkpoint / alternate).write_bytes(b"not loaded")
+    with pytest.raises(ValueError, match="gaze_redistribution"):
+        train_model_module._validate_redistribution_checkpoint(checkpoint)
 
 
 def test_resume_contract_rejects_finetuning_mode_mismatch(tmp_path):

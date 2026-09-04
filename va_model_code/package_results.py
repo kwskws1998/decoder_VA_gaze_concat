@@ -34,6 +34,7 @@ if __package__:
         GAZE_PREFIX_ORDER,
         GAZE_PREFIX_POOLING,
         OUTPUT_ACTIVATION,
+        PRE_REDISTRIBUTION_MANIFEST_VERSION,
     )
     from .decoder_va.paths import (
         RESULTS_ROOT,
@@ -41,6 +42,7 @@ if __package__:
         resolve_run_directory,
         validate_run_name,
     )
+    from .decoder_va.redistribution import validate_redistribution_contract
 else:
     from decoder_va.contracts import LOSS_CHOICES, MODEL_ALIASES
     from decoder_va.evaluation import calculate_va_metrics
@@ -55,6 +57,7 @@ else:
         GAZE_PREFIX_ORDER,
         GAZE_PREFIX_POOLING,
         OUTPUT_ACTIVATION,
+        PRE_REDISTRIBUTION_MANIFEST_VERSION,
     )
     from decoder_va.paths import (
         RESULTS_ROOT,
@@ -62,6 +65,7 @@ else:
         resolve_run_directory,
         validate_run_name,
     )
+    from decoder_va.redistribution import validate_redistribution_contract
 
 
 ROOT_RESULT_FILES = (
@@ -297,6 +301,27 @@ def _dataset_slug(value: object) -> str:
     return re.sub(r"[^a-z0-9]+", "", str(value).casefold())
 
 
+def _saved_redistribution_contract(
+    metadata: Mapping[str, object],
+    parameters: Mapping[str, object],
+    *,
+    label: str,
+) -> dict[str, object]:
+    """Resolve only legacy missing metadata to the disabled redistribution contract."""
+
+    version = parameters["architecture_manifest_version"]
+    if "gaze_redistribution" not in metadata and version != PRE_REDISTRIBUTION_MANIFEST_VERSION:
+        raise ValueError(f"{label} is missing gaze_redistribution.")
+    contract = validate_redistribution_contract(
+        metadata.get("gaze_redistribution", {"method": "none"}),
+        gaze_fusion=parameters["gaze_fusion"],
+        feature_indices=parameters["gaze_feature_indices"],
+    )
+    if version == PRE_REDISTRIBUTION_MANIFEST_VERSION and contract["method"] != "none":
+        raise ValueError(f"{label}: schema 6 cannot enable gaze_redistribution.")
+    return contract
+
+
 def _validate_training_parameters(parameters: Mapping[str, object]) -> None:
     """Validate the minimum reproducibility and condition identity contract."""
 
@@ -317,10 +342,12 @@ def _validate_training_parameters(parameters: Mapping[str, object]) -> None:
         "gradient_accumulation_steps",
     ):
         _strict_int(parameters[field], label=field, positive=True)
-    if parameters["architecture_manifest_version"] != ARCHITECTURE_MANIFEST_VERSION:
+    if parameters["architecture_manifest_version"] not in {
+        PRE_REDISTRIBUTION_MANIFEST_VERSION, ARCHITECTURE_MANIFEST_VERSION
+    }:
         raise ValueError(
-            "architecture_manifest_version must equal the active supported "
-            f"schema version {ARCHITECTURE_MANIFEST_VERSION}."
+            "architecture_manifest_version must be a supported schema version: "
+            f"{PRE_REDISTRIBUTION_MANIFEST_VERSION} or {ARCHITECTURE_MANIFEST_VERSION}."
         )
     for field in ("epochs", "learning_rate"):
         if _finite_number(parameters[field], label=field) <= 0:
@@ -418,6 +445,9 @@ def _validate_training_parameters(parameters: Mapping[str, object]) -> None:
         raise ValueError("A baseline run must record no active gaze features.")
     if gaze_fusion == "prefix-concat" and not gaze_features:
         raise ValueError("A gaze run must record at least one gaze feature.")
+    _saved_redistribution_contract(
+        parameters, parameters, label="training_parameters.json"
+    )
     expected_order = GAZE_PREFIX_ORDER if gaze_fusion == "prefix-concat" else None
     expected_pooling = (
         GAZE_PREFIX_POOLING
@@ -763,6 +793,17 @@ def _validate_architecture(
         raise ValueError(
             f"Fold {fold} architecture reconstruction must be an object."
         )
+    expected_redistribution = _saved_redistribution_contract(
+        parameters, parameters, label="training_parameters.json"
+    )
+    for source, label in (
+        (architecture, "architecture"),
+        (reconstruction, "architecture reconstruction"),
+    ):
+        if _saved_redistribution_contract(
+            source, parameters, label=f"Fold {fold} {label}"
+        ) != expected_redistribution:
+            raise ValueError(f"Fold {fold} {label} disagrees with gaze_redistribution.")
     reconstruction_expected = {
         "decoder_model_id": parameters["model_id"],
         "decoder_revision": parameters["model_revision"],
@@ -859,6 +900,15 @@ def _validate_result_contract(
         fold_prefix = f"heldout_fold{fold}"
         manifest_label = f"{fold_prefix}/run_manifest.json"
         manifest = _load_json_object(snapshots[manifest_label], manifest_label)
+        if _saved_redistribution_contract(
+            manifest, parameters, label=manifest_label
+        ) != _saved_redistribution_contract(
+            parameters, parameters, label="training_parameters.json"
+        ):
+            raise ValueError(
+                f"Fold {fold} manifest disagrees with training parameters "
+                "for gaze_redistribution."
+            )
         held_out_fold = _strict_int(
             manifest.get("held_out_fold"),
             label=f"fold {fold} held_out_fold",
@@ -1163,6 +1213,9 @@ def _archive_stem(parameters: Mapping[str, object]) -> str:
         finetuning_mode=str(parameters["finetuning_mode"]),
         gaze_fusion=str(parameters["gaze_fusion"]),
         gaze_features=tuple(gaze_features),
+        gaze_redistribution=_saved_redistribution_contract(
+            parameters, parameters, label="training_parameters.json"
+        ),
         seed=seed,
         no_iemocap=_effective_no_iemocap(parameters),
     )
@@ -1191,6 +1244,9 @@ def _build_package_manifest(
             "finetuning_mode": parameters["finetuning_mode"],
             "gaze_fusion": parameters["gaze_fusion"],
             "gaze_features": parameters["gaze_features"],
+            "gaze_redistribution": _saved_redistribution_contract(
+                parameters, parameters, label="training_parameters.json"
+            ),
             "seed": parameters["seed"],
             "no_iemocap": _effective_no_iemocap(parameters),
         },

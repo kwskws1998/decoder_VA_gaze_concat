@@ -23,6 +23,7 @@ import numpy as np
 if __package__:
     from .decoder_va.contracts import LOSS_CHOICES, MODEL_ALIASES
     from .decoder_va.evaluation import calculate_va_metrics
+    from .decoder_va.filters import SENTENCE_ONLY_DATASET_NAMES
     from .decoder_va.gaze import ET2_FEATURE_NAMES
     from .decoder_va.model import (
         ARCHITECTURE_MANIFEST_VERSION,
@@ -46,6 +47,7 @@ if __package__:
 else:
     from decoder_va.contracts import LOSS_CHOICES, MODEL_ALIASES
     from decoder_va.evaluation import calculate_va_metrics
+    from decoder_va.filters import SENTENCE_ONLY_DATASET_NAMES
     from decoder_va.gaze import ET2_FEATURE_NAMES
     from decoder_va.model import (
         ARCHITECTURE_MANIFEST_VERSION,
@@ -295,6 +297,15 @@ def _effective_no_iemocap(parameters: Mapping[str, object]) -> bool:
     return no_iemocap or no_ieomcap or resolved_exclusion
 
 
+def _sentence_only(parameters: Mapping[str, object]) -> bool:
+    """Read the optional sentence-only scope with strict JSON typing."""
+
+    return _strict_bool(
+        parameters.get("sentence_only", False),
+        label="sentence_only",
+    )
+
+
 def _dataset_slug(value: object) -> str:
     """Normalize dataset names exactly like the active exclusion filter."""
 
@@ -493,6 +504,14 @@ def _validate_training_parameters(parameters: Mapping[str, object]) -> None:
         if not isinstance(source, str) or not source:
             raise ValueError("dataset_counts_after_filter has an invalid source name.")
         _strict_int(count, label=f"dataset count for {source}", positive=True)
+    if _sentence_only(parameters) and set(dataset_counts) != set(
+        SENTENCE_ONLY_DATASET_NAMES
+    ):
+        raise ValueError(
+            "A sentence-only run must record exactly these retained datasets: "
+            + ", ".join(SENTENCE_ONLY_DATASET_NAMES)
+            + "."
+        )
     excluded = parameters["excluded_dataset_names"]
     if not isinstance(excluded, list) or any(
         not isinstance(value, str) or not value for value in excluded
@@ -1218,6 +1237,7 @@ def _archive_stem(parameters: Mapping[str, object]) -> str:
         ),
         seed=seed,
         no_iemocap=_effective_no_iemocap(parameters),
+        sentence_only=_sentence_only(parameters),
     )
 
 
@@ -1249,6 +1269,7 @@ def _build_package_manifest(
             ),
             "seed": parameters["seed"],
             "no_iemocap": _effective_no_iemocap(parameters),
+            "sentence_only": _sentence_only(parameters),
         },
         "files": file_manifest,
     }

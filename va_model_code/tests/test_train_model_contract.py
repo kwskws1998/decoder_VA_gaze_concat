@@ -74,6 +74,8 @@ def test_cli_defaults_to_prefix_and_requires_explicit_training_loss():
     assert defaults.gaze_fusion == "prefix-concat"
     assert defaults.gaze_features == ("TRT",)
     assert defaults.gaze_redistribution == "none"
+    assert defaults.redistribution_learning_rate is None
+    assert defaults.sentence_only is False
     assert train_model_module._redistribution_config(
         SimpleNamespace(**vars(defaults), gaze_feature_indices=(3,))
     ) == {"method": "none"}
@@ -123,6 +125,105 @@ def test_cli_resolves_mode_specific_learning_rates():
     assert full_args.lora_alpha is None
     assert full_args.lora_dropout is None
     train_model_module._validate_args(full_args)
+
+
+def test_cli_resolves_and_validates_redistribution_optimizer_policy():
+    parser = train_model_module._build_parser()
+    defaults = parser.parse_args(
+        ["qwen3.5-0.8b", "mse", "--gaze-redistribution", "asym-gaussian"]
+    )
+    explicit = parser.parse_args(
+        [
+            "qwen3.5-0.8b",
+            "mse",
+            "--gaze-redistribution",
+            "asym-gaussian",
+            "--redistribution-learning-rate",
+            "2e-3",
+        ]
+    )
+
+    train_model_module._validate_args(defaults)
+    train_model_module._validate_args(explicit)
+    assert defaults.redistribution_learning_rate == pytest.approx(1e-3)
+    assert explicit.redistribution_learning_rate == pytest.approx(2e-3)
+    assert defaults.redistribution_weight_decay == pytest.approx(0.0)
+    assert explicit.redistribution_weight_decay == pytest.approx(0.0)
+
+    disabled = parser.parse_args(
+        ["qwen3.5-0.8b", "mse", "--redistribution-learning-rate", "1e-3"]
+    )
+    with pytest.raises(ValueError, match="requires --gaze-redistribution"):
+        train_model_module._validate_args(disabled)
+
+    for invalid in ("0", "-0.1", "nan", "inf"):
+        args = parser.parse_args(
+            [
+                "qwen3.5-0.8b",
+                "mse",
+                "--gaze-redistribution",
+                "asym-gaussian",
+                "--redistribution-learning-rate",
+                invalid,
+            ]
+        )
+        with pytest.raises(ValueError, match="finite and positive"):
+            train_model_module._validate_args(args)
+
+
+def test_sentence_only_dry_run_filters_both_folds_without_model_loading(
+    tmp_path, monkeypatch, capsys
+):
+    import pandas as pd
+
+    data_root = tmp_path / "paper_folds"
+    data_root.mkdir()
+    sources = (
+        "EmoTales sentences",
+        "Emobank",
+        "fb",
+        "GlasgowNorms",
+        "IEMOCAP sentences",
+        "nrc-vad",
+        "word ratings ENG",
+    )
+    for fold in (1, 2):
+        pd.DataFrame(
+            {
+                "index": [fold * 100 + offset for offset in range(len(sources))],
+                "text": [f"text-{fold}-{offset}" for offset in range(len(sources))],
+                "dataset_of_origin": sources,
+                "valence": [0.5] * len(sources),
+                "arousal": [0.5] * len(sources),
+            }
+        ).to_csv(data_root / f"full_dataset_fold{fold}.csv", sep="\t", index=False)
+    monkeypatch.setattr(
+        train_model_module,
+        "load_auto_tokenizer",
+        lambda *args, **kwargs: pytest.fail("Dry-run attempted to load a tokenizer."),
+    )
+    args = train_model_module._build_parser().parse_args(
+        [
+            "--dry-run",
+            "--precision",
+            "fp32",
+            "--use-cpu",
+            "--data-dir",
+            str(data_root),
+            "--sentence-only",
+            "--no-iemocap",
+            "--run-name",
+            "paper7_sentence_only_no_iemocap_gaze_seed42",
+        ]
+    )
+
+    assert train_model_module.run(args) is None
+    output = capsys.readouterr().out
+    assert "EmoTales sentences\t2" in output
+    assert "Emobank\t2" in output
+    assert "fb\t2" in output
+    assert "GlasgowNorms\t" not in output
+    assert "Dataset scope: EmoTales sentences, Emobank, fb" in output
 
 
 def test_runtime_precision_resolves_explicit_fp32_and_cuda_modes(monkeypatch):
@@ -326,14 +427,19 @@ def test_training_records_and_passes_canonical_redistribution(tmp_path, monkeypa
     for fold in (1, 2):
         pd.DataFrame(
             {
-                "index": [fold * 2, fold * 2 + 1],
-                "text": [f"short text {fold}", f"second text {fold}"],
-                "dataset_of_origin": ["fake", "fake"],
-                "valence": [0.2, 0.8],
-                "arousal": [0.3, 0.7],
+                "index": [fold * 3, fold * 3 + 1, fold * 3 + 2],
+                "text": [
+                    f"short text {fold}",
+                    f"second text {fold}",
+                    f"third text {fold}",
+                ],
+                "dataset_of_origin": ["EmoTales sentences", "Emobank", "fb"],
+                "valence": [0.2, 0.8, 0.4],
+                "arousal": [0.3, 0.7, 0.5],
             }
         ).to_csv(data_root / f"full_dataset_fold{fold}.csv", sep="\t", index=False)
     build_contracts = []
+    trainer_redistribution_lrs = []
     run_root = tmp_path / "test_run"
 
     class FakeModel:
@@ -356,6 +462,9 @@ def test_training_records_and_passes_canonical_redistribution(tmp_path, monkeypa
     class FakeTrainer:
         def __init__(self, **kwargs):
             self.model = kwargs["model"]
+            trainer_redistribution_lrs.append(
+                kwargs["redistribution_learning_rate"]
+            )
 
         def train(self, resume_from_checkpoint):
             assert resume_from_checkpoint is None
@@ -382,7 +491,7 @@ def test_training_records_and_passes_canonical_redistribution(tmp_path, monkeypa
         [
             "qwen3.5-0.8b", "mse", "--data-dir", str(data_root),
             "--finetuning-mode", "full", "--precision", "fp32", "--use-cpu",
-            "--gaze-redistribution", method, "--run-name", "test_run",
+            "--gaze-redistribution", method, "--sentence-only", "--run-name", "test_run",
         ]
     )
     assert train_model_module.run(args) == run_root
@@ -391,6 +500,22 @@ def test_training_records_and_passes_canonical_redistribution(tmp_path, monkeypa
     root_manifest = json.loads((run_root / "training_parameters.json").read_text())
     assert root_manifest["architecture_manifest_version"] == 7
     assert root_manifest["gaze_redistribution"] == expected
+    assert root_manifest["sentence_only"] is True
+    assert root_manifest["dataset_counts_after_filter"] == {
+        "EmoTales sentences": 2,
+        "Emobank": 2,
+        "fb": 2,
+    }
+    assert trainer_redistribution_lrs == [
+        1e-3 if method != "none" else None,
+        1e-3 if method != "none" else None,
+    ]
+    assert root_manifest["redistribution_learning_rate"] == (
+        pytest.approx(1e-3) if method != "none" else None
+    )
+    assert root_manifest["redistribution_weight_decay"] == (
+        pytest.approx(0.0) if method != "none" else None
+    )
     for fold in (1, 2):
         fold_manifest = json.loads((run_root / f"heldout_fold{fold}" / "run_manifest.json").read_text())
         assert fold_manifest["gaze_redistribution"] == expected
@@ -447,6 +572,14 @@ def test_cli_rejects_misleading_condition_names() -> None:
             "paper7_gaze_seed42",
         ]
     )
+    omitted_sentence_scope = parser.parse_args(
+        [
+            "qwen3.5-0.8b",
+            "mse",
+            "--run-name",
+            "paper7_sentence_only_gaze_seed42",
+        ]
+    )
 
     with pytest.raises(ValueError, match="says baseline"):
         train_model_module._validate_args(gaze_named_baseline)
@@ -458,6 +591,8 @@ def test_cli_rejects_misleading_condition_names() -> None:
         train_model_module._validate_args(included_named_excluded)
     with pytest.raises(ValueError, match="seed tag"):
         train_model_module._validate_args(wrong_seed)
+    with pytest.raises(ValueError, match="sentence_only"):
+        train_model_module._validate_args(omitted_sentence_scope)
 
 
 @pytest.mark.parametrize("warmup_ratio", (-0.01, 1.0))
@@ -724,6 +859,9 @@ def _current_resume_manifest(method="none"):
     manifest["gaze_redistribution"] = train_model_module.redistribution_contract(
         method, gaze_fusion="prefix-concat", feature_indices=(0, 3)
     )
+    if method != "none":
+        manifest["redistribution_learning_rate"] = 1e-3
+        manifest["redistribution_weight_decay"] = 0.0
     return manifest
 
 
@@ -780,6 +918,55 @@ def test_resume_accepts_matching_enabled_contract(tmp_path):
         _current_resume_manifest("asym-gaussian"),
         checkpoint_tensors=_sigma_checkpoint_tensors(),
     )
+
+
+@pytest.mark.parametrize(
+    "field,new_value",
+    (
+        ("redistribution_learning_rate", 2e-3),
+        ("redistribution_weight_decay", 0.1),
+    ),
+)
+def test_resume_rejects_changed_redistribution_optimizer_policy(
+    tmp_path, field, new_value
+):
+    recorded = _current_resume_manifest("asym-gaussian")
+    expected = _current_resume_manifest("asym-gaussian")
+    expected[field] = new_value
+
+    with pytest.raises(ValueError, match=field):
+        _check_resume_pair(
+            tmp_path,
+            recorded,
+            expected,
+            checkpoint_tensors=_sigma_checkpoint_tensors(),
+        )
+
+
+@pytest.mark.parametrize(
+    "field", ("redistribution_learning_rate", "redistribution_weight_decay")
+)
+def test_resume_rejects_old_redistribution_optimizer_layout(tmp_path, field):
+    recorded = _current_resume_manifest("asym-gaussian")
+    recorded.pop(field)
+
+    with pytest.raises(ValueError, match=field):
+        _check_resume_pair(
+            tmp_path,
+            recorded,
+            _current_resume_manifest("asym-gaussian"),
+            checkpoint_tensors=_sigma_checkpoint_tensors(),
+        )
+
+
+def test_resume_rejects_changed_sentence_only_scope(tmp_path):
+    recorded = _current_resume_manifest()
+    expected = _current_resume_manifest()
+    recorded["sentence_only"] = False
+    expected["sentence_only"] = True
+
+    with pytest.raises(ValueError, match="sentence_only"):
+        _check_resume_pair(tmp_path, recorded, expected)
 
 
 def _sigma_checkpoint_tensors():

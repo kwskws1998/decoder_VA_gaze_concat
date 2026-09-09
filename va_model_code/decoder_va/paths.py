@@ -48,6 +48,7 @@ def condition_slug(
     gaze_features: Sequence[str],
     seed: int,
     no_iemocap: bool = False,
+    sentence_only: bool = False,
     gaze_redistribution: Mapping[str, object] | None = None,
 ) -> str:
     """Build a condition-identifying slug from the actual training contract."""
@@ -79,8 +80,9 @@ def condition_slug(
     )
     if redistribution["method"] != "none":
         condition += f"_redistribution_{redistribution['method']}"
+    scope = "_sentence_only" if sentence_only else ""
     exclusion = "_no_iemocap" if no_iemocap else ""
-    return f"{model_slug}_{mode_slug}_{condition}{exclusion}_seed{int(seed)}"
+    return f"{model_slug}_{mode_slug}_{condition}{scope}{exclusion}_seed{int(seed)}"
 
 
 def default_run_name(
@@ -91,6 +93,7 @@ def default_run_name(
     gaze_features: Sequence[str],
     seed: int,
     no_iemocap: bool = False,
+    sentence_only: bool = False,
     timestamp: datetime | None = None,
     gaze_redistribution: Mapping[str, object] | None = None,
 ) -> str:
@@ -105,6 +108,7 @@ def default_run_name(
         gaze_features=gaze_features,
         seed=seed,
         no_iemocap=no_iemocap,
+        sentence_only=sentence_only,
         gaze_redistribution=gaze_redistribution,
     )
     return f"{prefix}_{condition}"

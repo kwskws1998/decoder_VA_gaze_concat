@@ -160,6 +160,21 @@ def test_gradients_reach_both_widths_and_only_valid_inputs():
     assert values.grad[0, 1] == 0
 
 
+def test_single_valid_position_is_identity_with_zero_width_gradients():
+    module = AsymGaussianRedistributor(0.7, 1.4)
+    values = torch.tensor([[float("nan"), 2.5, float("inf")]])
+    mask = torch.tensor([[0, 1, 0]])
+
+    output = module(values, mask)
+    output.sum().backward()
+
+    torch.testing.assert_close(output, torch.tensor([[0.0, 2.5, 0.0]]))
+    assert module.log_sigma_left.grad is not None
+    assert module.log_sigma_right.grad is not None
+    assert module.log_sigma_left.grad.item() == 0.0
+    assert module.log_sigma_right.grad.item() == 0.0
+
+
 def test_width_gradients_match_finite_difference():
     module = AsymGaussianRedistributor(0.7, 1.4)
     values = torch.tensor([[1.0, 0.0, 3.0, -2.0]])

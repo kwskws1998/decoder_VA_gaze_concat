@@ -9,7 +9,11 @@ import pandas as pd
 import pytest
 import torch
 
-from va_model_code.decoder_va.dataset import TokenizedVADataset, VABatchCollator
+from va_model_code.decoder_va.dataset import (
+    TokenizedVADataset,
+    VABatchCollator,
+    build_fold_datasets,
+)
 from va_model_code.decoder_va.downloads import (
     GDriveSource,
     download_gdrive_zip,
@@ -20,9 +24,12 @@ from va_model_code.decoder_va.downloads import (
 from va_model_code.decoder_va.filters import (
     apply_dataset_filters,
     collect_exclude_patterns,
+    dataset_counts,
     filter_fold_frames,
+    main as filter_main,
     read_fold,
     resolve_excluded_datasets,
+    resolve_sentence_only_datasets,
 )
 from va_model_code.decoder_va.preprocessing import (
     FOLD_FILENAMES,
@@ -380,6 +387,25 @@ def test_actual_bundle_paper_protocol_counts_and_source_balance(
         for source in manifest["sources"]
     )
 
+    folds = {
+        filename: read_fold(tmp_path / "data_paper" / filename)
+        for filename in FOLD_FILENAMES
+    }
+    sentence_only = filter_fold_frames(folds, sentence_only=True, no_iemocap=True)
+    assert len(sentence_only.fold1) == 7_175
+    assert len(sentence_only.fold2) == 7_177
+    assert dataset_counts(sentence_only.folds) == {
+        "EmoTales sentences": 1_395,
+        "Emobank": 10_062,
+        "fb": 2_895,
+    }
+    assert sentence_only.excluded_names == (
+        "GlasgowNorms",
+        "IEMOCAP sentences",
+        "nrc-vad",
+        "word ratings ENG",
+    )
+
 
 def test_missing_fold_error_shows_both_generation_commands(tmp_path: Path) -> None:
     with pytest.raises(FileNotFoundError) as error:
@@ -428,6 +454,60 @@ def test_repeat_comma_filters_apply_to_both_folds_and_fail_unresolved() -> None:
         )
 
 
+def test_sentence_only_is_an_exact_source_allowlist_in_every_fold() -> None:
+    columns = ["index", "text", "dataset_of_origin", "valence", "arousal"]
+    retained = ["EmoTales sentences", "Emobank", "fb"]
+    fold1 = pd.DataFrame(
+        [
+            [index, f"one-{index}", source, 0.1, 0.2]
+            for index, source in enumerate((*retained, "nrc-vad", "IEMOCAP sentences"))
+        ],
+        columns=columns,
+    )
+    fold2 = pd.DataFrame(
+        [
+            [index + 10, f"two-{index}", source, 0.3, 0.4]
+            for index, source in enumerate((*retained, "word ratings ENG"))
+        ],
+        columns=columns,
+    )
+    folds = {
+        FOLD_FILENAMES[0]: fold1,
+        FOLD_FILENAMES[1]: fold2,
+    }
+
+    assert resolve_sentence_only_datasets(fold1["dataset_of_origin"]) == tuple(retained)
+    filtered = filter_fold_frames(folds, sentence_only=True, no_iemocap=True)
+    assert set(filtered.fold1["dataset_of_origin"]) == set(retained)
+    assert set(filtered.fold2["dataset_of_origin"]) == set(retained)
+    assert filtered.excluded_names == (
+        "IEMOCAP sentences",
+        "nrc-vad",
+        "word ratings ENG",
+    )
+
+    with pytest.raises(ValueError, match="do not also exclude: Emobank"):
+        filter_fold_frames(
+            folds,
+            sentence_only=True,
+            exclude_dataset="Emobank",
+        )
+
+    missing_from_fold = dict(folds)
+    missing_from_fold[FOLD_FILENAMES[1]] = fold2.loc[
+        fold2["dataset_of_origin"] != "fb"
+    ]
+    with pytest.raises(ValueError, match="requires all three.*missing: fb"):
+        filter_fold_frames(missing_from_fold, sentence_only=True)
+
+    renamed = {
+        filename: frame.replace({"Emobank": "EmoBank"})
+        for filename, frame in folds.items()
+    }
+    with pytest.raises(ValueError, match="missing: Emobank"):
+        filter_fold_frames(renamed, sentence_only=True)
+
+
 class _TinyTokenizer:
     pad_token_id = 0
     eos_token_id = 2
@@ -436,6 +516,44 @@ class _TinyTokenizer:
     def __call__(self, text, **kwargs):
         ids = [2] if text == "" else [ord(char) % 17 + 3 for char in text]
         return {"input_ids": ids, "attention_mask": [1] * len(ids)}
+
+
+def test_sentence_only_standalone_cli_and_dataset_builder(
+    tmp_path: Path,
+    capsys,
+) -> None:
+    sources = ("EmoTales sentences", "Emobank", "fb", "nrc-vad")
+    for fold in (1, 2):
+        pd.DataFrame(
+            {
+                "index": [fold * 10 + index for index in range(len(sources))],
+                "text": [f"fold-{fold}-{source}" for source in sources],
+                "dataset_of_origin": sources,
+                "valence": [0.5] * len(sources),
+                "arousal": [0.5] * len(sources),
+            }
+        ).to_csv(
+            tmp_path / f"full_dataset_fold{fold}.csv",
+            sep="\t",
+            index=False,
+        )
+
+    assert filter_main(["--data-dir", str(tmp_path), "--sentence-only"]) == 0
+    output = capsys.readouterr().out
+    assert "nrc-vad" in output
+    assert "full_dataset_fold1.csv: 4 -> 3" in output
+    assert "full_dataset_fold2.csv: 4 -> 3" in output
+
+    fold1, fold2, excluded = build_fold_datasets(
+        tmp_path,
+        _TinyTokenizer(),
+        max_length=32,
+        sentence_only=True,
+    )
+    assert len(fold1) == len(fold2) == 3
+    assert set(fold1.dataset_of_origin) == set(sources[:3])
+    assert set(fold2.dataset_of_origin) == set(sources[:3])
+    assert excluded == ("nrc-vad",)
 
 
 def test_tokenized_dataset_and_collator_need_no_model_download() -> None:

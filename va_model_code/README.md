@@ -123,7 +123,9 @@ frozen ET2 -> Qwen alignment + gaze mask -> raw-aligned-feature cache
 
 The cache contains only raw ET2 predictions. Redistribution is outside ET2's
 inference-only context and executes on every forward pass, so its two learned
-log-width parameters receive VA-loss gradients in both full and LoRA modes.
+log-width parameters receive VA-loss gradients in both full and LoRA modes when
+a row has at least two valid gaze positions. A one-position row is an identity
+mapping and contributes exactly zero gradient to both widths.
 `--redistribution-sigma-left` and `--redistribution-sigma-right` default to
 `1.0`; the positive width is `exp(log_sigma) + min_sigma`, with
 `--redistribution-min-sigma 1e-6`. Kernel calculations use FP32 even during BF16
@@ -132,6 +134,15 @@ other selected channels are unchanged there. Masked rows are zeroed before
 projection, including non-TRT channels, so invalid NaN/Inf padding cannot poison
 projector gradients. No gaze-value clipping, renormalization of the input features,
 or ET2 fine-tuning is introduced.
+
+The two log-widths use their own AdamW parameter group. Its learning rate is
+set by `--redistribution-learning-rate` (default `1e-3` when redistribution is
+enabled), while its weight decay is fixed at zero. All other trainable
+parameters retain `--learning-rate` and the normal Trainer decay/no-decay
+policy. The common scheduler multiplies both learning rates by the same factor.
+Regular Trainer logs include `redistribution_sigma_left`,
+`redistribution_sigma_right`, and the scheduled
+`redistribution_learning_rate`, so movement can be audited during training.
 
 Mask handling is mandatory. The model passes the provider's explicit
 `gaze_mask`, which marks valid mapped first subwords, rather than deriving a
@@ -181,13 +192,17 @@ condition: there is no benchmark-time switch for retrofitting redistribution
 onto a previously trained raw-TRT checkpoint.
 Final-model reload uses the same finite-FP32-scalar validator before loading the
 backbone; corrupted or silently cast Gaussian-width state is rejected.
+Run manifests additionally record `redistribution_learning_rate` and the fixed
+`redistribution_weight_decay=0.0`. Resuming an older redistribution checkpoint
+that lacks this optimizer-group contract is rejected because its saved optimizer
+has a different parameter-group layout.
 
 Run a new full-fine-tuning BF16 condition from `va_model_code`, reusing the
 existing paper-protocol data and all matched training settings:
 
 ```bash
 SEED=43
-RUN_NAME="paper7_no_iemocap_qwen_full_gaze_TRT_redistribution_asym-gaussian_bf16_gc_b16_seed${SEED}_$(date +%Y%m%d_%H%M%S)"
+RUN_NAME="paper7_sentence_only_no_iemocap_qwen_full_gaze_TRT_redistribution_asym-gaussian_bf16_gc_b16_seed${SEED}_$(date +%Y%m%d_%H%M%S)"
 mkdir -p ../results
 set -o pipefail
 
@@ -201,8 +216,10 @@ python train_model.py qwen3.5-0.8b mse \
   --redistribution-sigma-left 1.0 \
   --redistribution-sigma-right 1.0 \
   --redistribution-min-sigma 1e-6 \
+  --redistribution-learning-rate 1e-3 \
   --et-model-id skboy/et_prediction_2 \
   --et-cache-size 70000 \
+  --sentence-only \
   --no-iemocap \
   --held-out-folds 1 2 \
   --max-length 200 \
@@ -223,8 +240,10 @@ python train_model.py qwen3.5-0.8b mse \
   2>&1 | tee "../results/${RUN_NAME}.log"
 ```
 
-For the matched raw-TRT control, use `--gaze-redistribution none`, omit the three
-sigma options, and remove `redistribution_asym-gaussian` from its new run name.
+For the matched raw-TRT control, use `--gaze-redistribution none`, omit all four
+redistribution-only options (the three sigma options plus
+`--redistribution-learning-rate`), and remove `redistribution_asym-gaussian`
+from its new run name.
 Do not regenerate `data/paper7_seed42` when changing only the training seed.
 
 FP32 uses the same redistribution interface: change `--precision bf16` to
@@ -407,6 +426,31 @@ python train_model.py \
 
 Patterns are resolved against actual `dataset_of_origin` values. An unmatched
 pattern fails with the available names instead of silently doing nothing.
+
+For the exact non-IEMOCAP sentence-only experiment, use `--sentence-only`. It
+keeps the provenance allowlist `EmoTales sentences`, `Emobank`, and `fb` in both
+training and held-out folds; it does not infer scope from token count. The
+paper-protocol folds contain 7,175 and 7,177 retained rows respectively (14,352
+OOF rows). All three sources must exist in each fold, and separately excluding
+one of them is rejected. `--no-iemocap` may also be supplied to make the intended
+condition explicit.
+
+```bash
+python train_model.py --dry-run \
+  --data-dir data/paper7_seed42 \
+  --sentence-only \
+  --no-iemocap \
+  --finetuning-mode full \
+  --precision bf16 \
+  --gaze-fusion prefix-concat \
+  --gaze-features TRT \
+  --gaze-redistribution asym-gaussian \
+  --redistribution-learning-rate 1e-3
+```
+
+The matched raw-TRT control must also use `--sentence-only`; comparing a
+sentence-only redistribution model against an older seven-source raw-TRT model
+does not isolate redistribution.
 
 Verified no-IEMOCAP counts:
 
@@ -592,14 +636,18 @@ The evaluation protocol remains fixed two-fold out-of-fold:
 - load a fresh model, train fold 1, predict held-out fold 2;
 - combine predictions once into the OOF report.
 
-Run one held-out fold for recovery or a smoke run:
+Run one held-out fold for a sentence-only redistribution smoke test:
 
 ```bash
 python train_model.py qwen3.5-0.8b mse \
   --data-dir data/paper7_seed42 \
   --finetuning-mode full \
+  --precision bf16 \
   --gaze-fusion prefix-concat \
   --gaze-features TRT \
+  --gaze-redistribution asym-gaussian \
+  --redistribution-learning-rate 1e-3 \
+  --sentence-only \
   --no-iemocap \
   --held-out-folds 1 \
   --max-length 200 \
@@ -610,8 +658,9 @@ python train_model.py qwen3.5-0.8b mse \
   --max-steps 3 \
   --learning-rate 6e-6 \
   --save-total-limit 1 \
+  --gradient-checkpointing \
   --seed 42 \
-  --run-name smoke_full_gaze_TRT_seed42_b16
+  --run-name smoke_sentence_only_no_iemocap_qwen_full_gaze_TRT_redistribution_bf16_seed42
 ```
 
 Three optimizer steps ensure that AdamW state exists while a later

@@ -17,6 +17,11 @@ from .preprocessing import FOLD_FILENAMES
 
 IEMOCAP_PATTERN = "IEMOCAP"
 IEMOCAP_TYPOS = frozenset({"ieomcap"})
+SENTENCE_ONLY_DATASET_NAMES = (
+    "EmoTales sentences",
+    "Emobank",
+    "fb",
+)
 
 
 @dataclass(frozen=True)
@@ -119,6 +124,28 @@ def resolve_excluded_datasets(
     return tuple(sorted(matched, key=str.casefold))
 
 
+def resolve_sentence_only_datasets(
+    available_names: Iterable[object],
+) -> tuple[str, ...]:
+    """Resolve the three approved non-IEMOCAP sentence corpora exactly."""
+
+    available = tuple(sorted({str(name) for name in available_names}, key=str.casefold))
+    available_set = set(available)
+    missing = [
+        expected
+        for expected in SENTENCE_ONLY_DATASET_NAMES
+        if expected not in available_set
+    ]
+    if missing:
+        choices = "\n".join(f"  - {name}" for name in available) or "  - <none>"
+        raise ValueError(
+            "--sentence-only requires exactly the approved sentence datasets "
+            f"(missing: {', '.join(missing)}).\n"
+            f"Available dataset_of_origin values:\n{choices}"
+        )
+    return SENTENCE_ONLY_DATASET_NAMES
+
+
 def read_fold(path: str | os.PathLike[str]) -> pd.DataFrame:
     fold_path = Path(path)
     if not fold_path.is_file():
@@ -168,6 +195,7 @@ def filter_fold_frames(
     exclude_dataset: str | Iterable[str] | None = None,
     no_iemocap: bool = False,
     no_ieomcap: bool = False,
+    sentence_only: bool = False,
 ) -> FilteredFolds:
     """Apply one resolved exclusion set to every fold without writing new files."""
 
@@ -186,8 +214,25 @@ def filter_fold_frames(
         for frame in folds.values()
         for name in frame["dataset_of_origin"].unique()
     }
-    excluded = resolve_excluded_datasets(available, requested)
-    excluded_set = set(excluded)
+    excluded_set = set(resolve_excluded_datasets(available, requested))
+    if sentence_only:
+        included = set(resolve_sentence_only_datasets(available))
+        explicitly_removed = sorted(included.intersection(excluded_set), key=str.casefold)
+        if explicitly_removed:
+            raise ValueError(
+                "--sentence-only keeps exactly EmoTales sentences, Emobank, and fb; "
+                "do not also exclude: " + ", ".join(explicitly_removed)
+            )
+        for filename, frame in folds.items():
+            fold_names = {str(name) for name in frame["dataset_of_origin"].unique()}
+            missing_from_fold = sorted(included.difference(fold_names), key=str.casefold)
+            if missing_from_fold:
+                raise ValueError(
+                    f"--sentence-only requires all three approved datasets in {filename}; "
+                    "missing: " + ", ".join(missing_from_fold)
+                )
+        excluded_set.update(available.difference(included))
+    excluded = tuple(sorted(excluded_set, key=str.casefold))
     filtered = {
         filename: frame.loc[
             ~frame["dataset_of_origin"].isin(excluded_set)
@@ -208,6 +253,7 @@ def apply_dataset_filters(
     exclude_dataset: str | Iterable[str] | None = None,
     no_iemocap: bool = False,
     no_ieomcap: bool = False,
+    sentence_only: bool = False,
 ) -> tuple[pd.DataFrame, pd.DataFrame, tuple[str, ...]]:
     """Tuple-oriented adapter for callers that already hold the two folds."""
 
@@ -216,6 +262,7 @@ def apply_dataset_filters(
         exclude_dataset=exclude_dataset,
         no_iemocap=no_iemocap,
         no_ieomcap=no_ieomcap,
+        sentence_only=sentence_only,
     )
     return result.fold1, result.fold2, result.excluded_names
 
@@ -226,12 +273,14 @@ def load_filtered_folds(
     exclude_dataset: str | Iterable[str] | None = None,
     no_iemocap: bool = False,
     no_ieomcap: bool = False,
+    sentence_only: bool = False,
 ) -> FilteredFolds:
     return filter_fold_frames(
         load_folds(data_dir),
         exclude_dataset=exclude_dataset,
         no_iemocap=no_iemocap,
         no_ieomcap=no_ieomcap,
+        sentence_only=sentence_only,
     )
 
 
@@ -259,6 +308,11 @@ def _build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Backward-compatible typo alias for --no-iemocap.",
     )
+    parser.add_argument(
+        "--sentence-only",
+        action="store_true",
+        help="Keep only EmoTales sentences, Emobank, and fb.",
+    )
     parser.add_argument("--list-datasets", action="store_true")
     return parser
 
@@ -278,10 +332,12 @@ def main(argv: Sequence[str] | None = None) -> int:
         exclude_dataset=args.exclude_dataset,
         no_iemocap=args.no_iemocap,
         no_ieomcap=args.no_ieomcap,
+        sentence_only=args.sentence_only,
     )
-    if not result.requested_patterns:
+    if not result.requested_patterns and not args.sentence_only:
         raise ValueError(
-            "Provide --exclude-dataset, --no-iemocap, or --no-ieomcap; "
+            "Provide --exclude-dataset, --no-iemocap, --no-ieomcap, or "
+            "--sentence-only; "
             "use --list-datasets to inspect choices."
         )
     print("Excluded dataset_of_origin values:")

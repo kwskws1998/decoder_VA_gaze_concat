@@ -62,6 +62,8 @@ from decoder_va.trainer import VARegressionTrainer
 
 
 PRECISION_MODES = ("auto", "bf16", "fp16", "fp32")
+DEFAULT_REDISTRIBUTION_LEARNING_RATE = 1e-3
+REDISTRIBUTION_WEIGHT_DECAY = 0.0
 
 
 def _build_parser() -> argparse.ArgumentParser:
@@ -125,6 +127,15 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--redistribution-sigma-left", type=float, default=1.0)
     parser.add_argument("--redistribution-sigma-right", type=float, default=1.0)
     parser.add_argument("--redistribution-min-sigma", type=float, default=1e-6)
+    parser.add_argument(
+        "--redistribution-learning-rate",
+        type=float,
+        default=None,
+        help=(
+            "Learning rate for log_sigma_left/right only. Defaults to 1e-3 when "
+            "asym-gaussian redistribution is enabled; their weight decay is fixed at 0."
+        ),
+    )
     parser.add_argument("--et-model-id", default="skboy/et_prediction_2")
     parser.add_argument("--et-revision", default=DEFAULT_ET2_REVISION)
     parser.add_argument(
@@ -141,6 +152,11 @@ def _build_parser() -> argparse.ArgumentParser:
         ),
     )
     parser.add_argument("--exclude-dataset", action="append", default=[])
+    parser.add_argument(
+        "--sentence-only",
+        action="store_true",
+        help="Keep only EmoTales sentences, Emobank, and fb in both folds.",
+    )
     parser.add_argument("--no-iemocap", action="store_true")
     parser.add_argument(
         "--no-ieomcap",
@@ -237,6 +253,22 @@ def _validate_args(args: argparse.Namespace) -> None:
         raise ValueError(
             "Redistribution sigma options require --gaze-redistribution asym-gaussian."
         )
+    if args.gaze_redistribution == "none":
+        if args.redistribution_learning_rate is not None:
+            raise ValueError(
+                "--redistribution-learning-rate requires "
+                "--gaze-redistribution asym-gaussian."
+            )
+        args.redistribution_weight_decay = None
+    else:
+        if args.redistribution_learning_rate is None:
+            args.redistribution_learning_rate = DEFAULT_REDISTRIBUTION_LEARNING_RATE
+        if (
+            not math.isfinite(args.redistribution_learning_rate)
+            or args.redistribution_learning_rate <= 0
+        ):
+            raise ValueError("--redistribution-learning-rate must be finite and positive.")
+        args.redistribution_weight_decay = REDISTRIBUTION_WEIGHT_DECAY
     _redistribution_config(args)
     if args.run_name:
         args.run_name = validate_run_name(args.run_name)
@@ -271,10 +303,19 @@ def _validate_args(args: argparse.Namespace) -> None:
                 f"--run-name precision tag {sorted(named_precisions)} does not match "
                 f"--precision {args.precision}."
             )
-        effective_no_iemocap = args.no_iemocap or args.no_ieomcap
+        effective_no_iemocap = (
+            args.no_iemocap or args.no_ieomcap or args.sentence_only
+        )
         if "no_iemocap" in normalized_run_name and not effective_no_iemocap:
             raise ValueError(
                 "--run-name says no_iemocap but the exclusion flag is absent."
+            )
+        if (
+            re.search(r"(?:^|[_-])sentence[_-]only(?:$|[_-])", normalized_run_name)
+            and not args.sentence_only
+        ):
+            raise ValueError(
+                "--run-name says sentence_only but --sentence-only is absent."
             )
         named_seeds = {
             int(value)
@@ -390,6 +431,7 @@ def _resolve_output_dir(args: argparse.Namespace) -> Path:
             gaze_redistribution=_redistribution_config(args),
             seed=args.seed,
             no_iemocap=args.no_iemocap or args.no_ieomcap,
+            sentence_only=args.sentence_only,
         )
     return resolve_run_directory(args.run_name)
 
@@ -560,6 +602,7 @@ def _validate_resume_contract(
         "fold_sha256",
         "excluded_dataset_names",
         "dataset_counts_after_filter",
+        "sentence_only",
     )
     expected_manifest = dict(expected_manifest)
     legacy_versions = {
@@ -587,6 +630,8 @@ def _validate_resume_contract(
             gaze_fusion=manifest["gaze_fusion"],
             feature_indices=manifest["gaze_feature_indices"],
         )
+        if "sentence_only" not in manifest:
+            manifest["sentence_only"] = False
         if (
             schema_version in legacy_versions
             and manifest["gaze_redistribution"] != {"method": "none"}
@@ -613,6 +658,11 @@ def _validate_resume_contract(
         )
     if expected_manifest.get("finetuning_mode") == "lora":
         contract_fields += ("lora_rank", "lora_alpha", "lora_dropout")
+    if expected_manifest["gaze_redistribution"]["method"] != "none":
+        contract_fields += (
+            "redistribution_learning_rate",
+            "redistribution_weight_decay",
+        )
     mismatches = []
     for field in contract_fields:
         expected_value = _json_ready(expected_manifest[field])
@@ -760,6 +810,7 @@ def run(args: argparse.Namespace) -> Path | None:
         exclude_dataset=args.exclude_dataset,
         no_iemocap=args.no_iemocap,
         no_ieomcap=args.no_ieomcap,
+        sentence_only=args.sentence_only,
     )
     filtered_counts = dataset_counts(filtered.folds)
     if args.list_datasets:
@@ -782,11 +833,21 @@ def run(args: argparse.Namespace) -> Path | None:
         _print_dataset_counts("Validated datasets:", filtered_counts)
         print(f"Excluded: {', '.join(filtered.excluded_names) or '<none>'}")
         print(
+            "Dataset scope: "
+            + ("EmoTales sentences, Emobank, fb" if args.sentence_only else "all retained datasets")
+        )
+        print(
             f"Fine-tuning mode: {args.finetuning_mode}; "
             f"precision: {args.precision} -> {str(dtype).replace('torch.', '')}; "
             f"learning rate: {args.learning_rate:g}"
         )
         print(f"Gaze redistribution: {_redistribution_config(args)}")
+        if args.gaze_redistribution != "none":
+            print(
+                "Redistribution optimizer: "
+                f"learning rate={args.redistribution_learning_rate:g}; "
+                f"weight decay={args.redistribution_weight_decay:g}"
+            )
         print(
             "Dry run complete; Trainer arguments are compatible and no tokenizer "
             "or model was downloaded."
@@ -829,10 +890,17 @@ def run(args: argparse.Namespace) -> Path | None:
         if active_feature_indices
         else (0,) * len(ET2_FEATURE_NAMES)
     )
+    if args.gaze_redistribution != "none":
+        print(
+            "Redistribution optimizer: "
+            f"log-sigma learning rate={args.redistribution_learning_rate:g}; "
+            f"weight decay={args.redistribution_weight_decay:g}."
+        )
 
     run_manifest = {
         **vars(args),
         "gaze_redistribution": _redistribution_config(args),
+        "redistribution_weight_decay": args.redistribution_weight_decay,
         "architecture_manifest_version": ARCHITECTURE_MANIFEST_VERSION,
         "loss": loss_name,
         "output_dim": 2,
@@ -964,6 +1032,7 @@ def run(args: argparse.Namespace) -> Path | None:
             processing_class=tokenizer,
             compute_metrics=trainer_compute_metrics,
             loss_name=loss_name,
+            redistribution_learning_rate=args.redistribution_learning_rate,
         )
         trainer.train(resume_from_checkpoint=args.resume_from_checkpoint)
         trainer.save_model(str(fold_output / "final_model"))

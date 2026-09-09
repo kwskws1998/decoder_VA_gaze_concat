@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections import Counter
 import csv
 from datetime import datetime
 import hashlib
@@ -58,9 +59,12 @@ def _write_completed_run(
     gaze_fusion: str = "none",
     schema_version: int = 6,
     gaze_redistribution: dict | None = None,
+    dataset_sources: tuple[str, str, str, str] = ("fake", "fake", "fake", "fake"),
 ) -> None:
     """Create the smallest complete two-fold artifact tree used by packaging tests."""
 
+    if len(dataset_sources) != 4:
+        raise ValueError("The packaging fixture requires exactly four dataset sources.")
     gaze_features = [] if gaze_fusion == "none" else ["TRT"]
     parameters = {
         "architecture_manifest_version": schema_version,
@@ -95,7 +99,7 @@ def _write_completed_run(
             if gaze_fusion == "prefix-concat"
             else "last_valid_text_token"
         ),
-        "dataset_counts_after_filter": {"fake": 4},
+        "dataset_counts_after_filter": dict(Counter(dataset_sources)),
         "excluded_dataset_names": ["IEMOCAP sentences"],
         "seed": 42,
         "no_iemocap": True,
@@ -136,21 +140,36 @@ def _write_completed_run(
         json.dumps(_perfect_metrics(4)),
         encoding="utf-8",
     )
+    prediction_rows = (
+        f"0\t1\ta\t{dataset_sources[0]}\t0.1\t0.2\t0.1\t0.2\n",
+        f"1\t1\tb\t{dataset_sources[1]}\t0.9\t0.8\t0.9\t0.8\n",
+        f"2\t2\tc\t{dataset_sources[2]}\t0.2\t0.3\t0.2\t0.3\n",
+        f"3\t2\td\t{dataset_sources[3]}\t0.8\t0.7\t0.8\t0.7\n",
+    )
     (run_dir / "oof_predictions.tsv").write_text(
-        PREDICTION_HEADER
-        + "0\t1\ta\tfake\t0.1\t0.2\t0.1\t0.2\n"
-        "1\t1\tb\tfake\t0.9\t0.8\t0.9\t0.8\n"
-        "2\t2\tc\tfake\t0.2\t0.3\t0.2\t0.3\n"
-        "3\t2\td\tfake\t0.8\t0.7\t0.8\t0.7\n",
+        PREDICTION_HEADER + "".join(prediction_rows),
         encoding="utf-8",
     )
-    dataset_values = _perfect_metrics(4)
     dataset_header = "\t".join(("dataset_of_origin", *METRIC_NAMES))
-    dataset_row = "\t".join(
-        ("fake", *(str(dataset_values[name]) for name in METRIC_NAMES))
-    )
+    parsed_rows = _prediction_rows(run_dir / "oof_predictions.tsv")
+    dataset_rows = []
+    for source in sorted(set(dataset_sources), key=str.casefold):
+        source_metrics = _calculate_metrics(
+            [row for row in parsed_rows if row["dataset_of_origin"] == source]
+        )
+        dataset_rows.append(
+            "\t".join(
+                (
+                    source,
+                    *(
+                        "" if source_metrics[name] is None else str(source_metrics[name])
+                        for name in METRIC_NAMES
+                    ),
+                )
+            )
+        )
     (run_dir / "metrics_by_dataset.tsv").write_text(
-        f"{dataset_header}\n{dataset_row}\n",
+        f"{dataset_header}\n" + "\n".join(dataset_rows) + "\n",
         encoding="utf-8",
     )
     for fold in (1, 2):
@@ -174,17 +193,7 @@ def _write_completed_run(
             json.dumps(_perfect_metrics(2, prefix="test_")),
             encoding="utf-8",
         )
-        fold_rows = (
-            (
-                "0\t1\ta\tfake\t0.1\t0.2\t0.1\t0.2\n"
-                "1\t1\tb\tfake\t0.9\t0.8\t0.9\t0.8\n"
-            )
-            if fold == 1
-            else (
-                "2\t2\tc\tfake\t0.2\t0.3\t0.2\t0.3\n"
-                "3\t2\td\tfake\t0.8\t0.7\t0.8\t0.7\n"
-            )
-        )
+        fold_rows = "".join(prediction_rows[:2] if fold == 1 else prediction_rows[2:])
         (fold_dir / "predictions.tsv").write_text(
             PREDICTION_HEADER
             + fold_rows,
@@ -402,6 +411,15 @@ def test_condition_aware_default_names_distinguish_baseline_and_gaze() -> None:
         gaze_features=("nFix", "TRT"),
         seed=7,
     ) == "qwen3.5-0.8b_lora_gaze_nFix-TRT_seed7"
+    assert condition_slug(
+        model="qwen3.5-0.8b",
+        finetuning_mode="full",
+        gaze_fusion="prefix-concat",
+        gaze_features=("TRT",),
+        seed=42,
+        sentence_only=True,
+        no_iemocap=True,
+    ) == "qwen3.5-0.8b_full_gaze_TRT_sentence_only_no_iemocap_seed42"
 
 
 def test_results_only_package_is_condition_named_and_excludes_weights(
@@ -839,6 +857,7 @@ def test_results_only_package_rejects_normalized_iemocap_source(
         ("et_revision", "main", "immutable lowercase"),
         ("model", "roberta-large", "model must be one of"),
         ("loss", "heteroscedastic+ccc", "loss must be one of"),
+        ("sentence_only", "true", "must be a JSON boolean"),
     ),
 )
 def test_results_only_package_rejects_unsupported_root_contract(
@@ -881,6 +900,33 @@ def test_results_only_package_labels_explicit_iemocap_exclusion(
     archive = package_results(run_dir, results_root=tmp_path)
 
     assert "_no_iemocap_" in archive.name
+
+
+def test_results_only_package_records_sentence_only_scope(tmp_path: Path) -> None:
+    run_dir = tmp_path / "sentence_only_run"
+    _write_completed_run(
+        run_dir,
+        dataset_sources=("EmoTales sentences", "Emobank", "fb", "fb"),
+    )
+    _rewrite_parameter_contract(run_dir, "sentence_only", True)
+
+    archive = package_results(run_dir, results_root=tmp_path)
+
+    assert "_sentence_only_" in archive.name
+    with zipfile.ZipFile(archive) as handle:
+        manifest = json.loads(handle.read(f"{run_dir.name}/results_manifest.json"))
+    assert manifest["condition"]["sentence_only"] is True
+
+
+def test_results_only_package_rejects_false_sentence_only_provenance(
+    tmp_path: Path,
+) -> None:
+    run_dir = tmp_path / "mislabeled_sentence_only_run"
+    _write_completed_run(run_dir)
+    _rewrite_parameter_contract(run_dir, "sentence_only", True)
+
+    with pytest.raises(ValueError, match="exactly these retained datasets"):
+        package_results(run_dir, results_root=tmp_path)
 
 
 @pytest.mark.parametrize("version,method", [(6, None), (6, "none"), (7, "none"), (7, "asym-gaussian")])

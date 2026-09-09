@@ -52,6 +52,95 @@ def tiny_native_backbone(*args, dtype=torch.float32, **kwargs):
     return LlamaModel(config).to(dtype=dtype)
 
 
+class TinyOptimizerModel(torch.nn.Module):
+    """Expose ordinary decay/no-decay parameters plus the two redistribution widths."""
+
+    def __init__(self):
+        super().__init__()
+        self.backbone = torch.nn.Linear(2, 2)
+        self.norm = torch.nn.LayerNorm(2)
+        self.gaze_redistributor = torch.nn.Module()
+        self.gaze_redistributor.kernel = torch.nn.Module()
+        self.gaze_redistributor.kernel.log_sigma_left = torch.nn.Parameter(
+            torch.tensor(0.0)
+        )
+        self.gaze_redistributor.kernel.log_sigma_right = torch.nn.Parameter(
+            torch.tensor(0.0)
+        )
+
+
+def test_trainer_gives_only_sigmas_a_separate_lr_and_zero_decay(tmp_path):
+    model = TinyOptimizerModel()
+    arguments = TrainingArguments(
+        output_dir=str(tmp_path),
+        learning_rate=6e-6,
+        weight_decay=0.01,
+        warmup_ratio=0.1,
+        report_to="none",
+        use_cpu=True,
+    )
+    trainer = VARegressionTrainer(
+        model=model,
+        args=arguments,
+        loss_name="mse",
+        redistribution_learning_rate=1e-3,
+    )
+
+    optimizer = trainer.create_optimizer()
+    parameter_groups = {
+        id(parameter): group
+        for group in optimizer.param_groups
+        for parameter in group["params"]
+    }
+    trainable = [parameter for parameter in model.parameters() if parameter.requires_grad]
+    assert len(parameter_groups) == len(trainable)
+    assert set(parameter_groups) == {id(parameter) for parameter in trainable}
+
+    sigma_parameters = tuple(model.gaze_redistributor.kernel.parameters())
+    sigma_group = parameter_groups[id(sigma_parameters[0])]
+    assert {id(parameter) for parameter in sigma_group["params"]} == {
+        id(parameter) for parameter in sigma_parameters
+    }
+    assert sigma_group["lr"] == pytest.approx(1e-3)
+    assert sigma_group["weight_decay"] == pytest.approx(0.0)
+    assert parameter_groups[id(model.backbone.weight)]["lr"] == pytest.approx(6e-6)
+    assert parameter_groups[id(model.backbone.weight)]["weight_decay"] == pytest.approx(
+        0.01
+    )
+    assert parameter_groups[id(model.backbone.bias)]["weight_decay"] == pytest.approx(0.0)
+    assert parameter_groups[id(model.norm.weight)]["weight_decay"] == pytest.approx(0.0)
+
+    trainer.create_scheduler(num_training_steps=10, optimizer=optimizer)
+    sigma_group_index = next(
+        index for index, group in enumerate(optimizer.param_groups) if group is sigma_group
+    )
+    base_group = parameter_groups[id(model.backbone.weight)]
+    base_group_index = next(
+        index for index, group in enumerate(optimizer.param_groups) if group is base_group
+    )
+    scheduled_base_lrs = trainer.lr_scheduler.base_lrs
+    expected_ratio = 1e-3 / 6e-6
+    assert scheduled_base_lrs[sigma_group_index] / scheduled_base_lrs[
+        base_group_index
+    ] == pytest.approx(expected_ratio)
+    optimizer.step()
+    trainer.lr_scheduler.step()
+    after_ratio = sigma_group["lr"] / base_group["lr"]
+    assert after_ratio == pytest.approx(expected_ratio)
+
+
+def test_trainer_rejects_special_lr_without_both_sigmas(tmp_path):
+    trainer = VARegressionTrainer(
+        model=torch.nn.Linear(2, 2),
+        args=TrainingArguments(output_dir=str(tmp_path), report_to="none", use_cpu=True),
+        loss_name="mse",
+        redistribution_learning_rate=1e-3,
+    )
+
+    with pytest.raises(ValueError, match="exactly the two trainable log-sigma"):
+        trainer.create_optimizer()
+
+
 @pytest.mark.parametrize("finetuning_mode", ["full", "lora"])
 @pytest.mark.parametrize("dtype", [torch.float32, torch.bfloat16])
 def test_native_decoder_checkpointed_training_and_strict_reload(
@@ -163,15 +252,51 @@ def test_real_trainer_checkpoint_resume_keeps_sigma_state(tmp_path, monkeypatch)
     trainer = VARegressionTrainer(
         model=make_model(), args=arguments, train_dataset=rows,
         data_collator=default_data_collator, loss_name="mse",
+        redistribution_learning_rate=0.02,
     )
     trainer.train()
     checkpoint = tmp_path / "checkpoint-1"
     assert (checkpoint / SAFE_WEIGHTS_FILENAME).is_file()
+    assert (checkpoint / "optimizer.pt").is_file()
+    assert (checkpoint / "scheduler.pt").is_file()
+    sigma_logs = [
+        row
+        for row in trainer.state.log_history
+        if "redistribution_sigma_left" in row
+    ]
+    assert sigma_logs
+    assert all("redistribution_sigma_right" in row for row in sigma_logs)
+    assert all("redistribution_learning_rate" in row for row in sigma_logs)
     expected = {name: p.detach().clone() for name, p in trainer.model.gaze_redistributor.named_parameters()}
     restored = VARegressionTrainer(
         model=make_model(), args=arguments, train_dataset=rows,
         data_collator=default_data_collator, loss_name="mse",
+        redistribution_learning_rate=0.02,
     )
     restored._load_from_checkpoint(str(checkpoint))
     for name, parameter in restored.model.gaze_redistributor.named_parameters():
         torch.testing.assert_close(parameter, expected[name], rtol=0, atol=0)
+
+    resumed_arguments = TrainingArguments(
+        output_dir=str(tmp_path / "resumed"),
+        max_steps=2,
+        per_device_train_batch_size=2,
+        save_strategy="no",
+        report_to="none",
+        use_cpu=True,
+        gradient_checkpointing=True,
+        gradient_checkpointing_kwargs={"use_reentrant": False},
+        learning_rate=0.01,
+        remove_unused_columns=False,
+        label_names=["labels"],
+    )
+    resumed = VARegressionTrainer(
+        model=make_model(),
+        args=resumed_arguments,
+        train_dataset=rows,
+        data_collator=default_data_collator,
+        loss_name="mse",
+        redistribution_learning_rate=0.02,
+    )
+    result = resumed.train(resume_from_checkpoint=str(checkpoint))
+    assert result.global_step == 2

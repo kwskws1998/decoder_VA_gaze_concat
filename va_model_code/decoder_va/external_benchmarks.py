@@ -30,7 +30,7 @@ from torch.utils.data import Dataset
 
 from .downloads import sha256_file
 from .evaluation import calculate_va_metrics
-from .filters import read_fold
+from .filters import SENTENCE_ONLY_DATASET_NAMES, read_fold
 from .model import (
     ARCHITECTURE_MANIFEST_FILENAME,
     ARCHITECTURE_MANIFEST_VERSION,
@@ -1981,6 +1981,15 @@ def _validate_root_run_parameters(root: Path, parameters: Mapping[str, Any]) -> 
         for value in counts.values()
     ):
         raise ValueError("dataset_counts_after_filter values must be positive integers.")
+    sentence_only = parameters.get("sentence_only", False)
+    if type(sentence_only) is not bool:
+        raise ValueError("training_parameters.json sentence_only must be a boolean.")
+    if sentence_only and set(map(str, counts)) != set(SENTENCE_ONLY_DATASET_NAMES):
+        raise ValueError(
+            "A sentence-only run must record exactly these retained datasets: "
+            + ", ".join(SENTENCE_ONLY_DATASET_NAMES)
+            + "."
+        )
     run_name = parameters["run_name"]
     if not isinstance(run_name, str) or not run_name.strip():
         raise ValueError("training_parameters.json run_name must be a non-empty string.")
@@ -2344,6 +2353,18 @@ def audit_finetuning_text_overlap(
         frame = fold_frames[member.training_fold]
         excluded = set(map(str, member.run_manifest.get("excluded_dataset_names", ())))
         filtered = frame.loc[~frame["dataset_of_origin"].astype(str).isin(excluded)].copy()
+        sentence_only = member.run_manifest.get("sentence_only", False)
+        if type(sentence_only) is not bool:
+            raise ValueError(
+                f"Run manifest sentence_only must be a boolean for {member.name}."
+            )
+        retained_sources = set(filtered["dataset_of_origin"].astype(str))
+        if sentence_only and retained_sources != set(SENTENCE_ONLY_DATASET_NAMES):
+            raise ValueError(
+                f"Reconstructed sentence-only sources mismatch for {member.name}: "
+                f"observed {sorted(retained_sources)}, expected "
+                f"{list(SENTENCE_ONLY_DATASET_NAMES)}."
+            )
         expected_rows = int(member.run_manifest.get("training_rows", -1))
         if len(filtered) != expected_rows:
             raise ValueError(

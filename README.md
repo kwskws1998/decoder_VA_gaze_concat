@@ -77,13 +77,20 @@ python va_model_code/train_model.py --dry-run \
   --gaze-features TRT \
   --gaze-redistribution asym-gaussian \
   --redistribution-sigma-left 1.0 \
-  --redistribution-sigma-right 1.0
+  --redistribution-sigma-right 1.0 \
+  --redistribution-learning-rate 1e-3 \
+  --sentence-only \
+  --no-iemocap
 ```
 
 The independent `decoder_va/redistribution.py` module uses the mapped gaze mask
 for both source and destination tokens, including interior unmapped positions.
 It introduces two learned Gaussian-width parameters and leaves frozen ET2,
 the other selected gaze channels, data preprocessing, and evaluation unchanged.
+The two widths use a dedicated learning rate (default `1e-3`) and zero weight
+decay; all other trainable parameters keep the main optimizer settings.
+`--sentence-only` retains exactly `EmoTales sentences`, `Emobank`, and `fb` in
+both folds.
 Configuration is recorded in training and architecture manifests; learned
 parameters are stored with the model weights. Existing checkpoints keep their
 original raw-gaze behavior: train a new condition to enable redistribution.

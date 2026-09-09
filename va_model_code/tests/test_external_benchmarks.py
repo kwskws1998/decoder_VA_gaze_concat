@@ -1020,6 +1020,34 @@ def test_overlap_audit_rejects_changed_training_fold_hash(tmp_path):
         audit_finetuning_text_overlap(benchmark, (member,), tmp_path)
 
 
+def test_overlap_audit_rejects_false_sentence_only_provenance(tmp_path):
+    benchmark = _small_benchmark()
+    for filename in FOLD_FILENAMES:
+        pd.DataFrame(
+            {
+                "index": [1],
+                "text": ["training text"],
+                "dataset_of_origin": ["Emobank"],
+                "valence": [0.5],
+                "arousal": [0.5],
+            }
+        ).to_csv(tmp_path / filename, sep="\t", index=False)
+    hashes = {filename: sha256_file(tmp_path / filename) for filename in FOLD_FILENAMES}
+    member = SimpleNamespace(
+        name="heldout_fold1",
+        training_fold=2,
+        run_manifest={
+            "fold_sha256": hashes,
+            "excluded_dataset_names": [],
+            "training_rows": 1,
+            "sentence_only": True,
+        },
+    )
+
+    with pytest.raises(ValueError, match="sentence-only sources mismatch"):
+        audit_finetuning_text_overlap(benchmark, (member,), tmp_path)
+
+
 def test_external_metrics_report_official_nonempty_and_novel_subsets():
     benchmark = _small_benchmark()
     audited = benchmark.frame.copy()
@@ -1125,6 +1153,21 @@ def test_discover_completed_run_requires_matched_two_fold_contract(tmp_path):
         and len(member.file_sha256["tokenizer/tokenizer.json"]) == 64
         for member in members
     )
+
+
+def test_discover_rejects_false_sentence_only_provenance(tmp_path):
+    _write_completed_run(tmp_path)
+    for path in (
+        tmp_path / "training_parameters.json",
+        tmp_path / "heldout_fold1" / "run_manifest.json",
+        tmp_path / "heldout_fold2" / "run_manifest.json",
+    ):
+        payload = json.loads(path.read_text(encoding="utf-8"))
+        payload["sentence_only"] = True
+        path.write_text(json.dumps(payload), encoding="utf-8")
+
+    with pytest.raises(ValueError, match="exactly these retained datasets"):
+        discover_completed_run(tmp_path)
 
 
 def test_discover_sanitized_hf_bundle_without_raw_internal_predictions(tmp_path):

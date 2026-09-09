@@ -196,12 +196,14 @@ def build_fold_datasets(
     exclude_dataset: str | Iterable[str] | None = None,
     no_iemocap: bool = False,
     no_ieomcap: bool = False,
+    sentence_only: bool = False,
 ) -> tuple[TokenizedVADataset, TokenizedVADataset, tuple[str, ...]]:
     filtered = load_filtered_folds(
         data_dir,
         exclude_dataset=exclude_dataset,
         no_iemocap=no_iemocap,
         no_ieomcap=no_ieomcap,
+        sentence_only=sentence_only,
     )
     return (
         TokenizedVADataset(filtered.fold1, tokenizer, max_length=max_length),

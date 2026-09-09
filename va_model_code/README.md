@@ -262,8 +262,9 @@ Qwen3.5 requires a newer Transformers build than the original code:
 
 ```bash
 # Run from the repository root, before entering va_model_code.
+# This CUDA 13.0 wheel is the tested RTX 5090 / sm_120 configuration.
 python -m pip install torch==2.12.1 \
-  --index-url https://download.pytorch.org/whl/cu126
+  --index-url https://download.pytorch.org/whl/cu130
 python -m pip install -r requirements.txt
 cd va_model_code
 ```

@@ -14,7 +14,9 @@ Nothing under `legacy/` is imported or installed.
 
 ## Install on a 24 GB NVIDIA machine
 
-Run installation from the repository root:
+Run installation from the repository root. The CUDA 13.0 wheel below is the
+tested choice for RTX 5090 (`sm_120`); select a different official PyTorch
+wheel only when the target GPU or its driver requires it.
 
 ```bash
 conda create -n decoder-va python=3.11 pip -y
@@ -22,9 +24,28 @@ conda activate decoder-va
 
 python -m pip install --upgrade pip setuptools wheel
 python -m pip install torch==2.12.1 \
-  --index-url https://download.pytorch.org/whl/cu126
+  --index-url https://download.pytorch.org/whl/cu130
 python -m pip install -r requirements.txt
 python -m pip check
+
+python - <<'PY'
+import torch
+
+assert torch.cuda.is_available()
+capability = torch.cuda.get_device_capability(0)
+architectures = torch.cuda.get_arch_list()
+print("torch:", torch.__version__)
+print("wheel CUDA:", torch.version.cuda)
+print("GPU:", torch.cuda.get_device_name(0))
+print("capability:", capability)
+print("compiled architectures:", architectures)
+if capability == (12, 0):
+    assert "sm_120" in architectures
+x = torch.randn(64, 64, device="cuda", dtype=torch.bfloat16)
+y = x @ x.T
+torch.cuda.synchronize()
+print("BF16 CUDA smoke:", y.dtype)
+PY
 ```
 
 ## Prepare data

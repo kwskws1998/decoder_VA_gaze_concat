@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 import shutil
 import zipfile
@@ -49,6 +50,19 @@ from va_model_code.decoder_va.preprocessing import (
     build_english_dataset,
 )
 from va_model_code.prepare_english_data import main as prepare_english_data
+
+
+@pytest.fixture(scope="module")
+def english_va_bundle() -> Path:
+    """Return the optional checksum-pinned real-data integration fixture."""
+
+    path = (
+        Path(__file__).resolve().parents[1]
+        / "data/external/english_va_bundle.zip"
+    )
+    if not os.path.lexists(path):
+        pytest.skip("optional checksum-pinned English VA bundle is not installed")
+    return path
 
 
 def _write_source(path: Path, rows: list[dict[str, object]]) -> None:
@@ -294,13 +308,14 @@ def test_paper_protocol_rejects_observed_normalization(tmp_path: Path) -> None:
         )
 
 
-def test_actual_bundle_row_counts_and_no_iemocap_regression(tmp_path: Path) -> None:
-    project_root = Path(__file__).resolve().parents[1]
-    archive = project_root / "data/external/english_va_bundle.zip"
+def test_actual_bundle_row_counts_and_no_iemocap_regression(
+    tmp_path: Path,
+    english_va_bundle: Path,
+) -> None:
     expected = "5db750ededfd9717dcca465b34fd7e6c348e50e563ad2c0814c458b04441e81d"
     result = build_english_dataset(
         tmp_path / "data",
-        archive_path=archive,
+        archive_path=english_va_bundle,
         expected_sha256=expected,
         seed=42,
     )
@@ -336,13 +351,12 @@ def test_actual_bundle_row_counts_and_no_iemocap_regression(tmp_path: Path) -> N
 
 def test_actual_bundle_paper_protocol_counts_and_source_balance(
     tmp_path: Path,
+    english_va_bundle: Path,
 ) -> None:
-    project_root = Path(__file__).resolve().parents[1]
-    archive = project_root / "data/external/english_va_bundle.zip"
     expected = "5db750ededfd9717dcca465b34fd7e6c348e50e563ad2c0814c458b04441e81d"
     result = build_english_dataset(
         tmp_path / "data_paper",
-        archive_path=archive,
+        archive_path=english_va_bundle,
         expected_sha256=expected,
         seed=42,
         paper_protocol=True,

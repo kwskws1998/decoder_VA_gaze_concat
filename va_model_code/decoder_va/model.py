@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import copy
+import inspect
 import json
 from collections.abc import Mapping
 from pathlib import Path
@@ -228,17 +229,37 @@ class DecoderVARegressor(nn.Module):
             raise AttributeError("The decoder backbone does not expose token embeddings.")
         return base_model.get_input_embeddings()
 
-    def gradient_checkpointing_enable(self, gradient_checkpointing_kwargs=None):
-        """Delegate checkpointing to the decoder and make embedded inputs differentiable."""
+    def gradient_checkpointing_enable(
+        self,
+        gradient_checkpointing_kwargs=None,
+        every_n_layers: int = 1,
+    ):
+        """Delegate version-compatible checkpointing to the decoder backbone."""
 
         kwargs = gradient_checkpointing_kwargs or {"use_reentrant": False}
         method = getattr(self.backbone, "gradient_checkpointing_enable", None)
         if not callable(method):
             raise RuntimeError("The selected decoder does not support gradient checkpointing.")
         try:
-            method(gradient_checkpointing_kwargs=kwargs)
-        except TypeError:
-            method()
+            parameters = inspect.signature(method).parameters
+        except (TypeError, ValueError) as exc:
+            raise RuntimeError(
+                "Cannot inspect the decoder gradient-checkpointing API."
+            ) from exc
+        accepts_keywords = any(
+            parameter.kind is inspect.Parameter.VAR_KEYWORD
+            for parameter in parameters.values()
+        )
+        method_kwargs = {}
+        if "gradient_checkpointing_kwargs" in parameters or accepts_keywords:
+            method_kwargs["gradient_checkpointing_kwargs"] = kwargs
+        if "every_n_layers" in parameters or accepts_keywords:
+            method_kwargs["every_n_layers"] = every_n_layers
+        elif every_n_layers != 1:
+            raise ValueError(
+                "The selected decoder cannot checkpoint every_n_layers != 1."
+            )
+        method(**method_kwargs)
         input_grad_method = getattr(self.backbone, "enable_input_require_grads", None)
         if callable(input_grad_method):
             input_grad_method()

@@ -622,7 +622,7 @@ def test_training_contract_rejects_invalid_warmup_ratio(warmup_ratio):
             True,
         ),
         (
-            "5.14.1",
+            "5.16.1",
             "warmup_steps",
             {"train_sampling_strategy"},
             "train_sampling_strategy",
@@ -691,7 +691,7 @@ def test_training_arguments_are_compatible_across_transformers_versions(
 
 def test_fp32_training_arguments_disable_tf32(monkeypatch, tmp_path):
     captured_kwargs = {}
-    monkeypatch.setattr(train_model_module, "_package_version", lambda name: "5.14.1")
+    monkeypatch.setattr(train_model_module, "_package_version", lambda name: "5.16.1")
     monkeypatch.setattr(
         train_model_module,
         "_training_argument_names",
@@ -724,7 +724,7 @@ def test_transformers_v5_can_disable_length_grouping(monkeypatch, tmp_path):
     monkeypatch.setattr(
         train_model_module,
         "_package_version",
-        lambda distribution: "5.14.1",
+        lambda distribution: "5.16.1",
     )
     monkeypatch.setattr(
         train_model_module,

@@ -75,7 +75,7 @@ def test_trainer_gives_only_sigmas_a_separate_lr_and_zero_decay(tmp_path):
         output_dir=str(tmp_path),
         learning_rate=6e-6,
         weight_decay=0.01,
-        warmup_ratio=0.1,
+        warmup_steps=1,
         report_to="none",
         use_cpu=True,
     )
@@ -170,7 +170,10 @@ def test_native_decoder_checkpointed_training_and_strict_reload(
         lora_alpha=4,
         lora_dropout=0,
     )
-    model.gradient_checkpointing_enable({"use_reentrant": False})
+    model.gradient_checkpointing_enable(
+        {"use_reentrant": False},
+        every_n_layers=1,
+    )
     assert model.backbone.is_gradient_checkpointing
     kernel = model.gaze_redistributor.kernel
     assert kernel.log_sigma_left.dtype == torch.float32
@@ -236,7 +239,6 @@ def test_real_trainer_checkpoint_resume_keeps_sigma_state(tmp_path, monkeypatch)
         per_device_train_batch_size=2,
         save_strategy="steps",
         save_steps=1,
-        save_safetensors=True,
         report_to="none",
         use_cpu=True,
         gradient_checkpointing=True,

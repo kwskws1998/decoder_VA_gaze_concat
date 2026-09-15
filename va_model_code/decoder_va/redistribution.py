@@ -13,7 +13,7 @@ from torch import nn
 from .gaze import normalize_et2_feature_indices
 
 
-GAZE_REDISTRIBUTION_METHODS = ("none", "asym-gaussian")
+GAZE_REDISTRIBUTION_METHODS = ("none", "fixed-gaussian", "asym-gaussian")
 _NUMERIC_FIELDS = ("init_sigma_left", "init_sigma_right", "min_sigma")
 _DEFAULTS = (1.0, 1.0, 1e-6)
 _ENABLED_METADATA = {
@@ -64,10 +64,13 @@ def redistribution_contract(
         raise ValueError("asym-gaussian redistribution requires prefix-concat gaze fusion.")
     if 3 not in normalize_et2_feature_indices(feature_indices):
         raise ValueError("asym-gaussian redistribution requires the TRT feature.")
+    if method == "fixed-gaussian" and values[0] != values[1]:
+        raise ValueError("fixed-gaussian requires equal left and right sigma values.")
     return {
         "method": method,
         **dict(zip(_NUMERIC_FIELDS, values)),
         **_ENABLED_METADATA,
+        "trainable": method == "asym-gaussian",
     }
 
 
@@ -98,6 +101,8 @@ def validate_redistribution_contract(
     if method == "none":
         return {"method": "none"}
     for name, expected in _ENABLED_METADATA.items():
+        if name == "trainable":
+            expected = method == "asym-gaussian"
         actual = contract[name]
         if actual != expected or type(actual) is not type(expected):
             raise ValueError(f"Invalid redistribution {name}: expected {expected!r}.")
@@ -263,6 +268,8 @@ class GazeRedistributor(nn.Module):
                 **{name: self.config[name] for name in _NUMERIC_FIELDS}
             )
         )
+        if self.kernel is not None and not self.config["trainable"]:
+            self.kernel.requires_grad_(False)
 
     def forward(self, raw_gaze: torch.Tensor, gaze_mask: torch.Tensor) -> torch.Tensor:
         """Redistribute raw TRT before projection, independently of frozen ET caching."""

@@ -12,41 +12,32 @@ results/         every current training run and its results-only ZIP
 Only the repository-root `requirements.txt` defines the active environment.
 Nothing under `legacy/` is imported or installed.
 
-## Install on a 24 GB NVIDIA machine
+## Install and run with Python
 
-Run installation from the repository root. The CUDA 13.0 wheel below is the
-tested choice for RTX 5090 (`sm_120`); select a different official PyTorch
-wheel only when the target GPU or its driver requires it.
+On the server, open the existing GitHub checkout's repository root (the directory
+containing this README) and update it before setup:
 
-```bash
-conda create -n decoder-va python=3.11 pip -y
-conda activate decoder-va
-
-python -m pip install --upgrade pip setuptools wheel
-python -m pip install torch==2.12.1 \
-  --index-url https://download.pytorch.org/whl/cu130
-python -m pip install -r requirements.txt
-python -m pip check
-
-python - <<'PY'
-import torch
-
-assert torch.cuda.is_available()
-capability = torch.cuda.get_device_capability(0)
-architectures = torch.cuda.get_arch_list()
-print("torch:", torch.__version__)
-print("wheel CUDA:", torch.version.cuda)
-print("GPU:", torch.cuda.get_device_name(0))
-print("capability:", capability)
-print("compiled architectures:", architectures)
-if capability == (12, 0):
-    assert "sm_120" in architectures
-x = torch.randn(64, 64, device="cuda", dtype=torch.bfloat16)
-y = x @ x.T
-torch.cuda.synchronize()
-print("BF16 CUDA smoke:", y.dtype)
-PY
+```text
+git pull --ff-only origin main
 ```
+
+Python 3.11 or newer and a working NVIDIA driver are required. Setup detects
+this machine's driver, selects a compatible CUDA wheel family, and verifies
+actual CUDA forward/backward execution. GPU names are not hard-coded.
+
+```text
+python setup_environment.py
+python run_sigma_experiments.py --mode smoke
+python run_sigma_experiments.py --mode full
+```
+
+Setup creates `.venv`; the experiment runner selects that Python automatically,
+so shell activation is unnecessary. To install into your already active Python
+instead, use `python setup_environment.py --current-env` and select that
+interpreter with `--python` when a project `.venv` also exists.
+The manual commands below assume you are using an interpreter with the
+requirements installed. See [SIGMA_EXPERIMENTS.md](SIGMA_EXPERIMENTS.md) for the
+Python experiment options and diagnostic outputs.
 
 ## Prepare data
 
@@ -84,6 +75,9 @@ python va_model_code/train_model.py --dry-run \
 ```
 
 ## Optional gaze redistribution
+
+For the matched raw/fixed/learned sigma diagnosis suite, environment setup,
+and gradient/sensitivity logging, see [SIGMA_EXPERIMENTS.md](SIGMA_EXPERIMENTS.md).
 
 Gaze concat and gaze redistribution are separate settings. Existing commands
 still use raw ET2 features because `--gaze-redistribution none` is the default.

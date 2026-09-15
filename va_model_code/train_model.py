@@ -54,6 +54,7 @@ from decoder_va.paths import (
     validate_run_name,
 )
 from decoder_va.redistribution import (
+    GAZE_REDISTRIBUTION_METHODS,
     redistribution_contract,
     validate_redistribution_contract,
     validate_redistribution_state_file,
@@ -120,7 +121,7 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--gaze-redistribution",
-        choices=("none", "asym-gaussian"),
+        choices=GAZE_REDISTRIBUTION_METHODS,
         default="none",
         help="Optional mask-aware TRT transformation before gaze-prefix projection.",
     )
@@ -206,6 +207,14 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--logging-steps", type=int, default=50)
+    parser.add_argument(
+        "--sigma-diagnostics-steps", type=int, default=0,
+        help="Record sigma gradients/updates every N optimizer steps; 0 disables diagnostics.",
+    )
+    parser.add_argument(
+        "--sigma-diagnostics-batch-size", type=int, default=2,
+        help="Fixed training examples for dropout-free epoch sensitivity probes.",
+    )
     parser.add_argument("--save-total-limit", type=int, default=1)
     parser.add_argument(
         "--group-by-length",
@@ -253,7 +262,7 @@ def _validate_args(args: argparse.Namespace) -> None:
         raise ValueError(
             "Redistribution sigma options require --gaze-redistribution asym-gaussian."
         )
-    if args.gaze_redistribution == "none":
+    if args.gaze_redistribution != "asym-gaussian":
         if args.redistribution_learning_rate is not None:
             raise ValueError(
                 "--redistribution-learning-rate requires "
@@ -270,6 +279,14 @@ def _validate_args(args: argparse.Namespace) -> None:
             raise ValueError("--redistribution-learning-rate must be finite and positive.")
         args.redistribution_weight_decay = REDISTRIBUTION_WEIGHT_DECAY
     _redistribution_config(args)
+    if args.sigma_diagnostics_steps < 0 or args.sigma_diagnostics_batch_size <= 0:
+        raise ValueError("Sigma diagnostics require nonnegative steps and positive batch size.")
+    if args.sigma_diagnostics_steps and (
+        args.gaze_fusion != "prefix-concat" or args.gaze_feature_indices != (3,)
+    ):
+        raise ValueError("Sigma diagnostics require prefix-concat with TRT only.")
+    if args.sigma_diagnostics_steps and args.precision == "fp16":
+        raise ValueError("Sigma diagnostics support fp32/bf16; FP16 gradients are scaled.")
     if args.run_name:
         args.run_name = validate_run_name(args.run_name)
         normalized_run_name = args.run_name.lower()
@@ -842,7 +859,7 @@ def run(args: argparse.Namespace) -> Path | None:
             f"learning rate: {args.learning_rate:g}"
         )
         print(f"Gaze redistribution: {_redistribution_config(args)}")
-        if args.gaze_redistribution != "none":
+        if args.gaze_redistribution == "asym-gaussian":
             print(
                 "Redistribution optimizer: "
                 f"learning rate={args.redistribution_learning_rate:g}; "
@@ -890,7 +907,7 @@ def run(args: argparse.Namespace) -> Path | None:
         if active_feature_indices
         else (0,) * len(ET2_FEATURE_NAMES)
     )
-    if args.gaze_redistribution != "none":
+    if args.gaze_redistribution == "asym-gaussian":
         print(
             "Redistribution optimizer: "
             f"log-sigma learning rate={args.redistribution_learning_rate:g}; "
@@ -1034,7 +1051,17 @@ def run(args: argparse.Namespace) -> Path | None:
             loss_name=loss_name,
             redistribution_learning_rate=args.redistribution_learning_rate,
         )
+        if args.sigma_diagnostics_steps:
+            from decoder_va.sigma_diagnostics import attach_sigma_diagnostics
+
+            attach_sigma_diagnostics(
+                trainer, fold_output,
+                every_steps=args.sigma_diagnostics_steps,
+                batch_size=args.sigma_diagnostics_batch_size,
+            )
         trainer.train(resume_from_checkpoint=args.resume_from_checkpoint)
+        if args.sigma_diagnostics_steps:
+            trainer.save_state()
         trainer.save_model(str(fold_output / "final_model"))
         model.save_architecture_manifest(fold_output / "final_model")
         prediction_output = trainer.predict(eval_dataset)

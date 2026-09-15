@@ -138,6 +138,8 @@ results/*
 !results/README.md
 wandb/
 logs/
+/artifacts/
+/environment_setup.json
 
 # Pyre type checker
 .pyre/

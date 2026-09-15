@@ -141,6 +141,15 @@ class VARegressionTrainer(Trainer):
                     )
         return super().log(enriched, *args, **kwargs)
 
+    def training_step(self, model, inputs, *args: Any, **kwargs: Any):
+        """Observe accumulated gradients after backward and before Trainer clipping."""
+
+        loss = super().training_step(model, inputs, *args, **kwargs)
+        observer = getattr(self, "sigma_diagnostics", None)
+        if observer is not None:
+            observer.after_backward()
+        return loss
+
     def compute_loss(
         self,
         model,

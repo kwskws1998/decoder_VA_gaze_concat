@@ -929,7 +929,7 @@ def test_results_only_package_rejects_false_sentence_only_provenance(
         package_results(run_dir, results_root=tmp_path)
 
 
-@pytest.mark.parametrize("version,method", [(6, None), (6, "none"), (7, "none"), (7, "asym-gaussian")])
+@pytest.mark.parametrize("version,method", [(6, None), (6, "none"), (7, "none"), (7, "fixed-gaussian"), (7, "asym-gaussian")])
 def test_package_records_distinct_redistribution_condition(tmp_path, version, method):
     """Keep legacy archive names while distinguishing the learned redistribution arm."""
 
@@ -951,6 +951,29 @@ def test_package_records_distinct_redistribution_condition(tmp_path, version, me
         assert manifest["condition"]["gaze_redistribution"] == (
             {"method": "none"} if contract is None else contract
         )
+
+
+def test_package_preserves_sigma_diagnostics_and_complete_history(tmp_path):
+    """Include diagnostic evidence while continuing to exclude model weights."""
+
+    run_dir = tmp_path / "diagnostic_run"
+    _write_completed_run(run_dir, gaze_fusion="prefix-concat", schema_version=7, gaze_redistribution=redistribution_contract("fixed-gaussian"))
+    _rewrite_parameter_contract(run_dir, "sigma_diagnostics_steps", 50)
+    expected = {}
+    for fold in (1, 2):
+        for name in ("sigma_updates.jsonl", "sigma_probes.jsonl", "checkpoints/trainer_state.json"):
+            relative = f"heldout_fold{fold}/{name}"
+            content = json.dumps({"test_evidence": name}) + "\n"
+            (run_dir / relative).write_text(content, encoding="utf-8")
+            expected[relative] = content.encode()
+    archive_path = package_results(run_dir, results_root=tmp_path)
+    with zipfile.ZipFile(archive_path) as archive:
+        for relative, content in expected.items():
+            assert archive.read(f"{run_dir.name}/{relative}") == content
+        assert not any(name.endswith(".safetensors") for name in archive.namelist())
+    (run_dir / "heldout_fold1/sigma_updates.jsonl").unlink()
+    with pytest.raises(FileNotFoundError):
+        package_results(run_dir, results_root=tmp_path)
 
 
 def _tamper_redistribution(run_dir, target, value, *, remove=False):

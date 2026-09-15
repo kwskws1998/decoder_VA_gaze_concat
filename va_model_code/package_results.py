@@ -619,6 +619,13 @@ def _select_result_paths(
             path.relative_to(run_dir)
             for path in trainer_states
         )
+        if parameters.get("sigma_diagnostics_steps", 0):
+            relative_paths.extend(
+                fold_root / name for name in (
+                    "sigma_updates.jsonl", "sigma_probes.jsonl",
+                    "checkpoints/trainer_state.json",
+                )
+            )
     if len(set(relative_paths)) != len(relative_paths):
         raise ValueError("Result allowlist contains duplicate paths.")
     return tuple(run_dir / relative_path for relative_path in relative_paths)

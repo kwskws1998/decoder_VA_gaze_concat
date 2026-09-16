@@ -1,5 +1,9 @@
 # Sigma diagnosis experiments
 
+For the frozen right-versus-left direction comparison, use the direct training
+commands in [FIXED_DIRECTION_EXPERIMENTS.md](FIXED_DIRECTION_EXPERIMENTS.md).
+`fixed-gaussian` accepts either equal or unequal left/right widths.
+
 Use Python 3.11 or newer on the NVIDIA machine. Run the following from the
 existing GitHub checkout's repository root, where `setup_environment.py` lives.
 The entry points are ordinary Python files and execute subprocess argument lists

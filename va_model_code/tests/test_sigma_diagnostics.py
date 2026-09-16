@@ -13,20 +13,22 @@ from va_model_code.decoder_va.trainer import VARegressionTrainer
 from va_model_code.tests.test_redistribution_transformer import FixedET2, tiny_native_backbone
 
 
-def make_model(method, dtype=torch.float32):
+def make_model(method, dtype=torch.float32, *, left=1.0, right=1.0):
     """Construct paired native causal models with dropout and deterministic gaze."""
 
     torch.manual_seed(137)
     return DecoderVARegressor(
         tiny_native_backbone(dtype=dtype),
         gaze_provider=FixedET2(feature_indices=(3,), repo_id="offline", revision="offline", filename="offline"),
-        gaze_redistribution=redistribution_contract(method),
+        gaze_redistribution=redistribution_contract(
+            method, init_sigma_left=left, init_sigma_right=right,
+        ),
         gaze_projection_dim=8,
         gaze_projection_dropout=(0.1, 0.3), classifier_dropout=0.1,
     )
 
 
-def make_trainer(directory, method, dtype=torch.float32):
+def make_trainer(directory, method, dtype=torch.float32, *, left=1.0, right=1.0):
     """Build an accumulated, clipped two-step run using actual Trainer callbacks."""
 
     rows = [
@@ -42,25 +44,71 @@ def make_trainer(directory, method, dtype=torch.float32):
         bf16=dtype == torch.bfloat16,
     )
     return VARegressionTrainer(
-        model=make_model(method, dtype), args=args, train_dataset=rows,
+        model=make_model(method, dtype, left=left, right=right), args=args, train_dataset=rows,
         data_collator=default_data_collator, loss_name="mse",
         redistribution_learning_rate=0.001 if method == "asym-gaussian" else None,
     )
 
 
-def test_fixed_gaussian_retains_smoothing_without_trainable_widths():
-    config = redistribution_contract("fixed-gaussian")
+@pytest.mark.parametrize("left,right", [(1.0, 1.0), (0.5, 2.0), (2.0, 0.5)])
+def test_fixed_gaussian_retains_smoothing_without_trainable_widths(left, right):
+    config = redistribution_contract(
+        "fixed-gaussian", init_sigma_left=left, init_sigma_right=right,
+    )
     assert config["trainable"] is False
     assert validate_redistribution_contract(config, gaze_fusion="prefix-concat", feature_indices=(3,)) == config
     kernel = GazeRedistributor(config, (3,))
     assert all(not p.requires_grad for p in kernel.parameters())
     raw = torch.tensor([[[1.], [0.], [0.]]])
     mask = torch.ones(1, 3, dtype=torch.bool)
-    expected = GazeRedistributor(redistribution_contract("asym-gaussian"), (3,))(raw, mask)
+    expected = GazeRedistributor(redistribution_contract(
+        "asym-gaussian", init_sigma_left=left, init_sigma_right=right,
+    ), (3,))(raw, mask)
     torch.testing.assert_close(kernel(raw, mask), expected, rtol=0, atol=0)
     assert kernel(raw, mask)[0, 1, 0] > 0
-    with pytest.raises(ValueError, match="equal"):
-        redistribution_contract("fixed-gaussian", init_sigma_right=2.)
+
+
+def test_fixed_direction_pair_is_mirrored_and_preserves_other_initial_weights():
+    """Check the experimental contrast changes direction without changing initial weights."""
+
+    right_model = make_model("fixed-gaussian", left=0.5, right=2.0)
+    left_model = make_model("fixed-gaussian", left=2.0, right=0.5)
+    for name, value in right_model.state_dict().items():
+        if not name.startswith("gaze_redistributor."):
+            torch.testing.assert_close(left_model.state_dict()[name], value, rtol=0, atol=0)
+    raw = torch.zeros(1, 9, 1)
+    raw[0, 4, 0] = 1.0
+    mask = torch.ones(1, 9, dtype=torch.bool)
+    right_output = right_model.gaze_redistributor(raw, mask)
+    left_output = left_model.gaze_redistributor(raw, mask)
+    assert right_output[0, 5:, 0].sum() > right_output[0, :4, 0].sum()
+    torch.testing.assert_close(left_output, right_output.flip(1))
+    torch.testing.assert_close(right_output.sum(), raw.sum())
+
+
+@pytest.mark.parametrize("left,right", [(0.5, 2.0), (2.0, 0.5)])
+@pytest.mark.parametrize("dtype", [torch.float32, torch.bfloat16])
+def test_fixed_direction_widths_are_excluded_from_optimizer_and_never_update(
+    tmp_path, left, right, dtype,
+):
+    """Exercise actual Trainer updates and diagnostics for both frozen directions."""
+
+    trainer = make_trainer(tmp_path, "fixed-gaussian", dtype, left=left, right=right)
+    kernel = trainer.model.gaze_redistributor.kernel
+    initial = {name: value.clone() for name, value in kernel.state_dict().items()}
+    head_before = trainer.model.regression_head[-1].weight.detach().clone()
+    optimizer = trainer.create_optimizer()
+    optimizer_ids = {id(p) for group in optimizer.param_groups for p in group["params"]}
+    assert not any(id(p) in optimizer_ids for p in kernel.parameters())
+    attach_sigma_diagnostics(trainer, tmp_path, every_steps=1, batch_size=2)
+    trainer.train()
+    assert not torch.equal(trainer.model.regression_head[-1].weight, head_before)
+    for name, value in kernel.state_dict().items():
+        torch.testing.assert_close(value, initial[name], rtol=0, atol=0)
+    assert all(not p.requires_grad and p.grad is None for p in kernel.parameters())
+    updates = [json.loads(line) for line in (tmp_path / "sigma_updates.jsonl").read_text().splitlines()]
+    assert len(updates) == 2
+    assert all(value == 0 for record in updates for value in record["delta_log_sigma"].values())
 
 
 @pytest.mark.parametrize("method", ["none", "fixed-gaussian", "asym-gaussian"])
@@ -113,7 +161,8 @@ def test_probe_restores_state_on_failure(tmp_path, monkeypatch):
     assert torch.equal(torch.get_rng_state(), rng)
 
 
-def test_fixed_gaussian_stays_frozen_after_strict_reload(tmp_path, monkeypatch):
+@pytest.mark.parametrize("left,right", [(1.0, 1.0), (0.5, 2.0), (2.0, 0.5)])
+def test_fixed_gaussian_stays_frozen_after_strict_reload(tmp_path, monkeypatch, left, right):
     from types import SimpleNamespace
     from safetensors.torch import save_file
     from va_model_code.decoder_va import model as model_module
@@ -123,7 +172,9 @@ def test_fixed_gaussian_stays_frozen_after_strict_reload(tmp_path, monkeypatch):
     tokenizer = SimpleNamespace(padding_side="right")
     model = model_module.build_qwen_va_model(
         tokenizer, finetuning_mode="full", dtype=torch.float32,
-        gaze_redistribution=redistribution_contract("fixed-gaussian"),
+        gaze_redistribution=redistribution_contract(
+            "fixed-gaussian", init_sigma_left=left, init_sigma_right=right,
+        ),
     )
     model.save_architecture_manifest(tmp_path)
     save_file(model.state_dict(), tmp_path / model_module.SAFE_WEIGHTS_FILENAME)

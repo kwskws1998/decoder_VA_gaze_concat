@@ -46,7 +46,7 @@ def redistribution_contract(
     gaze_fusion: str = "prefix-concat",
     feature_indices: Sequence[int] = (3,),
 ) -> dict:
-    """Return a fully specified, serializable redistribution configuration."""
+    """Describe frozen or learned widths, allowing either direction in both modes."""
 
     if method not in GAZE_REDISTRIBUTION_METHODS:
         raise ValueError(f"Unknown gaze redistribution method: {method!r}.")
@@ -58,14 +58,12 @@ def redistribution_contract(
     )
     if method == "none":
         if values != _DEFAULTS:
-            raise ValueError("Redistribution sigma settings require asym-gaussian.")
+            raise ValueError("Redistribution sigma settings require fixed-gaussian or asym-gaussian.")
         return {"method": "none"}
     if gaze_fusion != "prefix-concat":
-        raise ValueError("asym-gaussian redistribution requires prefix-concat gaze fusion.")
+        raise ValueError("Gaussian redistribution requires prefix-concat gaze fusion.")
     if 3 not in normalize_et2_feature_indices(feature_indices):
-        raise ValueError("asym-gaussian redistribution requires the TRT feature.")
-    if method == "fixed-gaussian" and values[0] != values[1]:
-        raise ValueError("fixed-gaussian requires equal left and right sigma values.")
+        raise ValueError("Gaussian redistribution requires the TRT feature.")
     return {
         "method": method,
         **dict(zip(_NUMERIC_FIELDS, values)),

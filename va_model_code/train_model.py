@@ -123,7 +123,11 @@ def _build_parser() -> argparse.ArgumentParser:
         "--gaze-redistribution",
         choices=GAZE_REDISTRIBUTION_METHODS,
         default="none",
-        help="Optional mask-aware TRT transformation before gaze-prefix projection.",
+        help=(
+            "Mask-aware TRT transformation before gaze-prefix projection. "
+            "fixed-gaussian freezes both specified widths, including unequal widths; "
+            "asym-gaussian learns them."
+        ),
     )
     parser.add_argument("--redistribution-sigma-left", type=float, default=1.0)
     parser.add_argument("--redistribution-sigma-right", type=float, default=1.0)
@@ -260,7 +264,8 @@ def _validate_args(args: argparse.Namespace) -> None:
         or args.redistribution_min_sigma != 1e-6
     ):
         raise ValueError(
-            "Redistribution sigma options require --gaze-redistribution asym-gaussian."
+            "Redistribution sigma options require --gaze-redistribution "
+            "fixed-gaussian or asym-gaussian."
         )
     if args.gaze_redistribution != "asym-gaussian":
         if args.redistribution_learning_rate is not None:

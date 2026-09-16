@@ -308,7 +308,7 @@ def test_invalid_numeric_parameters(name, value):
 
 @pytest.mark.parametrize("name", ["init_sigma_left", "init_sigma_right", "min_sigma"])
 def test_disabled_rejects_ignored_nondefault_parameters(name):
-    with pytest.raises(ValueError, match="require asym-gaussian"):
+    with pytest.raises(ValueError, match="require fixed-gaussian or asym-gaussian"):
         redistribution_contract("none", **{name: 2.0})
 
 

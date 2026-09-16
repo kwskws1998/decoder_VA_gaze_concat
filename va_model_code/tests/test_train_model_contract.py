@@ -97,6 +97,30 @@ def test_cli_defaults_to_prefix_and_requires_explicit_training_loss():
         parser.parse_args(["--output-dir", "Preds/old-layout"])
 
 
+@pytest.mark.parametrize("left,right", [(0.5, 2.0), (2.0, 0.5)])
+def test_cli_accepts_frozen_direction_pair_without_sigma_optimizer(left, right):
+    """Accept unequal fixed widths while rejecting an unused sigma learning rate."""
+
+    parser = train_model_module._build_parser()
+    options = [
+        "qwen3.5-0.8b", "mse", "--gaze-redistribution", "fixed-gaussian",
+        "--redistribution-sigma-left", str(left),
+        "--redistribution-sigma-right", str(right), "--sentence-only",
+    ]
+    args = parser.parse_args(options)
+    train_model_module._validate_args(args)
+    config = train_model_module._redistribution_config(args)
+    assert config["trainable"] is False
+    assert config["init_sigma_left"] == left
+    assert config["init_sigma_right"] == right
+    assert args.redistribution_learning_rate is None
+    assert args.redistribution_weight_decay is None
+    with pytest.raises(ValueError, match="requires --gaze-redistribution asym-gaussian"):
+        train_model_module._validate_args(
+            parser.parse_args([*options, "--redistribution-learning-rate", "0.05"])
+        )
+
+
 def test_cli_resolves_mode_specific_learning_rates():
     parser = train_model_module._build_parser()
     lora_args = parser.parse_args(["qwen3.5-0.8b", "mse"])

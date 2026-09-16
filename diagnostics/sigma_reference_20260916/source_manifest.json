@@ -1,0 +1,62 @@
+{
+  "archive": "/Users/wansookim/Downloads/34755_Leveraging_Psychophysica_Supplementary Material (2).zip",
+  "sha256": "6d8fef30b7f8a0ad9cd2f6d81220a7d5b16c73ea1f3523896762de2be5228e61",
+  "files": {
+    "reward_utils/dataset_proceser_reward.py": {
+      "bytes": 19117,
+      "sha256": "062af4cab5d4d957f5858dcc8f3cee45402445df39fc49add80013d5e5c422d3"
+    },
+    "trainers/reward_trainer.py": {
+      "bytes": 9874,
+      "sha256": "af4378f43cf9c5b8d2a4945a9215fa6349bb293c3f25effdbe05609e0f6d1280"
+    },
+    "trainers/reward_trainer_general.py": {
+      "bytes": 21549,
+      "sha256": "0a0ccca9953159999232c57e9ec6397adb3f16ed23bf4b1933472d1d5f64baf6"
+    },
+    "utils/dataset_proceser.py": {
+      "bytes": 7920,
+      "sha256": "53d8595496454eac1a3051b2fa8d5f434b9fdc8720b35d88b93df636a45f3563"
+    },
+    "utils/lmdb_storage.py": {
+      "bytes": 10864,
+      "sha256": "035e4d0bebbc4c7368187d6d10071cd3e5a40666b1435b1cc76ed68800bf17cb"
+    },
+    "main.py": {
+      "bytes": 12753,
+      "sha256": "81e49ed873db2233aa911bacc84911e4daf5d0c059b6102cccf6675cea59a86d"
+    },
+    "README.md": {
+      "bytes": 1027,
+      "sha256": "0e4d43765e4f1d5f4cac89b853a39e035aaa8e970d0b7fa2f179f2dbb4633b01"
+    },
+    "requirements.txt": {
+      "bytes": 2063,
+      "sha256": "26555388bd2ff060f33f5be7877274b740102b8b063ae5cf96adcb4b495ac376"
+    },
+    "models/asym_gaussian_redistributor.py": {
+      "bytes": 2398,
+      "sha256": "284db3253abf8f9d399bd314c394eff67109c0ef0a72c721582321d99044b714"
+    },
+    "models/reward_model_base.py": {
+      "bytes": 15676,
+      "sha256": "22202b6b6c19c1f8012ccc734f07ecbb5e767e10a969aba95bd58fa961d4a639"
+    },
+    "models/reward_model_factory.py": {
+      "bytes": 3396,
+      "sha256": "e729b13389cbeb8fbcd3e8a99c31bb1b35d0d52018fc2e75da3a17a1842ca2c9"
+    },
+    "models/reward_model_general_add.py": {
+      "bytes": 5712,
+      "sha256": "a533f57157ed91fbb71683c3c8a0c357268adbb6fde96b5ca1f9e3601280f07a"
+    },
+    "models/reward_model_general_sp.py": {
+      "bytes": 9203,
+      "sha256": "ee3b2f1a611762ee73af93e9525a9af2af3bdf6bfd74d8fe2c8821974a016029"
+    },
+    "models/__init__.py": {
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    }
+  }
+}

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import datetime
+import copy
 from importlib import import_module
 import json
 from pathlib import Path
@@ -21,7 +22,7 @@ def _expected_resume_manifest() -> dict[str, object]:
     """Build the architecture-sensitive subset recorded before Trainer resume."""
 
     return {
-        "architecture_manifest_version": 6,
+        "architecture_manifest_version": train_model_module.ARCHITECTURE_MANIFEST_VERSION,
         "model": "qwen3.5-0.8b",
         "loss": "mse",
         "output_dim": 2,
@@ -30,6 +31,8 @@ def _expected_resume_manifest() -> dict[str, object]:
         "model_revision": "decoder-commit",
         "finetuning_mode": "lora",
         "gaze_fusion": "prefix-concat",
+        "gaze_alignment": copy.deepcopy(train_model_module.GAZE_ALIGNMENT_CONTRACT),
+        "gaze_redistribution": {"method": "none"},
         "gaze_features": ["nFix", "TRT"],
         "gaze_feature_indices": [0, 3],
         "features_used": [1, 0, 0, 1, 0],
@@ -524,6 +527,7 @@ def test_training_records_and_passes_canonical_redistribution(tmp_path, monkeypa
     root_manifest = json.loads((run_root / "training_parameters.json").read_text())
     assert root_manifest["architecture_manifest_version"] == 7
     assert root_manifest["gaze_redistribution"] == expected
+    assert root_manifest["gaze_alignment"] == train_model_module.GAZE_ALIGNMENT_CONTRACT
     assert root_manifest["sentence_only"] is True
     assert root_manifest["dataset_counts_after_filter"] == {
         "EmoTales sentences": 2,
@@ -543,6 +547,7 @@ def test_training_records_and_passes_canonical_redistribution(tmp_path, monkeypa
     for fold in (1, 2):
         fold_manifest = json.loads((run_root / f"heldout_fold{fold}" / "run_manifest.json").read_text())
         assert fold_manifest["gaze_redistribution"] == expected
+        assert fold_manifest["gaze_alignment"] == train_model_module.GAZE_ALIGNMENT_CONTRACT
         assert fold_manifest["gaze_redistribution_trainable_parameters"] == (2 if method != "none" else 0)
 
 
@@ -942,6 +947,60 @@ def test_resume_accepts_matching_enabled_contract(tmp_path):
         _current_resume_manifest("asym-gaussian"),
         checkpoint_tensors=_sigma_checkpoint_tensors(),
     )
+
+
+@pytest.mark.parametrize("version", (5, 6, 7))
+def test_resume_rejects_historical_gaze_alignment(tmp_path, version):
+    """Historical gaze weights cannot silently switch to corrected token spans."""
+
+    expected = _current_resume_manifest()
+    recorded = copy.deepcopy(expected)
+    recorded["architecture_manifest_version"] = version
+    recorded.pop("gaze_alignment")
+    with pytest.raises(ValueError, match="gaze_alignment"):
+        _check_resume_pair(tmp_path, recorded, expected)
+
+
+@pytest.mark.parametrize("owner", ("recorded", "expected"))
+@pytest.mark.parametrize("change", ("version", "reduction", "extra_field"))
+def test_resume_rejects_changed_alignment_policy(tmp_path, owner, change):
+    """Both contracts must describe the exact implemented alignment policy."""
+
+    recorded = _current_resume_manifest()
+    expected = _current_resume_manifest()
+    target = recorded if owner == "recorded" else expected
+    if change == "version":
+        target["gaze_alignment"]["version"] = 1
+    elif change == "reduction":
+        target["gaze_alignment"]["collision_reduction"]["TRT"] = "mean"
+    else:
+        target["gaze_alignment"]["unknown_option"] = True
+    with pytest.raises(ValueError, match="gaze_alignment"):
+        _check_resume_pair(tmp_path, recorded, expected)
+
+
+@pytest.mark.parametrize("version", (5, 6, 7))
+def test_resume_preserves_historical_text_only_compatibility(tmp_path, version):
+    """Text-only weights do not depend on the gaze alignment correction."""
+
+    expected = _current_resume_manifest()
+    expected.update(
+        gaze_fusion="none",
+        gaze_alignment=None,
+        gaze_features=[],
+        gaze_feature_indices=[],
+        features_used=[0, 0, 0, 0, 0],
+        gaze_concat_order=None,
+        pooling_position="last_valid_text_token",
+    )
+    recorded = copy.deepcopy(expected)
+    recorded["architecture_manifest_version"] = version
+    recorded.pop("gaze_alignment")
+    if version in (5, 6):
+        recorded.pop("gaze_redistribution")
+    if version == 5:
+        recorded.pop("finetuning_mode")
+    _check_resume_pair(tmp_path, recorded, expected)
 
 
 @pytest.mark.parametrize(

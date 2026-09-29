@@ -1,0 +1,8550 @@
+{
+  "all_assertions_passed": true,
+  "elapsed_seconds": 28.56142587494105,
+  "torch_version": "2.12.1",
+  "tokenizer_path": "/private/tmp/decoder-va-audit-tokenizer",
+  "tokenizer_json_sha256": "fe000e3ed39ed12b8d2481d527d44f93c65d37e87645d2dcc80d1bf9d50d2927",
+  "results_zip": "/Users/wansookim/Downloads/qwen3.5-0.8b_full_gaze_TRT_redistribution_asym-gaussian_sentence_only_no_iemocap_seed42_results_only (1).zip",
+  "results_zip_sha256": "d6c8db31ae4956bbccedc1b94f264133cc25da48645442ffed5d1f17e589f4a8",
+  "prediction_tsv_sha256": "0f271d40ec710a0fe59a2fe6e0989b0ae225f4acf409a64bbd7524ade910a91b",
+  "source_sha256": {
+    "va_model_code/decoder_va/alignment.py": "2bef359aed944d4e528774ed27b7300d8545ae0e530d4d97cecadce82b2d8941",
+    "va_model_code/decoder_va/gaze.py": "582fe5e1edda715a8b3e4d61fb884277b8af96ade98db5ea89e01401fcdd8bf0",
+    "va_model_code/decoder_va/redistribution.py": "658e7063ff6402691046c075c4394b5f6d6ae6df22d5149a0d496f73147ac0b5"
+  },
+  "validation_script_sha256": "bbe20286bac74c60e57b5543fd05b668fc25f496d17a8cadc006410065890fe7",
+  "baseline_audit_sha256": "249b8e20fd168e9579e6f45e83c8193fc9f3cf1d3fb933b9db0cd6604d77de79",
+  "baseline_summary": {
+    "rows": 14352,
+    "words": 270714,
+    "mapped_words": 230063,
+    "missing_words": 40651,
+    "wrong_occurrence_words": 1947,
+    "rows_with_wrong_occurrence": 949,
+    "rows_with_missing": 6678,
+    "recoverable_missing_words": 14880,
+    "leading_space_anchor_count": 2665,
+    "rows_with_no_mapped_position": 54,
+    "rows_with_one_mapped_position": 149,
+    "gaps": 215765,
+    "gaps_above_one": 22287
+  },
+  "summary": {
+    "rows": 14352,
+    "source_segments": 270714,
+    "mapped_segments": 270714,
+    "missing_segments": 0,
+    "wrong_occurrence_segments": 0,
+    "wrong_occurrence_rows": 0,
+    "rows_with_missing_segments": 0,
+    "whitespace_destinations": 0,
+    "special_destinations": 0,
+    "collision_rows": 6678,
+    "collision_destinations": 11736,
+    "collision_extra_segments": 15183,
+    "unique_gaze_positions": 255531,
+    "rows_with_no_gaze_position": 2,
+    "provider_identity_checks": 28704,
+    "exact_trt_sum_checks": 28704
+  },
+  "by_dataset": {
+    "Emobank": {
+      "rows": 10062,
+      "source_segments": 186019,
+      "mapped_segments": 186019,
+      "missing_segments": 0,
+      "wrong_occurrence_segments": 0,
+      "wrong_occurrence_rows": 0,
+      "rows_with_missing_segments": 0,
+      "whitespace_destinations": 0,
+      "special_destinations": 0,
+      "collision_rows": 4421,
+      "collision_destinations": 7116,
+      "collision_extra_segments": 7295,
+      "unique_gaze_positions": 178724,
+      "rows_with_no_gaze_position": 1,
+      "provider_identity_checks": 20124,
+      "exact_trt_sum_checks": 20124
+    },
+    "EmoTales sentences": {
+      "rows": 1395,
+      "source_segments": 20640,
+      "mapped_segments": 20640,
+      "missing_segments": 0,
+      "wrong_occurrence_segments": 0,
+      "wrong_occurrence_rows": 0,
+      "rows_with_missing_segments": 0,
+      "whitespace_destinations": 0,
+      "special_destinations": 0,
+      "collision_rows": 476,
+      "collision_destinations": 816,
+      "collision_extra_segments": 828,
+      "unique_gaze_positions": 19812,
+      "rows_with_no_gaze_position": 0,
+      "provider_identity_checks": 2790,
+      "exact_trt_sum_checks": 2790
+    },
+    "fb": {
+      "rows": 2895,
+      "source_segments": 64055,
+      "mapped_segments": 64055,
+      "missing_segments": 0,
+      "wrong_occurrence_segments": 0,
+      "wrong_occurrence_rows": 0,
+      "rows_with_missing_segments": 0,
+      "whitespace_destinations": 0,
+      "special_destinations": 0,
+      "collision_rows": 1781,
+      "collision_destinations": 3804,
+      "collision_extra_segments": 7060,
+      "unique_gaze_positions": 56995,
+      "rows_with_no_gaze_position": 1,
+      "provider_identity_checks": 5790,
+      "exact_trt_sum_checks": 5790
+    }
+  },
+  "by_fold": {
+    "2": {
+      "rows": 7177,
+      "source_segments": 134403,
+      "mapped_segments": 134403,
+      "missing_segments": 0,
+      "wrong_occurrence_segments": 0,
+      "wrong_occurrence_rows": 0,
+      "rows_with_missing_segments": 0,
+      "whitespace_destinations": 0,
+      "special_destinations": 0,
+      "collision_rows": 3334,
+      "collision_destinations": 5878,
+      "collision_extra_segments": 7541,
+      "unique_gaze_positions": 126862,
+      "rows_with_no_gaze_position": 1,
+      "provider_identity_checks": 14354,
+      "exact_trt_sum_checks": 14354
+    },
+    "1": {
+      "rows": 7175,
+      "source_segments": 136311,
+      "mapped_segments": 136311,
+      "missing_segments": 0,
+      "wrong_occurrence_segments": 0,
+      "wrong_occurrence_rows": 0,
+      "rows_with_missing_segments": 0,
+      "whitespace_destinations": 0,
+      "special_destinations": 0,
+      "collision_rows": 3344,
+      "collision_destinations": 5858,
+      "collision_extra_segments": 7642,
+      "unique_gaze_positions": 128669,
+      "rows_with_no_gaze_position": 1,
+      "provider_identity_checks": 14350,
+      "exact_trt_sum_checks": 14350
+    }
+  },
+  "empty_text_rows": [
+    {
+      "row_index": 8412,
+      "index": "8412",
+      "dataset": "Emobank",
+      "fold": "2",
+      "text": ""
+    },
+    {
+      "row_index": 11527,
+      "index": "11527",
+      "dataset": "fb",
+      "fold": "1",
+      "text": ""
+    }
+  ],
+  "constructed_examples": [
+    {
+      "counts": {
+        "rows": 1,
+        "source_segments": 10,
+        "mapped_segments": 10,
+        "missing_segments": 0,
+        "wrong_occurrence_segments": 0,
+        "wrong_occurrence_rows": 0,
+        "rows_with_missing_segments": 0,
+        "whitespace_destinations": 0,
+        "special_destinations": 0,
+        "collision_rows": 1,
+        "collision_destinations": 1,
+        "collision_extra_segments": 2,
+        "unique_gaze_positions": 8,
+        "rows_with_no_gaze_position": 0,
+        "provider_identity_checks": 2,
+        "exact_trt_sum_checks": 2
+      },
+      "text": "I love this!!! I hate that!",
+      "words": [
+        "I",
+        "love",
+        "this",
+        "!",
+        "!",
+        "!",
+        "I",
+        "hate",
+        "that",
+        "!"
+      ],
+      "target_tokens": [
+        "I",
+        "Ġlove",
+        "Ġthis",
+        "!!!",
+        "ĠI",
+        "Ġhate",
+        "Ġthat",
+        "!"
+      ],
+      "mapping": [
+        [
+          0
+        ],
+        [
+          1
+        ],
+        [
+          2
+        ],
+        [
+          3
+        ],
+        [
+          3
+        ],
+        [
+          3
+        ],
+        [
+          4
+        ],
+        [
+          5
+        ],
+        [
+          6
+        ],
+        [
+          7
+        ]
+      ],
+      "synthetic_mapped_trt": [
+        1.0,
+        2.0,
+        3.0,
+        15.0,
+        7.0,
+        8.0,
+        9.0,
+        10.0
+      ],
+      "kernel_checks": [
+        {
+          "sigma_left": 0.5,
+          "sigma_right": 2.0,
+          "cpu_bf16_autocast": false,
+          "sum_abs_error": 0.0,
+          "output_dtype": "torch.float32"
+        },
+        {
+          "sigma_left": 0.5,
+          "sigma_right": 2.0,
+          "cpu_bf16_autocast": true,
+          "sum_abs_error": 0.0,
+          "output_dtype": "torch.float32"
+        },
+        {
+          "sigma_left": 2.0,
+          "sigma_right": 0.5,
+          "cpu_bf16_autocast": false,
+          "sum_abs_error": 0.0,
+          "output_dtype": "torch.float32"
+        },
+        {
+          "sigma_left": 2.0,
+          "sigma_right": 0.5,
+          "cpu_bf16_autocast": true,
+          "sum_abs_error": 0.0,
+          "output_dtype": "torch.float32"
+        }
+      ],
+      "mixed_feature_checks": {
+        "all_five_channels_checked": true,
+        "invalid_features_filtered_before_aggregation": true
+      }
+    },
+    {
+      "counts": {
+        "rows": 1,
+        "source_segments": 7,
+        "mapped_segments": 7,
+        "missing_segments": 0,
+        "wrong_occurrence_segments": 0,
+        "wrong_occurrence_rows": 0,
+        "rows_with_missing_segments": 0,
+        "whitespace_destinations": 0,
+        "special_destinations": 0,
+        "collision_rows": 1,
+        "collision_destinations": 1,
+        "collision_extra_segments": 1,
+        "unique_gaze_positions": 6,
+        "rows_with_no_gaze_position": 0,
+        "provider_identity_checks": 2,
+        "exact_trt_sum_checks": 2
+      },
+      "text": "I don't like this.",
+      "words": [
+        "I",
+        "don",
+        "'",
+        "t",
+        "like",
+        "this",
+        "."
+      ],
+      "target_tokens": [
+        "I",
+        "Ġdon",
+        "'t",
+        "Ġlike",
+        "Ġthis",
+        "."
+      ],
+      "mapping": [
+        [
+          0
+        ],
+        [
+          1
+        ],
+        [
+          2
+        ],
+        [
+          2
+        ],
+        [
+          3
+        ],
+        [
+          4
+        ],
+        [
+          5
+        ]
+      ],
+      "synthetic_mapped_trt": [
+        1.0,
+        2.0,
+        7.0,
+        5.0,
+        6.0,
+        7.0
+      ],
+      "kernel_checks": [
+        {
+          "sigma_left": 0.5,
+          "sigma_right": 2.0,
+          "cpu_bf16_autocast": false,
+          "sum_abs_error": 1.9073486328125e-06,
+          "output_dtype": "torch.float32"
+        },
+        {
+          "sigma_left": 0.5,
+          "sigma_right": 2.0,
+          "cpu_bf16_autocast": true,
+          "sum_abs_error": 1.9073486328125e-06,
+          "output_dtype": "torch.float32"
+        },
+        {
+          "sigma_left": 2.0,
+          "sigma_right": 0.5,
+          "cpu_bf16_autocast": false,
+          "sum_abs_error": 0.0,
+          "output_dtype": "torch.float32"
+        },
+        {
+          "sigma_left": 2.0,
+          "sigma_right": 0.5,
+          "cpu_bf16_autocast": true,
+          "sum_abs_error": 0.0,
+          "output_dtype": "torch.float32"
+        }
+      ],
+      "mixed_feature_checks": {
+        "all_five_channels_checked": true,
+        "invalid_features_filtered_before_aggregation": true
+      }
+    },
+    {
+      "counts": {
+        "rows": 1,
+        "source_segments": 11,
+        "mapped_segments": 11,
+        "missing_segments": 0,
+        "wrong_occurrence_segments": 0,
+        "wrong_occurrence_rows": 0,
+        "rows_with_missing_segments": 0,
+        "whitespace_destinations": 0,
+        "special_destinations": 0,
+        "collision_rows": 1,
+        "collision_destinations": 2,
+        "collision_extra_segments": 2,
+        "unique_gaze_positions": 9,
+        "rows_with_no_gaze_position": 0,
+        "provider_identity_checks": 2,
+        "exact_trt_sum_checks": 2
+      },
+      "text": "I'm sad, but it's okay.",
+      "words": [
+        "I",
+        "'",
+        "m",
+        "sad",
+        ",",
+        "but",
+        "it",
+        "'",
+        "s",
+        "okay",
+        "."
+      ],
+      "target_tokens": [
+        "I",
+        "'m",
+        "Ġsad",
+        ",",
+        "Ġbut",
+        "Ġit",
+        "'s",
+        "Ġokay",
+        "."
+      ],
+      "mapping": [
+        [
+          0
+        ],
+        [
+          1
+        ],
+        [
+          1
+        ],
+        [
+          2
+        ],
+        [
+          3
+        ],
+        [
+          4
+        ],
+        [
+          5
+        ],
+        [
+          6
+        ],
+        [
+          6
+        ],
+        [
+          7
+        ],
+        [
+          8
+        ]
+      ],
+      "synthetic_mapped_trt": [
+        1.0,
+        5.0,
+        4.0,
+        5.0,
+        6.0,
+        7.0,
+        17.0,
+        10.0,
+        11.0
+      ],
+      "kernel_checks": [
+        {
+          "sigma_left": 0.5,
+          "sigma_right": 2.0,
+          "cpu_bf16_autocast": false,
+          "sum_abs_error": 0.0,
+          "output_dtype": "torch.float32"
+        },
+        {
+          "sigma_left": 0.5,
+          "sigma_right": 2.0,
+          "cpu_bf16_autocast": true,
+          "sum_abs_error": 0.0,
+          "output_dtype": "torch.float32"
+        },
+        {
+          "sigma_left": 2.0,
+          "sigma_right": 0.5,
+          "cpu_bf16_autocast": false,
+          "sum_abs_error": 0.0,
+          "output_dtype": "torch.float32"
+        },
+        {
+          "sigma_left": 2.0,
+          "sigma_right": 0.5,
+          "cpu_bf16_autocast": true,
+          "sum_abs_error": 0.0,
+          "output_dtype": "torch.float32"
+        }
+      ],
+      "mixed_feature_checks": {
+        "all_five_channels_checked": true,
+        "invalid_features_filtered_before_aggregation": true
+      }
+    },
+    {
+      "counts": {
+        "rows": 1,
+        "source_segments": 9,
+        "mapped_segments": 9,
+        "missing_segments": 0,
+        "wrong_occurrence_segments": 0,
+        "wrong_occurrence_rows": 0,
+        "rows_with_missing_segments": 0,
+        "whitespace_destinations": 0,
+        "special_destinations": 0,
+        "collision_rows": 1,
+        "collision_destinations": 1,
+        "collision_extra_segments": 2,
+        "unique_gaze_positions": 7,
+        "rows_with_no_gaze_position": 0,
+        "provider_identity_checks": 2,
+        "exact_trt_sum_checks": 2
+      },
+      "text": "I am sad... Really sad.",
+      "words": [
+        "I",
+        "am",
+        "sad",
+        ".",
+        ".",
+        ".",
+        "Really",
+        "sad",
+        "."
+      ],
+      "target_tokens": [
+        "I",
+        "Ġam",
+        "Ġsad",
+        "...",
+        "ĠReally",
+        "Ġsad",
+        "."
+      ],
+      "mapping": [
+        [
+          0
+        ],
+        [
+          1
+        ],
+        [
+          2
+        ],
+        [
+          3
+        ],
+        [
+          3
+        ],
+        [
+          3
+        ],
+        [
+          4
+        ],
+        [
+          5
+        ],
+        [
+          6
+        ]
+      ],
+      "synthetic_mapped_trt": [
+        1.0,
+        2.0,
+        3.0,
+        15.0,
+        7.0,
+        8.0,
+        9.0
+      ],
+      "kernel_checks": [
+        {
+          "sigma_left": 0.5,
+          "sigma_right": 2.0,
+          "cpu_bf16_autocast": false,
+          "sum_abs_error": 0.0,
+          "output_dtype": "torch.float32"
+        },
+        {
+          "sigma_left": 0.5,
+          "sigma_right": 2.0,
+          "cpu_bf16_autocast": true,
+          "sum_abs_error": 0.0,
+          "output_dtype": "torch.float32"
+        },
+        {
+          "sigma_left": 2.0,
+          "sigma_right": 0.5,
+          "cpu_bf16_autocast": false,
+          "sum_abs_error": 0.0,
+          "output_dtype": "torch.float32"
+        },
+        {
+          "sigma_left": 2.0,
+          "sigma_right": 0.5,
+          "cpu_bf16_autocast": true,
+          "sum_abs_error": 0.0,
+          "output_dtype": "torch.float32"
+        }
+      ],
+      "mixed_feature_checks": {
+        "all_five_channels_checked": true,
+        "invalid_features_filtered_before_aggregation": true
+      }
+    },
+    {
+      "counts": {
+        "rows": 1,
+        "source_segments": 8,
+        "mapped_segments": 8,
+        "missing_segments": 0,
+        "wrong_occurrence_segments": 0,
+        "wrong_occurrence_rows": 0,
+        "rows_with_missing_segments": 0,
+        "whitespace_destinations": 0,
+        "special_destinations": 0,
+        "collision_rows": 0,
+        "collision_destinations": 0,
+        "collision_extra_segments": 0,
+        "unique_gaze_positions": 8,
+        "rows_with_no_gaze_position": 0,
+        "provider_identity_checks": 2,
+        "exact_trt_sum_checks": 2
+      },
+      "text": "The price is $12.50.",
+      "words": [
+        "The",
+        "price",
+        "is",
+        "$",
+        "12",
+        ".",
+        "50",
+        "."
+      ],
+      "target_tokens": [
+        "The",
+        "Ġprice",
+        "Ġis",
+        "Ġ$",
+        "1",
+        "2",
+        ".",
+        "5",
+        "0",
+        "."
+      ],
+      "mapping": [
+        [
+          0
+        ],
+        [
+          1
+        ],
+        [
+          2
+        ],
+        [
+          3
+        ],
+        [
+          4,
+          5
+        ],
+        [
+          6
+        ],
+        [
+          7,
+          8
+        ],
+        [
+          9
+        ]
+      ],
+      "synthetic_mapped_trt": [
+        1.0,
+        2.0,
+        3.0,
+        4.0,
+        5.0,
+        0.0,
+        6.0,
+        7.0,
+        0.0,
+        8.0
+      ],
+      "kernel_checks": [
+        {
+          "sigma_left": 0.5,
+          "sigma_right": 2.0,
+          "cpu_bf16_autocast": false,
+          "sum_abs_error": 0.0,
+          "output_dtype": "torch.float32"
+        },
+        {
+          "sigma_left": 0.5,
+          "sigma_right": 2.0,
+          "cpu_bf16_autocast": true,
+          "sum_abs_error": 0.0,
+          "output_dtype": "torch.float32"
+        },
+        {
+          "sigma_left": 2.0,
+          "sigma_right": 0.5,
+          "cpu_bf16_autocast": false,
+          "sum_abs_error": 0.0,
+          "output_dtype": "torch.float32"
+        },
+        {
+          "sigma_left": 2.0,
+          "sigma_right": 0.5,
+          "cpu_bf16_autocast": true,
+          "sum_abs_error": 0.0,
+          "output_dtype": "torch.float32"
+        }
+      ],
+      "mixed_feature_checks": {
+        "all_five_channels_checked": true,
+        "invalid_features_filtered_before_aggregation": true
+      }
+    },
+    {
+      "counts": {
+        "rows": 1,
+        "source_segments": 7,
+        "mapped_segments": 7,
+        "missing_segments": 0,
+        "wrong_occurrence_segments": 0,
+        "wrong_occurrence_rows": 0,
+        "rows_with_missing_segments": 0,
+        "whitespace_destinations": 0,
+        "special_destinations": 0,
+        "collision_rows": 1,
+        "collision_destinations": 1,
+        "collision_extra_segments": 1,
+        "unique_gaze_positions": 6,
+        "rows_with_no_gaze_position": 0,
+        "provider_identity_checks": 2,
+        "exact_trt_sum_checks": 2
+      },
+      "text": "Hello?! How are you?",
+      "words": [
+        "Hello",
+        "?",
+        "!",
+        "How",
+        "are",
+        "you",
+        "?"
+      ],
+      "target_tokens": [
+        "Hello",
+        "?!",
+        "ĠHow",
+        "Ġare",
+        "Ġyou",
+        "?"
+      ],
+      "mapping": [
+        [
+          0
+        ],
+        [
+          1
+        ],
+        [
+          1
+        ],
+        [
+          2
+        ],
+        [
+          3
+        ],
+        [
+          4
+        ],
+        [
+          5
+        ]
+      ],
+      "synthetic_mapped_trt": [
+        1.0,
+        5.0,
+        4.0,
+        5.0,
+        6.0,
+        7.0
+      ],
+      "kernel_checks": [
+        {
+          "sigma_left": 0.5,
+          "sigma_right": 2.0,
+          "cpu_bf16_autocast": false,
+          "sum_abs_error": 1.9073486328125e-06,
+          "output_dtype": "torch.float32"
+        },
+        {
+          "sigma_left": 0.5,
+          "sigma_right": 2.0,
+          "cpu_bf16_autocast": true,
+          "sum_abs_error": 1.9073486328125e-06,
+          "output_dtype": "torch.float32"
+        },
+        {
+          "sigma_left": 2.0,
+          "sigma_right": 0.5,
+          "cpu_bf16_autocast": false,
+          "sum_abs_error": 1.9073486328125e-06,
+          "output_dtype": "torch.float32"
+        },
+        {
+          "sigma_left": 2.0,
+          "sigma_right": 0.5,
+          "cpu_bf16_autocast": true,
+          "sum_abs_error": 1.9073486328125e-06,
+          "output_dtype": "torch.float32"
+        }
+      ],
+      "mixed_feature_checks": {
+        "all_five_channels_checked": true,
+        "invalid_features_filtered_before_aggregation": true
+      }
+    },
+    {
+      "counts": {
+        "rows": 1,
+        "source_segments": 11,
+        "mapped_segments": 11,
+        "missing_segments": 0,
+        "wrong_occurrence_segments": 0,
+        "wrong_occurrence_rows": 0,
+        "rows_with_missing_segments": 0,
+        "whitespace_destinations": 0,
+        "special_destinations": 0,
+        "collision_rows": 1,
+        "collision_destinations": 2,
+        "collision_extra_segments": 2,
+        "unique_gaze_positions": 9,
+        "rows_with_no_gaze_position": 0,
+        "provider_identity_checks": 2,
+        "exact_trt_sum_checks": 2
+      },
+      "text": "U.S. and U.S. citizens.",
+      "words": [
+        "U",
+        ".",
+        "S",
+        ".",
+        "and",
+        "U",
+        ".",
+        "S",
+        ".",
+        "citizens",
+        "."
+      ],
+      "target_tokens": [
+        "U",
+        ".S",
+        ".",
+        "Ġand",
+        "ĠU",
+        ".S",
+        ".",
+        "Ġcitizens",
+        "."
+      ],
+      "mapping": [
+        [
+          0
+        ],
+        [
+          1
+        ],
+        [
+          1
+        ],
+        [
+          2
+        ],
+        [
+          3
+        ],
+        [
+          4
+        ],
+        [
+          5
+        ],
+        [
+          5
+        ],
+        [
+          6
+        ],
+        [
+          7
+        ],
+        [
+          8
+        ]
+      ],
+      "synthetic_mapped_trt": [
+        1.0,
+        5.0,
+        4.0,
+        5.0,
+        6.0,
+        15.0,
+        9.0,
+        10.0,
+        11.0
+      ],
+      "kernel_checks": [
+        {
+          "sigma_left": 0.5,
+          "sigma_right": 2.0,
+          "cpu_bf16_autocast": false,
+          "sum_abs_error": 0.0,
+          "output_dtype": "torch.float32"
+        },
+        {
+          "sigma_left": 0.5,
+          "sigma_right": 2.0,
+          "cpu_bf16_autocast": true,
+          "sum_abs_error": 0.0,
+          "output_dtype": "torch.float32"
+        },
+        {
+          "sigma_left": 2.0,
+          "sigma_right": 0.5,
+          "cpu_bf16_autocast": false,
+          "sum_abs_error": 0.0,
+          "output_dtype": "torch.float32"
+        },
+        {
+          "sigma_left": 2.0,
+          "sigma_right": 0.5,
+          "cpu_bf16_autocast": true,
+          "sum_abs_error": 0.0,
+          "output_dtype": "torch.float32"
+        }
+      ],
+      "mixed_feature_checks": {
+        "all_five_channels_checked": true,
+        "invalid_features_filtered_before_aggregation": true
+      }
+    },
+    {
+      "counts": {
+        "rows": 1,
+        "source_segments": 14,
+        "mapped_segments": 14,
+        "missing_segments": 0,
+        "wrong_occurrence_segments": 0,
+        "wrong_occurrence_rows": 0,
+        "rows_with_missing_segments": 0,
+        "whitespace_destinations": 0,
+        "special_destinations": 0,
+        "collision_rows": 1,
+        "collision_destinations": 2,
+        "collision_extra_segments": 2,
+        "unique_gaze_positions": 12,
+        "rows_with_no_gaze_position": 0,
+        "provider_identity_checks": 2,
+        "exact_trt_sum_checks": 2
+      },
+      "text": "P.S. I love you. P.S. hello!",
+      "words": [
+        "P",
+        ".",
+        "S",
+        ".",
+        "I",
+        "love",
+        "you",
+        ".",
+        "P",
+        ".",
+        "S",
+        ".",
+        "hello",
+        "!"
+      ],
+      "target_tokens": [
+        "P",
+        ".S",
+        ".",
+        "ĠI",
+        "Ġlove",
+        "Ġyou",
+        ".",
+        "ĠP",
+        ".S",
+        ".",
+        "Ġhello",
+        "!"
+      ],
+      "mapping": [
+        [
+          0
+        ],
+        [
+          1
+        ],
+        [
+          1
+        ],
+        [
+          2
+        ],
+        [
+          3
+        ],
+        [
+          4
+        ],
+        [
+          5
+        ],
+        [
+          6
+        ],
+        [
+          7
+        ],
+        [
+          8
+        ],
+        [
+          8
+        ],
+        [
+          9
+        ],
+        [
+          10
+        ],
+        [
+          11
+        ]
+      ],
+      "synthetic_mapped_trt": [
+        1.0,
+        5.0,
+        4.0,
+        5.0,
+        6.0,
+        7.0,
+        8.0,
+        9.0,
+        21.0,
+        12.0,
+        13.0,
+        14.0
+      ],
+      "kernel_checks": [
+        {
+          "sigma_left": 0.5,
+          "sigma_right": 2.0,
+          "cpu_bf16_autocast": false,
+          "sum_abs_error": 0.0,
+          "output_dtype": "torch.float32"
+        },
+        {
+          "sigma_left": 0.5,
+          "sigma_right": 2.0,
+          "cpu_bf16_autocast": true,
+          "sum_abs_error": 0.0,
+          "output_dtype": "torch.float32"
+        },
+        {
+          "sigma_left": 2.0,
+          "sigma_right": 0.5,
+          "cpu_bf16_autocast": false,
+          "sum_abs_error": 0.0,
+          "output_dtype": "torch.float32"
+        },
+        {
+          "sigma_left": 2.0,
+          "sigma_right": 0.5,
+          "cpu_bf16_autocast": true,
+          "sum_abs_error": 0.0,
+          "output_dtype": "torch.float32"
+        }
+      ],
+      "mixed_feature_checks": {
+        "all_five_channels_checked": true,
+        "invalid_features_filtered_before_aggregation": true
+      }
+    },
+    {
+      "counts": {
+        "rows": 1,
+        "source_segments": 5,
+        "mapped_segments": 5,
+        "missing_segments": 0,
+        "wrong_occurrence_segments": 0,
+        "wrong_occurrence_rows": 0,
+        "rows_with_missing_segments": 0,
+        "whitespace_destinations": 0,
+        "special_destinations": 0,
+        "collision_rows": 0,
+        "collision_destinations": 0,
+        "collision_extra_segments": 0,
+        "unique_gaze_positions": 5,
+        "rows_with_no_gaze_position": 0,
+        "provider_identity_checks": 2,
+        "exact_trt_sum_checks": 2
+      },
+      "text": "  Hello\tworld!\n\n Goodbye.",
+      "words": [
+        "Hello",
+        "world",
+        "!",
+        "Goodbye",
+        "."
+      ],
+      "target_tokens": [
+        "Ġ",
+        "ĠHello",
+        "ĉworld",
+        "!",
+        "ĊĊ",
+        "ĠGood",
+        "bye",
+        "."
+      ],
+      "mapping": [
+        [
+          1
+        ],
+        [
+          2
+        ],
+        [
+          3
+        ],
+        [
+          5,
+          6
+        ],
+        [
+          7
+        ]
+      ],
+      "synthetic_mapped_trt": [
+        0.0,
+        1.0,
+        2.0,
+        3.0,
+        0.0,
+        4.0,
+        0.0,
+        5.0
+      ],
+      "kernel_checks": [
+        {
+          "sigma_left": 0.5,
+          "sigma_right": 2.0,
+          "cpu_bf16_autocast": false,
+          "sum_abs_error": 0.0,
+          "output_dtype": "torch.float32"
+        },
+        {
+          "sigma_left": 0.5,
+          "sigma_right": 2.0,
+          "cpu_bf16_autocast": true,
+          "sum_abs_error": 0.0,
+          "output_dtype": "torch.float32"
+        },
+        {
+          "sigma_left": 2.0,
+          "sigma_right": 0.5,
+          "cpu_bf16_autocast": false,
+          "sum_abs_error": 9.5367431640625e-07,
+          "output_dtype": "torch.float32"
+        },
+        {
+          "sigma_left": 2.0,
+          "sigma_right": 0.5,
+          "cpu_bf16_autocast": true,
+          "sum_abs_error": 9.5367431640625e-07,
+          "output_dtype": "torch.float32"
+        }
+      ],
+      "mixed_feature_checks": {
+        "all_five_channels_checked": true,
+        "invalid_features_filtered_before_aggregation": true
+      }
+    },
+    {
+      "counts": {
+        "rows": 1,
+        "source_segments": 18,
+        "mapped_segments": 18,
+        "missing_segments": 0,
+        "wrong_occurrence_segments": 0,
+        "wrong_occurrence_rows": 0,
+        "rows_with_missing_segments": 0,
+        "whitespace_destinations": 0,
+        "special_destinations": 0,
+        "collision_rows": 1,
+        "collision_destinations": 4,
+        "collision_extra_segments": 8,
+        "unique_gaze_positions": 10,
+        "rows_with_no_gaze_position": 0,
+        "provider_identity_checks": 2,
+        "exact_trt_sum_checks": 2
+      },
+      "text": "你好，世界！こんにちは。안녕하세요!",
+      "words": [
+        "你",
+        "好",
+        "，",
+        "世",
+        "界",
+        "！",
+        "こ",
+        "ん",
+        "に",
+        "ち",
+        "は",
+        "。",
+        "안",
+        "녕",
+        "하",
+        "세",
+        "요",
+        "!"
+      ],
+      "target_tokens": [
+        "ä½łå¥½",
+        "ï¼Į",
+        "ä¸ĸçķĮ",
+        "ï¼ģ",
+        "ãģĵãĤĵãģ«ãģ¡ãģ¯",
+        "ãĢĤ",
+        "ìķĪ",
+        "ëħķ",
+        "íķĺìĦ¸ìļĶ",
+        "!"
+      ],
+      "mapping": [
+        [
+          0
+        ],
+        [
+          0
+        ],
+        [
+          1
+        ],
+        [
+          2
+        ],
+        [
+          2
+        ],
+        [
+          3
+        ],
+        [
+          4
+        ],
+        [
+          4
+        ],
+        [
+          4
+        ],
+        [
+          4
+        ],
+        [
+          4
+        ],
+        [
+          5
+        ],
+        [
+          6
+        ],
+        [
+          7
+        ],
+        [
+          8
+        ],
+        [
+          8
+        ],
+        [
+          8
+        ],
+        [
+          9
+        ]
+      ],
+      "synthetic_mapped_trt": [
+        3.0,
+        3.0,
+        9.0,
+        6.0,
+        45.0,
+        12.0,
+        13.0,
+        14.0,
+        48.0,
+        18.0
+      ],
+      "kernel_checks": [
+        {
+          "sigma_left": 0.5,
+          "sigma_right": 2.0,
+          "cpu_bf16_autocast": false,
+          "sum_abs_error": 0.0,
+          "output_dtype": "torch.float32"
+        },
+        {
+          "sigma_left": 0.5,
+          "sigma_right": 2.0,
+          "cpu_bf16_autocast": true,
+          "sum_abs_error": 0.0,
+          "output_dtype": "torch.float32"
+        },
+        {
+          "sigma_left": 2.0,
+          "sigma_right": 0.5,
+          "cpu_bf16_autocast": false,
+          "sum_abs_error": 0.0,
+          "output_dtype": "torch.float32"
+        },
+        {
+          "sigma_left": 2.0,
+          "sigma_right": 0.5,
+          "cpu_bf16_autocast": true,
+          "sum_abs_error": 0.0,
+          "output_dtype": "torch.float32"
+        }
+      ],
+      "mixed_feature_checks": {
+        "all_five_channels_checked": true,
+        "invalid_features_filtered_before_aggregation": true
+      }
+    },
+    {
+      "counts": {
+        "rows": 1,
+        "source_segments": 8,
+        "mapped_segments": 8,
+        "missing_segments": 0,
+        "wrong_occurrence_segments": 0,
+        "wrong_occurrence_rows": 0,
+        "rows_with_missing_segments": 0,
+        "whitespace_destinations": 0,
+        "special_destinations": 0,
+        "collision_rows": 1,
+        "collision_destinations": 1,
+        "collision_extra_segments": 2,
+        "unique_gaze_positions": 6,
+        "rows_with_no_gaze_position": 0,
+        "provider_identity_checks": 2,
+        "exact_trt_sum_checks": 2
+      },
+      "text": "Café café ½ ＡＢＣ 😀!!!",
+      "words": [
+        "Café",
+        "café",
+        "½",
+        "ＡＢＣ",
+        "😀",
+        "!",
+        "!",
+        "!"
+      ],
+      "target_tokens": [
+        "C",
+        "af",
+        "Ã©",
+        "ĠcafÃ©",
+        "Ġ",
+        "Â½",
+        "Ġï¼",
+        "¡",
+        "ï¼¢",
+        "ï¼£",
+        "ĠðŁĺĢ",
+        "!!!"
+      ],
+      "mapping": [
+        [
+          0,
+          1,
+          2
+        ],
+        [
+          3
+        ],
+        [
+          5
+        ],
+        [
+          6,
+          7,
+          8,
+          9
+        ],
+        [
+          10
+        ],
+        [
+          11
+        ],
+        [
+          11
+        ],
+        [
+          11
+        ]
+      ],
+      "synthetic_mapped_trt": [
+        1.0,
+        0.0,
+        0.0,
+        2.0,
+        0.0,
+        3.0,
+        4.0,
+        0.0,
+        0.0,
+        0.0,
+        5.0,
+        21.0
+      ],
+      "kernel_checks": [
+        {
+          "sigma_left": 0.5,
+          "sigma_right": 2.0,
+          "cpu_bf16_autocast": false,
+          "sum_abs_error": 0.0,
+          "output_dtype": "torch.float32"
+        },
+        {
+          "sigma_left": 0.5,
+          "sigma_right": 2.0,
+          "cpu_bf16_autocast": true,
+          "sum_abs_error": 0.0,
+          "output_dtype": "torch.float32"
+        },
+        {
+          "sigma_left": 2.0,
+          "sigma_right": 0.5,
+          "cpu_bf16_autocast": false,
+          "sum_abs_error": 0.0,
+          "output_dtype": "torch.float32"
+        },
+        {
+          "sigma_left": 2.0,
+          "sigma_right": 0.5,
+          "cpu_bf16_autocast": true,
+          "sum_abs_error": 0.0,
+          "output_dtype": "torch.float32"
+        }
+      ],
+      "mixed_feature_checks": {
+        "all_five_channels_checked": true,
+        "invalid_features_filtered_before_aggregation": true
+      }
+    }
+  ],
+  "corpus_examples": [
+    {
+      "row_index": 0,
+      "index": "0",
+      "dataset": "Emobank",
+      "fold": "2",
+      "text": "Remember what she said in my last letter? \"",
+      "words": [
+        "Remember",
+        "what",
+        "she",
+        "said",
+        "in",
+        "my",
+        "last",
+        "letter",
+        "?",
+        "\""
+      ],
+      "target_tokens": [
+        "Remember",
+        "Ġwhat",
+        "Ġshe",
+        "Ġsaid",
+        "Ġin",
+        "Ġmy",
+        "Ġlast",
+        "Ġletter",
+        "?",
+        "Ġ\""
+      ],
+      "mapping": [
+        [
+          0
+        ],
+        [
+          1
+        ],
+        [
+          2
+        ],
+        [
+          3
+        ],
+        [
+          4
+        ],
+        [
+          5
+        ],
+        [
+          6
+        ],
+        [
+          7
+        ],
+        [
+          8
+        ],
+        [
+          9
+        ]
+      ],
+      "synthetic_mapped_trt": [
+        1.0,
+        2.0,
+        3.0,
+        4.0,
+        5.0,
+        6.0,
+        7.0,
+        8.0,
+        9.0,
+        10.0
+      ],
+      "kernel_checks": [
+        {
+          "sigma_left": 0.5,
+          "sigma_right": 2.0,
+          "cpu_bf16_autocast": false,
+          "sum_abs_error": 0.0,
+          "output_dtype": "torch.float32"
+        },
+        {
+          "sigma_left": 0.5,
+          "sigma_right": 2.0,
+          "cpu_bf16_autocast": true,
+          "sum_abs_error": 0.0,
+          "output_dtype": "torch.float32"
+        },
+        {
+          "sigma_left": 2.0,
+          "sigma_right": 0.5,
+          "cpu_bf16_autocast": false,
+          "sum_abs_error": 3.814697265625e-06,
+          "output_dtype": "torch.float32"
+        },
+        {
+          "sigma_left": 2.0,
+          "sigma_right": 0.5,
+          "cpu_bf16_autocast": true,
+          "sum_abs_error": 3.814697265625e-06,
+          "output_dtype": "torch.float32"
+        }
+      ],
+      "mixed_feature_checks": {
+        "all_five_channels_checked": true,
+        "invalid_features_filtered_before_aggregation": true
+      }
+    },
+    {
+      "row_index": 1,
+      "index": "1",
+      "dataset": "Emobank",
+      "fold": "2",
+      "text": "If I wasn't working here.",
+      "words": [
+        "If",
+        "I",
+        "wasn",
+        "'",
+        "t",
+        "working",
+        "here",
+        "."
+      ],
+      "target_tokens": [
+        "If",
+        "ĠI",
+        "Ġwasn",
+        "'t",
+        "Ġworking",
+        "Ġhere",
+        "."
+      ],
+      "mapping": [
+        [
+          0
+        ],
+        [
+          1
+        ],
+        [
+          2
+        ],
+        [
+          3
+        ],
+        [
+          3
+        ],
+        [
+          4
+        ],
+        [
+          5
+        ],
+        [
+          6
+        ]
+      ],
+      "synthetic_mapped_trt": [
+        1.0,
+        2.0,
+        3.0,
+        9.0,
+        6.0,
+        7.0,
+        8.0
+      ],
+      "kernel_checks": [],
+      "mixed_feature_checks": null
+    },
+    {
+      "row_index": 2,
+      "index": "2",
+      "dataset": "Emobank",
+      "fold": "2",
+      "text": "..\"",
+      "words": [
+        ".",
+        ".",
+        "\""
+      ],
+      "target_tokens": [
+        "..\""
+      ],
+      "mapping": [
+        [
+          0
+        ],
+        [
+          0
+        ],
+        [
+          0
+        ]
+      ],
+      "synthetic_mapped_trt": [
+        6.0
+      ],
+      "kernel_checks": [],
+      "mixed_feature_checks": null
+    },
+    {
+      "row_index": 6,
+      "index": "6",
+      "dataset": "Emobank",
+      "fold": "2",
+      "text": "I am now... totally off of welfare.\"",
+      "words": [
+        "I",
+        "am",
+        "now",
+        ".",
+        ".",
+        ".",
+        "totally",
+        "off",
+        "of",
+        "welfare",
+        ".",
+        "\""
+      ],
+      "target_tokens": [
+        "I",
+        "Ġam",
+        "Ġnow",
+        "...",
+        "Ġtotally",
+        "Ġoff",
+        "Ġof",
+        "Ġwelfare",
+        ".\""
+      ],
+      "mapping": [
+        [
+          0
+        ],
+        [
+          1
+        ],
+        [
+          2
+        ],
+        [
+          3
+        ],
+        [
+          3
+        ],
+        [
+          3
+        ],
+        [
+          4
+        ],
+        [
+          5
+        ],
+        [
+          6
+        ],
+        [
+          7
+        ],
+        [
+          8
+        ],
+        [
+          8
+        ]
+      ],
+      "synthetic_mapped_trt": [
+        1.0,
+        2.0,
+        3.0,
+        15.0,
+        7.0,
+        8.0,
+        9.0,
+        10.0,
+        23.0
+      ],
+      "kernel_checks": [],
+      "mixed_feature_checks": null
+    },
+    {
+      "row_index": 7,
+      "index": "7",
+      "dataset": "Emobank",
+      "fold": "2",
+      "text": "Goodwill prepares people for life-long employment.",
+      "words": [
+        "Goodwill",
+        "prepares",
+        "people",
+        "for",
+        "life",
+        "-",
+        "long",
+        "employment",
+        "."
+      ],
+      "target_tokens": [
+        "Good",
+        "will",
+        "Ġprepares",
+        "Ġpeople",
+        "Ġfor",
+        "Ġlife",
+        "-long",
+        "Ġemployment",
+        "."
+      ],
+      "mapping": [
+        [
+          0,
+          1
+        ],
+        [
+          2
+        ],
+        [
+          3
+        ],
+        [
+          4
+        ],
+        [
+          5
+        ],
+        [
+          6
+        ],
+        [
+          6
+        ],
+        [
+          7
+        ],
+        [
+          8
+        ]
+      ],
+      "synthetic_mapped_trt": [
+        1.0,
+        0.0,
+        2.0,
+        3.0,
+        4.0,
+        5.0,
+        13.0,
+        8.0,
+        9.0
+      ],
+      "kernel_checks": [],
+      "mixed_feature_checks": null
+    },
+    {
+      "row_index": 8,
+      "index": "8",
+      "dataset": "Emobank",
+      "fold": "1",
+      "text": "Here's another story of success from what might seem like an unlikely source: Goodwill's controller, Juli.",
+      "words": [
+        "Here",
+        "'",
+        "s",
+        "another",
+        "story",
+        "of",
+        "success",
+        "from",
+        "what",
+        "might",
+        "seem",
+        "like",
+        "an",
+        "unlikely",
+        "source",
+        ":",
+        "Goodwill",
+        "'",
+        "s",
+        "controller",
+        ",",
+        "Juli",
+        "."
+      ],
+      "target_tokens": [
+        "Here",
+        "'s",
+        "Ġanother",
+        "Ġstory",
+        "Ġof",
+        "Ġsuccess",
+        "Ġfrom",
+        "Ġwhat",
+        "Ġmight",
+        "Ġseem",
+        "Ġlike",
+        "Ġan",
+        "Ġunlikely",
+        "Ġsource",
+        ":",
+        "ĠGood",
+        "will",
+        "'s",
+        "Ġcontroller",
+        ",",
+        "ĠJuli",
+        "."
+      ],
+      "mapping": [
+        [
+          0
+        ],
+        [
+          1
+        ],
+        [
+          1
+        ],
+        [
+          2
+        ],
+        [
+          3
+        ],
+        [
+          4
+        ],
+        [
+          5
+        ],
+        [
+          6
+        ],
+        [
+          7
+        ],
+        [
+          8
+        ],
+        [
+          9
+        ],
+        [
+          10
+        ],
+        [
+          11
+        ],
+        [
+          12
+        ],
+        [
+          13
+        ],
+        [
+          14
+        ],
+        [
+          15,
+          16
+        ],
+        [
+          17
+        ],
+        [
+          17
+        ],
+        [
+          18
+        ],
+        [
+          19
+        ],
+        [
+          20
+        ],
+        [
+          21
+        ]
+      ],
+      "synthetic_mapped_trt": [
+        1.0,
+        5.0,
+        4.0,
+        5.0,
+        6.0,
+        7.0,
+        8.0,
+        9.0,
+        10.0,
+        11.0,
+        12.0,
+        13.0,
+        14.0,
+        15.0,
+        16.0,
+        17.0,
+        0.0,
+        37.0,
+        20.0,
+        21.0,
+        22.0,
+        23.0
+      ],
+      "kernel_checks": [],
+      "mixed_feature_checks": null
+    },
+    {
+      "row_index": 9,
+      "index": "9",
+      "dataset": "Emobank",
+      "fold": "1",
+      "text": "Cornell found a number of employment options that he never dreamed existed after a work-site injury forced him out of his job at a foundry.",
+      "words": [
+        "Cornell",
+        "found",
+        "a",
+        "number",
+        "of",
+        "employment",
+        "options",
+        "that",
+        "he",
+        "never",
+        "dreamed",
+        "existed",
+        "after",
+        "a",
+        "work",
+        "-",
+        "site",
+        "injury",
+        "forced",
+        "him",
+        "out",
+        "of",
+        "his",
+        "job",
+        "at",
+        "a",
+        "foundry",
+        "."
+      ],
+      "target_tokens": [
+        "Corn",
+        "ell",
+        "Ġfound",
+        "Ġa",
+        "Ġnumber",
+        "Ġof",
+        "Ġemployment",
+        "Ġoptions",
+        "Ġthat",
+        "Ġhe",
+        "Ġnever",
+        "Ġdreamed",
+        "Ġexisted",
+        "Ġafter",
+        "Ġa",
+        "Ġwork",
+        "-site",
+        "Ġinjury",
+        "Ġforced",
+        "Ġhim",
+        "Ġout",
+        "Ġof",
+        "Ġhis",
+        "Ġjob",
+        "Ġat",
+        "Ġa",
+        "Ġfound",
+        "ry",
+        "."
+      ],
+      "mapping": [
+        [
+          0,
+          1
+        ],
+        [
+          2
+        ],
+        [
+          3
+        ],
+        [
+          4
+        ],
+        [
+          5
+        ],
+        [
+          6
+        ],
+        [
+          7
+        ],
+        [
+          8
+        ],
+        [
+          9
+        ],
+        [
+          10
+        ],
+        [
+          11
+        ],
+        [
+          12
+        ],
+        [
+          13
+        ],
+        [
+          14
+        ],
+        [
+          15
+        ],
+        [
+          16
+        ],
+        [
+          16
+        ],
+        [
+          17
+        ],
+        [
+          18
+        ],
+        [
+          19
+        ],
+        [
+          20
+        ],
+        [
+          21
+        ],
+        [
+          22
+        ],
+        [
+          23
+        ],
+        [
+          24
+        ],
+        [
+          25
+        ],
+        [
+          26,
+          27
+        ],
+        [
+          28
+        ]
+      ],
+      "synthetic_mapped_trt": [
+        1.0,
+        0.0,
+        2.0,
+        3.0,
+        4.0,
+        5.0,
+        6.0,
+        7.0,
+        8.0,
+        9.0,
+        10.0,
+        11.0,
+        12.0,
+        13.0,
+        14.0,
+        15.0,
+        33.0,
+        18.0,
+        19.0,
+        20.0,
+        21.0,
+        22.0,
+        23.0,
+        24.0,
+        25.0,
+        26.0,
+        27.0,
+        0.0,
+        28.0
+      ],
+      "kernel_checks": [],
+      "mixed_feature_checks": null
+    },
+    {
+      "row_index": 10,
+      "index": "10",
+      "dataset": "Emobank",
+      "fold": "2",
+      "text": "He trained in desktop publishing and combined his enthusiastic work ethic with new-found skills in a burgeoning industry. \"",
+      "words": [
+        "He",
+        "trained",
+        "in",
+        "desktop",
+        "publishing",
+        "and",
+        "combined",
+        "his",
+        "enthusiastic",
+        "work",
+        "ethic",
+        "with",
+        "new",
+        "-",
+        "found",
+        "skills",
+        "in",
+        "a",
+        "burgeoning",
+        "industry",
+        ".",
+        "\""
+      ],
+      "target_tokens": [
+        "He",
+        "Ġtrained",
+        "Ġin",
+        "Ġdesktop",
+        "Ġpublishing",
+        "Ġand",
+        "Ġcombined",
+        "Ġhis",
+        "Ġenthusiastic",
+        "Ġwork",
+        "Ġethic",
+        "Ġwith",
+        "Ġnew",
+        "-found",
+        "Ġskills",
+        "Ġin",
+        "Ġa",
+        "Ġburgeoning",
+        "Ġindustry",
+        ".",
+        "Ġ\""
+      ],
+      "mapping": [
+        [
+          0
+        ],
+        [
+          1
+        ],
+        [
+          2
+        ],
+        [
+          3
+        ],
+        [
+          4
+        ],
+        [
+          5
+        ],
+        [
+          6
+        ],
+        [
+          7
+        ],
+        [
+          8
+        ],
+        [
+          9
+        ],
+        [
+          10
+        ],
+        [
+          11
+        ],
+        [
+          12
+        ],
+        [
+          13
+        ],
+        [
+          13
+        ],
+        [
+          14
+        ],
+        [
+          15
+        ],
+        [
+          16
+        ],
+        [
+          17
+        ],
+        [
+          18
+        ],
+        [
+          19
+        ],
+        [
+          20
+        ]
+      ],
+      "synthetic_mapped_trt": [
+        1.0,
+        2.0,
+        3.0,
+        4.0,
+        5.0,
+        6.0,
+        7.0,
+        8.0,
+        9.0,
+        10.0,
+        11.0,
+        12.0,
+        13.0,
+        29.0,
+        16.0,
+        17.0,
+        18.0,
+        19.0,
+        20.0,
+        21.0,
+        22.0
+      ],
+      "kernel_checks": [],
+      "mixed_feature_checks": null
+    },
+    {
+      "row_index": 12,
+      "index": "12",
+      "dataset": "Emobank",
+      "fold": "1",
+      "text": "I've got more than a job; I've got a career.\"",
+      "words": [
+        "I",
+        "'",
+        "ve",
+        "got",
+        "more",
+        "than",
+        "a",
+        "job",
+        ";",
+        "I",
+        "'",
+        "ve",
+        "got",
+        "a",
+        "career",
+        ".",
+        "\""
+      ],
+      "target_tokens": [
+        "I",
+        "'ve",
+        "Ġgot",
+        "Ġmore",
+        "Ġthan",
+        "Ġa",
+        "Ġjob",
+        ";",
+        "ĠI",
+        "'ve",
+        "Ġgot",
+        "Ġa",
+        "Ġcareer",
+        ".\""
+      ],
+      "mapping": [
+        [
+          0
+        ],
+        [
+          1
+        ],
+        [
+          1
+        ],
+        [
+          2
+        ],
+        [
+          3
+        ],
+        [
+          4
+        ],
+        [
+          5
+        ],
+        [
+          6
+        ],
+        [
+          7
+        ],
+        [
+          8
+        ],
+        [
+          9
+        ],
+        [
+          9
+        ],
+        [
+          10
+        ],
+        [
+          11
+        ],
+        [
+          12
+        ],
+        [
+          13
+        ],
+        [
+          13
+        ]
+      ],
+      "synthetic_mapped_trt": [
+        1.0,
+        5.0,
+        4.0,
+        5.0,
+        6.0,
+        7.0,
+        8.0,
+        9.0,
+        10.0,
+        23.0,
+        13.0,
+        14.0,
+        15.0,
+        33.0
+      ],
+      "kernel_checks": [],
+      "mixed_feature_checks": null
+    },
+    {
+      "row_index": 16,
+      "index": "16",
+      "dataset": "Emobank",
+      "fold": "1",
+      "text": "..I had my second chance to change my life.\"",
+      "words": [
+        ".",
+        ".",
+        "I",
+        "had",
+        "my",
+        "second",
+        "chance",
+        "to",
+        "change",
+        "my",
+        "life",
+        ".",
+        "\""
+      ],
+      "target_tokens": [
+        "..",
+        "I",
+        "Ġhad",
+        "Ġmy",
+        "Ġsecond",
+        "Ġchance",
+        "Ġto",
+        "Ġchange",
+        "Ġmy",
+        "Ġlife",
+        ".\""
+      ],
+      "mapping": [
+        [
+          0
+        ],
+        [
+          0
+        ],
+        [
+          1
+        ],
+        [
+          2
+        ],
+        [
+          3
+        ],
+        [
+          4
+        ],
+        [
+          5
+        ],
+        [
+          6
+        ],
+        [
+          7
+        ],
+        [
+          8
+        ],
+        [
+          9
+        ],
+        [
+          10
+        ],
+        [
+          10
+        ]
+      ],
+      "synthetic_mapped_trt": [
+        3.0,
+        3.0,
+        4.0,
+        5.0,
+        6.0,
+        7.0,
+        8.0,
+        9.0,
+        10.0,
+        11.0,
+        25.0
+      ],
+      "kernel_checks": [],
+      "mixed_feature_checks": null
+    },
+    {
+      "row_index": 22,
+      "index": "22",
+      "dataset": "Emobank",
+      "fold": "2",
+      "text": "P.S.",
+      "words": [
+        "P",
+        ".",
+        "S",
+        "."
+      ],
+      "target_tokens": [
+        "P",
+        ".S",
+        "."
+      ],
+      "mapping": [
+        [
+          0
+        ],
+        [
+          1
+        ],
+        [
+          1
+        ],
+        [
+          2
+        ]
+      ],
+      "synthetic_mapped_trt": [
+        1.0,
+        5.0,
+        4.0
+      ],
+      "kernel_checks": [],
+      "mixed_feature_checks": null
+    },
+    {
+      "row_index": 27,
+      "index": "27",
+      "dataset": "Emobank",
+      "fold": "1",
+      "text": "A few months ago you received a letter from me telling the success stories of people who got jobs with Goodwill's help.",
+      "words": [
+        "A",
+        "few",
+        "months",
+        "ago",
+        "you",
+        "received",
+        "a",
+        "letter",
+        "from",
+        "me",
+        "telling",
+        "the",
+        "success",
+        "stories",
+        "of",
+        "people",
+        "who",
+        "got",
+        "jobs",
+        "with",
+        "Goodwill",
+        "'",
+        "s",
+        "help",
+        "."
+      ],
+      "target_tokens": [
+        "A",
+        "Ġfew",
+        "Ġmonths",
+        "Ġago",
+        "Ġyou",
+        "Ġreceived",
+        "Ġa",
+        "Ġletter",
+        "Ġfrom",
+        "Ġme",
+        "Ġtelling",
+        "Ġthe",
+        "Ġsuccess",
+        "Ġstories",
+        "Ġof",
+        "Ġpeople",
+        "Ġwho",
+        "Ġgot",
+        "Ġjobs",
+        "Ġwith",
+        "ĠGood",
+        "will",
+        "'s",
+        "Ġhelp",
+        "."
+      ],
+      "mapping": [
+        [
+          0
+        ],
+        [
+          1
+        ],
+        [
+          2
+        ],
+        [
+          3
+        ],
+        [
+          4
+        ],
+        [
+          5
+        ],
+        [
+          6
+        ],
+        [
+          7
+        ],
+        [
+          8
+        ],
+        [
+          9
+        ],
+        [
+          10
+        ],
+        [
+          11
+        ],
+        [
+          12
+        ],
+        [
+          13
+        ],
+        [
+          14
+        ],
+        [
+          15
+        ],
+        [
+          16
+        ],
+        [
+          17
+        ],
+        [
+          18
+        ],
+        [
+          19
+        ],
+        [
+          20,
+          21
+        ],
+        [
+          22
+        ],
+        [
+          22
+        ],
+        [
+          23
+        ],
+        [
+          24
+        ]
+      ],
+      "synthetic_mapped_trt": [
+        1.0,
+        2.0,
+        3.0,
+        4.0,
+        5.0,
+        6.0,
+        7.0,
+        8.0,
+        9.0,
+        10.0,
+        11.0,
+        12.0,
+        13.0,
+        14.0,
+        15.0,
+        16.0,
+        17.0,
+        18.0,
+        19.0,
+        20.0,
+        21.0,
+        0.0,
+        45.0,
+        24.0,
+        25.0
+      ],
+      "kernel_checks": [],
+      "mixed_feature_checks": null
+    },
+    {
+      "row_index": 28,
+      "index": "28",
+      "dataset": "Emobank",
+      "fold": "1",
+      "text": "In addition to that, by helping them find jobs, Goodwill reduced the state's Public Support tab by an estimated $4 million.",
+      "words": [
+        "In",
+        "addition",
+        "to",
+        "that",
+        ",",
+        "by",
+        "helping",
+        "them",
+        "find",
+        "jobs",
+        ",",
+        "Goodwill",
+        "reduced",
+        "the",
+        "state",
+        "'",
+        "s",
+        "Public",
+        "Support",
+        "tab",
+        "by",
+        "an",
+        "estimated",
+        "$",
+        "4",
+        "million",
+        "."
+      ],
+      "target_tokens": [
+        "In",
+        "Ġaddition",
+        "Ġto",
+        "Ġthat",
+        ",",
+        "Ġby",
+        "Ġhelping",
+        "Ġthem",
+        "Ġfind",
+        "Ġjobs",
+        ",",
+        "ĠGood",
+        "will",
+        "Ġreduced",
+        "Ġthe",
+        "Ġstate",
+        "'s",
+        "ĠPublic",
+        "ĠSupport",
+        "Ġtab",
+        "Ġby",
+        "Ġan",
+        "Ġestimated",
+        "Ġ$",
+        "4",
+        "Ġmillion",
+        "."
+      ],
+      "mapping": [
+        [
+          0
+        ],
+        [
+          1
+        ],
+        [
+          2
+        ],
+        [
+          3
+        ],
+        [
+          4
+        ],
+        [
+          5
+        ],
+        [
+          6
+        ],
+        [
+          7
+        ],
+        [
+          8
+        ],
+        [
+          9
+        ],
+        [
+          10
+        ],
+        [
+          11,
+          12
+        ],
+        [
+          13
+        ],
+        [
+          14
+        ],
+        [
+          15
+        ],
+        [
+          16
+        ],
+        [
+          16
+        ],
+        [
+          17
+        ],
+        [
+          18
+        ],
+        [
+          19
+        ],
+        [
+          20
+        ],
+        [
+          21
+        ],
+        [
+          22
+        ],
+        [
+          23
+        ],
+        [
+          24
+        ],
+        [
+          25
+        ],
+        [
+          26
+        ]
+      ],
+      "synthetic_mapped_trt": [
+        1.0,
+        2.0,
+        3.0,
+        4.0,
+        5.0,
+        6.0,
+        7.0,
+        8.0,
+        9.0,
+        10.0,
+        11.0,
+        12.0,
+        0.0,
+        13.0,
+        14.0,
+        15.0,
+        33.0,
+        18.0,
+        19.0,
+        20.0,
+        21.0,
+        22.0,
+        23.0,
+        24.0,
+        25.0,
+        26.0,
+        27.0
+      ],
+      "kernel_checks": [],
+      "mixed_feature_checks": null
+    },
+    {
+      "row_index": 32,
+      "index": "32",
+      "dataset": "Emobank",
+      "fold": "2",
+      "text": "After Maureen's job coach taught her how to do her job in a restaurant, we helped Maureen step out of the shadow sometimes cast over people with physical and mental disabilities and find a fulfilling job smack dab in the middle of society.",
+      "words": [
+        "After",
+        "Maureen",
+        "'",
+        "s",
+        "job",
+        "coach",
+        "taught",
+        "her",
+        "how",
+        "to",
+        "do",
+        "her",
+        "job",
+        "in",
+        "a",
+        "restaurant",
+        ",",
+        "we",
+        "helped",
+        "Maureen",
+        "step",
+        "out",
+        "of",
+        "the",
+        "shadow",
+        "sometimes",
+        "cast",
+        "over",
+        "people",
+        "with",
+        "physical",
+        "and",
+        "mental",
+        "disabilities",
+        "and",
+        "find",
+        "a",
+        "fulfilling",
+        "job",
+        "smack",
+        "dab",
+        "in",
+        "the",
+        "middle",
+        "of",
+        "society",
+        "."
+      ],
+      "target_tokens": [
+        "After",
+        "ĠMa",
+        "ureen",
+        "'s",
+        "Ġjob",
+        "Ġcoach",
+        "Ġtaught",
+        "Ġher",
+        "Ġhow",
+        "Ġto",
+        "Ġdo",
+        "Ġher",
+        "Ġjob",
+        "Ġin",
+        "Ġa",
+        "Ġrestaurant",
+        ",",
+        "Ġwe",
+        "Ġhelped",
+        "ĠMa",
+        "ureen",
+        "Ġstep",
+        "Ġout",
+        "Ġof",
+        "Ġthe",
+        "Ġshadow",
+        "Ġsometimes",
+        "Ġcast",
+        "Ġover",
+        "Ġpeople",
+        "Ġwith",
+        "Ġphysical",
+        "Ġand",
+        "Ġmental",
+        "Ġdisabilities",
+        "Ġand",
+        "Ġfind",
+        "Ġa",
+        "Ġfulfilling",
+        "Ġjob",
+        "Ġsmack",
+        "Ġdab",
+        "Ġin",
+        "Ġthe",
+        "Ġmiddle",
+        "Ġof",
+        "Ġsociety",
+        "."
+      ],
+      "mapping": [
+        [
+          0
+        ],
+        [
+          1,
+          2
+        ],
+        [
+          3
+        ],
+        [
+          3
+        ],
+        [
+          4
+        ],
+        [
+          5
+        ],
+        [
+          6
+        ],
+        [
+          7
+        ],
+        [
+          8
+        ],
+        [
+          9
+        ],
+        [
+          10
+        ],
+        [
+          11
+        ],
+        [
+          12
+        ],
+        [
+          13
+        ],
+        [
+          14
+        ],
+        [
+          15
+        ],
+        [
+          16
+        ],
+        [
+          17
+        ],
+        [
+          18
+        ],
+        [
+          19,
+          20
+        ],
+        [
+          21
+        ],
+        [
+          22
+        ],
+        [
+          23
+        ],
+        [
+          24
+        ],
+        [
+          25
+        ],
+        [
+          26
+        ],
+        [
+          27
+        ],
+        [
+          28
+        ],
+        [
+          29
+        ],
+        [
+          30
+        ],
+        [
+          31
+        ],
+        [
+          32
+        ],
+        [
+          33
+        ],
+        [
+          34
+        ],
+        [
+          35
+        ],
+        [
+          36
+        ],
+        [
+          37
+        ],
+        [
+          38
+        ],
+        [
+          39
+        ],
+        [
+          40
+        ],
+        [
+          41
+        ],
+        [
+          42
+        ],
+        [
+          43
+        ],
+        [
+          44
+        ],
+        [
+          45
+        ],
+        [
+          46
+        ],
+        [
+          47
+        ]
+      ],
+      "synthetic_mapped_trt": [
+        1.0,
+        2.0,
+        0.0,
+        7.0,
+        5.0,
+        6.0,
+        7.0,
+        8.0,
+        9.0,
+        10.0,
+        11.0,
+        12.0,
+        13.0,
+        14.0,
+        15.0,
+        16.0,
+        17.0,
+        18.0,
+        19.0,
+        20.0,
+        0.0,
+        21.0,
+        22.0,
+        23.0,
+        24.0,
+        25.0,
+        26.0,
+        27.0,
+        28.0,
+        29.0,
+        30.0,
+        31.0,
+        32.0,
+        33.0,
+        34.0,
+        35.0,
+        36.0,
+        37.0,
+        38.0,
+        39.0,
+        40.0,
+        41.0,
+        42.0,
+        43.0,
+        44.0,
+        45.0,
+        46.0,
+        47.0
+      ],
+      "kernel_checks": [],
+      "mixed_feature_checks": null
+    },
+    {
+      "row_index": 35,
+      "index": "35",
+      "dataset": "Emobank",
+      "fold": "1",
+      "text": "Parents act as role models of self-sufficiency instead of dependency.",
+      "words": [
+        "Parents",
+        "act",
+        "as",
+        "role",
+        "models",
+        "of",
+        "self",
+        "-",
+        "sufficiency",
+        "instead",
+        "of",
+        "dependency",
+        "."
+      ],
+      "target_tokens": [
+        "Parents",
+        "Ġact",
+        "Ġas",
+        "Ġrole",
+        "Ġmodels",
+        "Ġof",
+        "Ġself",
+        "-s",
+        "uff",
+        "iciency",
+        "Ġinstead",
+        "Ġof",
+        "Ġdependency",
+        "."
+      ],
+      "mapping": [
+        [
+          0
+        ],
+        [
+          1
+        ],
+        [
+          2
+        ],
+        [
+          3
+        ],
+        [
+          4
+        ],
+        [
+          5
+        ],
+        [
+          6
+        ],
+        [
+          7
+        ],
+        [
+          7,
+          8,
+          9
+        ],
+        [
+          10
+        ],
+        [
+          11
+        ],
+        [
+          12
+        ],
+        [
+          13
+        ]
+      ],
+      "synthetic_mapped_trt": [
+        1.0,
+        2.0,
+        3.0,
+        4.0,
+        5.0,
+        6.0,
+        7.0,
+        17.0,
+        0.0,
+        0.0,
+        10.0,
+        11.0,
+        12.0,
+        13.0
+      ],
+      "kernel_checks": [],
+      "mixed_feature_checks": null
+    },
+    {
+      "row_index": 37,
+      "index": "37",
+      "dataset": "Emobank",
+      "fold": "2",
+      "text": "You and I know that solutions to difficult problems don't just happen.",
+      "words": [
+        "You",
+        "and",
+        "I",
+        "know",
+        "that",
+        "solutions",
+        "to",
+        "difficult",
+        "problems",
+        "don",
+        "'",
+        "t",
+        "just",
+        "happen",
+        "."
+      ],
+      "target_tokens": [
+        "You",
+        "Ġand",
+        "ĠI",
+        "Ġknow",
+        "Ġthat",
+        "Ġsolutions",
+        "Ġto",
+        "Ġdifficult",
+        "Ġproblems",
+        "Ġdon",
+        "'t",
+        "Ġjust",
+        "Ġhappen",
+        "."
+      ],
+      "mapping": [
+        [
+          0
+        ],
+        [
+          1
+        ],
+        [
+          2
+        ],
+        [
+          3
+        ],
+        [
+          4
+        ],
+        [
+          5
+        ],
+        [
+          6
+        ],
+        [
+          7
+        ],
+        [
+          8
+        ],
+        [
+          9
+        ],
+        [
+          10
+        ],
+        [
+          10
+        ],
+        [
+          11
+        ],
+        [
+          12
+        ],
+        [
+          13
+        ]
+      ],
+      "synthetic_mapped_trt": [
+        1.0,
+        2.0,
+        3.0,
+        4.0,
+        5.0,
+        6.0,
+        7.0,
+        8.0,
+        9.0,
+        10.0,
+        23.0,
+        13.0,
+        14.0,
+        15.0
+      ],
+      "kernel_checks": [],
+      "mixed_feature_checks": null
+    },
+    {
+      "row_index": 40,
+      "index": "40",
+      "dataset": "Emobank",
+      "fold": "1",
+      "text": "\"You can earn the money to support yourself and your family,\" she says.",
+      "words": [
+        "\"",
+        "You",
+        "can",
+        "earn",
+        "the",
+        "money",
+        "to",
+        "support",
+        "yourself",
+        "and",
+        "your",
+        "family",
+        ",",
+        "\"",
+        "she",
+        "says",
+        "."
+      ],
+      "target_tokens": [
+        "\"You",
+        "Ġcan",
+        "Ġearn",
+        "Ġthe",
+        "Ġmoney",
+        "Ġto",
+        "Ġsupport",
+        "Ġyourself",
+        "Ġand",
+        "Ġyour",
+        "Ġfamily",
+        ",\"",
+        "Ġshe",
+        "Ġsays",
+        "."
+      ],
+      "mapping": [
+        [
+          0
+        ],
+        [
+          0
+        ],
+        [
+          1
+        ],
+        [
+          2
+        ],
+        [
+          3
+        ],
+        [
+          4
+        ],
+        [
+          5
+        ],
+        [
+          6
+        ],
+        [
+          7
+        ],
+        [
+          8
+        ],
+        [
+          9
+        ],
+        [
+          10
+        ],
+        [
+          11
+        ],
+        [
+          11
+        ],
+        [
+          12
+        ],
+        [
+          13
+        ],
+        [
+          14
+        ]
+      ],
+      "synthetic_mapped_trt": [
+        3.0,
+        3.0,
+        4.0,
+        5.0,
+        6.0,
+        7.0,
+        8.0,
+        9.0,
+        10.0,
+        11.0,
+        12.0,
+        27.0,
+        15.0,
+        16.0,
+        17.0
+      ],
+      "kernel_checks": [],
+      "mixed_feature_checks": null
+    },
+    {
+      "row_index": 42,
+      "index": "42",
+      "dataset": "Emobank",
+      "fold": "1",
+      "text": "\"You can get off welfare.",
+      "words": [
+        "\"",
+        "You",
+        "can",
+        "get",
+        "off",
+        "welfare",
+        "."
+      ],
+      "target_tokens": [
+        "\"You",
+        "Ġcan",
+        "Ġget",
+        "Ġoff",
+        "Ġwelfare",
+        "."
+      ],
+      "mapping": [
+        [
+          0
+        ],
+        [
+          0
+        ],
+        [
+          1
+        ],
+        [
+          2
+        ],
+        [
+          3
+        ],
+        [
+          4
+        ],
+        [
+          5
+        ]
+      ],
+      "synthetic_mapped_trt": [
+        3.0,
+        3.0,
+        4.0,
+        5.0,
+        6.0,
+        7.0
+      ],
+      "kernel_checks": [],
+      "mixed_feature_checks": null
+    },
+    {
+      "row_index": 43,
+      "index": "43",
+      "dataset": "Emobank",
+      "fold": "2",
+      "text": "I know you can...",
+      "words": [
+        "I",
+        "know",
+        "you",
+        "can",
+        ".",
+        ".",
+        "."
+      ],
+      "target_tokens": [
+        "I",
+        "Ġknow",
+        "Ġyou",
+        "Ġcan",
+        "..."
+      ],
+      "mapping": [
+        [
+          0
+        ],
+        [
+          1
+        ],
+        [
+          2
+        ],
+        [
+          3
+        ],
+        [
+          4
+        ],
+        [
+          4
+        ],
+        [
+          4
+        ]
+      ],
+      "synthetic_mapped_trt": [
+        1.0,
+        2.0,
+        3.0,
+        4.0,
+        18.0
+      ],
+      "kernel_checks": [],
+      "mixed_feature_checks": null
+    },
+    {
+      "row_index": 44,
+      "index": "44",
+      "dataset": "Emobank",
+      "fold": "1",
+      "text": "I did.\"",
+      "words": [
+        "I",
+        "did",
+        ".",
+        "\""
+      ],
+      "target_tokens": [
+        "I",
+        "Ġdid",
+        ".\""
+      ],
+      "mapping": [
+        [
+          0
+        ],
+        [
+          1
+        ],
+        [
+          2
+        ],
+        [
+          2
+        ]
+      ],
+      "synthetic_mapped_trt": [
+        1.0,
+        2.0,
+        7.0
+      ],
+      "kernel_checks": [],
+      "mixed_feature_checks": null
+    },
+    {
+      "row_index": 500,
+      "index": "500",
+      "dataset": "Emobank",
+      "fold": "1",
+      "text": "MCCOY Inc., originally founded as a government agency but re-organized in 1993 as an independent not-for-profit, is a county-wide youth services coordinating, planning, and convening agency.",
+      "words": [
+        "MCCOY",
+        "Inc",
+        ".",
+        ",",
+        "originally",
+        "founded",
+        "as",
+        "a",
+        "government",
+        "agency",
+        "but",
+        "re",
+        "-",
+        "organized",
+        "in",
+        "1993",
+        "as",
+        "an",
+        "independent",
+        "not",
+        "-",
+        "for",
+        "-",
+        "profit",
+        ",",
+        "is",
+        "a",
+        "county",
+        "-",
+        "wide",
+        "youth",
+        "services",
+        "coordinating",
+        ",",
+        "planning",
+        ",",
+        "and",
+        "convening",
+        "agency",
+        "."
+      ],
+      "target_tokens": [
+        "M",
+        "CC",
+        "O",
+        "Y",
+        "ĠInc",
+        ".,",
+        "Ġoriginally",
+        "Ġfounded",
+        "Ġas",
+        "Ġa",
+        "Ġgovernment",
+        "Ġagency",
+        "Ġbut",
+        "Ġre",
+        "-",
+        "organized",
+        "Ġin",
+        "Ġ",
+        "1",
+        "9",
+        "9",
+        "3",
+        "Ġas",
+        "Ġan",
+        "Ġindependent",
+        "Ġnot",
+        "-for",
+        "-profit",
+        ",",
+        "Ġis",
+        "Ġa",
+        "Ġcounty",
+        "-wide",
+        "Ġyouth",
+        "Ġservices",
+        "Ġcoordinating",
+        ",",
+        "Ġplanning",
+        ",",
+        "Ġand",
+        "Ġconven",
+        "ing",
+        "Ġagency",
+        "."
+      ],
+      "mapping": [
+        [
+          0,
+          1,
+          2,
+          3
+        ],
+        [
+          4
+        ],
+        [
+          5
+        ],
+        [
+          5
+        ],
+        [
+          6
+        ],
+        [
+          7
+        ],
+        [
+          8
+        ],
+        [
+          9
+        ],
+        [
+          10
+        ],
+        [
+          11
+        ],
+        [
+          12
+        ],
+        [
+          13
+        ],
+        [
+          14
+        ],
+        [
+          15
+        ],
+        [
+          16
+        ],
+        [
+          18,
+          19,
+          20,
+          21
+        ],
+        [
+          22
+        ],
+        [
+          23
+        ],
+        [
+          24
+        ],
+        [
+          25
+        ],
+        [
+          26
+        ],
+        [
+          26
+        ],
+        [
+          27
+        ],
+        [
+          27
+        ],
+        [
+          28
+        ],
+        [
+          29
+        ],
+        [
+          30
+        ],
+        [
+          31
+        ],
+        [
+          32
+        ],
+        [
+          32
+        ],
+        [
+          33
+        ],
+        [
+          34
+        ],
+        [
+          35
+        ],
+        [
+          36
+        ],
+        [
+          37
+        ],
+        [
+          38
+        ],
+        [
+          39
+        ],
+        [
+          40,
+          41
+        ],
+        [
+          42
+        ],
+        [
+          43
+        ]
+      ],
+      "synthetic_mapped_trt": [
+        1.0,
+        0.0,
+        0.0,
+        0.0,
+        2.0,
+        7.0,
+        5.0,
+        6.0,
+        7.0,
+        8.0,
+        9.0,
+        10.0,
+        11.0,
+        12.0,
+        13.0,
+        14.0,
+        15.0,
+        0.0,
+        16.0,
+        0.0,
+        0.0,
+        0.0,
+        17.0,
+        18.0,
+        19.0,
+        20.0,
+        43.0,
+        47.0,
+        25.0,
+        26.0,
+        27.0,
+        28.0,
+        59.0,
+        31.0,
+        32.0,
+        33.0,
+        34.0,
+        35.0,
+        36.0,
+        37.0,
+        38.0,
+        0.0,
+        39.0,
+        40.0
+      ],
+      "kernel_checks": [
+        {
+          "sigma_left": 0.5,
+          "sigma_right": 2.0,
+          "cpu_bf16_autocast": false,
+          "sum_abs_error": 0.0,
+          "output_dtype": "torch.float32"
+        },
+        {
+          "sigma_left": 0.5,
+          "sigma_right": 2.0,
+          "cpu_bf16_autocast": true,
+          "sum_abs_error": 0.0,
+          "output_dtype": "torch.float32"
+        },
+        {
+          "sigma_left": 2.0,
+          "sigma_right": 0.5,
+          "cpu_bf16_autocast": false,
+          "sum_abs_error": 0.0,
+          "output_dtype": "torch.float32"
+        },
+        {
+          "sigma_left": 2.0,
+          "sigma_right": 0.5,
+          "cpu_bf16_autocast": true,
+          "sum_abs_error": 0.0,
+          "output_dtype": "torch.float32"
+        }
+      ],
+      "mixed_feature_checks": {
+        "all_five_channels_checked": true,
+        "invalid_features_filtered_before_aggregation": true
+      }
+    },
+    {
+      "row_index": 1000,
+      "index": "1000",
+      "dataset": "Emobank",
+      "fold": "1",
+      "text": "Opening the process to other designers, both here and internationally, will help separate this urban plan from the ordinary.",
+      "words": [
+        "Opening",
+        "the",
+        "process",
+        "to",
+        "other",
+        "designers",
+        ",",
+        "both",
+        "here",
+        "and",
+        "internationally",
+        ",",
+        "will",
+        "help",
+        "separate",
+        "this",
+        "urban",
+        "plan",
+        "from",
+        "the",
+        "ordinary",
+        "."
+      ],
+      "target_tokens": [
+        "Opening",
+        "Ġthe",
+        "Ġprocess",
+        "Ġto",
+        "Ġother",
+        "Ġdesigners",
+        ",",
+        "Ġboth",
+        "Ġhere",
+        "Ġand",
+        "Ġinternationally",
+        ",",
+        "Ġwill",
+        "Ġhelp",
+        "Ġseparate",
+        "Ġthis",
+        "Ġurban",
+        "Ġplan",
+        "Ġfrom",
+        "Ġthe",
+        "Ġordinary",
+        "."
+      ],
+      "mapping": [
+        [
+          0
+        ],
+        [
+          1
+        ],
+        [
+          2
+        ],
+        [
+          3
+        ],
+        [
+          4
+        ],
+        [
+          5
+        ],
+        [
+          6
+        ],
+        [
+          7
+        ],
+        [
+          8
+        ],
+        [
+          9
+        ],
+        [
+          10
+        ],
+        [
+          11
+        ],
+        [
+          12
+        ],
+        [
+          13
+        ],
+        [
+          14
+        ],
+        [
+          15
+        ],
+        [
+          16
+        ],
+        [
+          17
+        ],
+        [
+          18
+        ],
+        [
+          19
+        ],
+        [
+          20
+        ],
+        [
+          21
+        ]
+      ],
+      "synthetic_mapped_trt": [
+        1.0,
+        2.0,
+        3.0,
+        4.0,
+        5.0,
+        6.0,
+        7.0,
+        8.0,
+        9.0,
+        10.0,
+        11.0,
+        12.0,
+        13.0,
+        14.0,
+        15.0,
+        16.0,
+        17.0,
+        18.0,
+        19.0,
+        20.0,
+        21.0,
+        22.0
+      ],
+      "kernel_checks": [
+        {
+          "sigma_left": 0.5,
+          "sigma_right": 2.0,
+          "cpu_bf16_autocast": false,
+          "sum_abs_error": 1.52587890625e-05,
+          "output_dtype": "torch.float32"
+        },
+        {
+          "sigma_left": 0.5,
+          "sigma_right": 2.0,
+          "cpu_bf16_autocast": true,
+          "sum_abs_error": 1.52587890625e-05,
+          "output_dtype": "torch.float32"
+        },
+        {
+          "sigma_left": 2.0,
+          "sigma_right": 0.5,
+          "cpu_bf16_autocast": false,
+          "sum_abs_error": 0.0,
+          "output_dtype": "torch.float32"
+        },
+        {
+          "sigma_left": 2.0,
+          "sigma_right": 0.5,
+          "cpu_bf16_autocast": true,
+          "sum_abs_error": 0.0,
+          "output_dtype": "torch.float32"
+        }
+      ],
+      "mixed_feature_checks": {
+        "all_five_channels_checked": true,
+        "invalid_features_filtered_before_aggregation": true
+      }
+    },
+    {
+      "row_index": 1500,
+      "index": "1500",
+      "dataset": "Emobank",
+      "fold": "1",
+      "text": "Because the same general algorithm will be followed for the localization of all three chemical traces, I will provide pseudocode for only one generic subroutine.",
+      "words": [
+        "Because",
+        "the",
+        "same",
+        "general",
+        "algorithm",
+        "will",
+        "be",
+        "followed",
+        "for",
+        "the",
+        "localization",
+        "of",
+        "all",
+        "three",
+        "chemical",
+        "traces",
+        ",",
+        "I",
+        "will",
+        "provide",
+        "pseudocode",
+        "for",
+        "only",
+        "one",
+        "generic",
+        "subroutine",
+        "."
+      ],
+      "target_tokens": [
+        "Because",
+        "Ġthe",
+        "Ġsame",
+        "Ġgeneral",
+        "Ġalgorithm",
+        "Ġwill",
+        "Ġbe",
+        "Ġfollowed",
+        "Ġfor",
+        "Ġthe",
+        "Ġlocalization",
+        "Ġof",
+        "Ġall",
+        "Ġthree",
+        "Ġchemical",
+        "Ġtraces",
+        ",",
+        "ĠI",
+        "Ġwill",
+        "Ġprovide",
+        "Ġpseud",
+        "ocode",
+        "Ġfor",
+        "Ġonly",
+        "Ġone",
+        "Ġgeneric",
+        "Ġsubroutine",
+        "."
+      ],
+      "mapping": [
+        [
+          0
+        ],
+        [
+          1
+        ],
+        [
+          2
+        ],
+        [
+          3
+        ],
+        [
+          4
+        ],
+        [
+          5
+        ],
+        [
+          6
+        ],
+        [
+          7
+        ],
+        [
+          8
+        ],
+        [
+          9
+        ],
+        [
+          10
+        ],
+        [
+          11
+        ],
+        [
+          12
+        ],
+        [
+          13
+        ],
+        [
+          14
+        ],
+        [
+          15
+        ],
+        [
+          16
+        ],
+        [
+          17
+        ],
+        [
+          18
+        ],
+        [
+          19
+        ],
+        [
+          20,
+          21
+        ],
+        [
+          22
+        ],
+        [
+          23
+        ],
+        [
+          24
+        ],
+        [
+          25
+        ],
+        [
+          26
+        ],
+        [
+          27
+        ]
+      ],
+      "synthetic_mapped_trt": [
+        1.0,
+        2.0,
+        3.0,
+        4.0,
+        5.0,
+        6.0,
+        7.0,
+        8.0,
+        9.0,
+        10.0,
+        11.0,
+        12.0,
+        13.0,
+        14.0,
+        15.0,
+        16.0,
+        17.0,
+        18.0,
+        19.0,
+        20.0,
+        21.0,
+        0.0,
+        22.0,
+        23.0,
+        24.0,
+        25.0,
+        26.0,
+        27.0
+      ],
+      "kernel_checks": [
+        {
+          "sigma_left": 0.5,
+          "sigma_right": 2.0,
+          "cpu_bf16_autocast": false,
+          "sum_abs_error": 3.0517578125e-05,
+          "output_dtype": "torch.float32"
+        },
+        {
+          "sigma_left": 0.5,
+          "sigma_right": 2.0,
+          "cpu_bf16_autocast": true,
+          "sum_abs_error": 3.0517578125e-05,
+          "output_dtype": "torch.float32"
+        },
+        {
+          "sigma_left": 2.0,
+          "sigma_right": 0.5,
+          "cpu_bf16_autocast": false,
+          "sum_abs_error": 0.0,
+          "output_dtype": "torch.float32"
+        },
+        {
+          "sigma_left": 2.0,
+          "sigma_right": 0.5,
+          "cpu_bf16_autocast": true,
+          "sum_abs_error": 0.0,
+          "output_dtype": "torch.float32"
+        }
+      ],
+      "mixed_feature_checks": {
+        "all_five_channels_checked": true,
+        "invalid_features_filtered_before_aggregation": true
+      }
+    },
+    {
+      "row_index": 2000,
+      "index": "2000",
+      "dataset": "Emobank",
+      "fold": "1",
+      "text": "How many hundreds or thousands of labels will have to be re-submitted to the TTB between now and 2014?",
+      "words": [
+        "How",
+        "many",
+        "hundreds",
+        "or",
+        "thousands",
+        "of",
+        "labels",
+        "will",
+        "have",
+        "to",
+        "be",
+        "re",
+        "-",
+        "submitted",
+        "to",
+        "the",
+        "TTB",
+        "between",
+        "now",
+        "and",
+        "2014",
+        "?"
+      ],
+      "target_tokens": [
+        "How",
+        "Ġmany",
+        "Ġhundreds",
+        "Ġor",
+        "Ġthousands",
+        "Ġof",
+        "Ġlabels",
+        "Ġwill",
+        "Ġhave",
+        "Ġto",
+        "Ġbe",
+        "Ġre",
+        "-sub",
+        "mitted",
+        "Ġto",
+        "Ġthe",
+        "ĠT",
+        "TB",
+        "Ġbetween",
+        "Ġnow",
+        "Ġand",
+        "Ġ",
+        "2",
+        "0",
+        "1",
+        "4",
+        "?"
+      ],
+      "mapping": [
+        [
+          0
+        ],
+        [
+          1
+        ],
+        [
+          2
+        ],
+        [
+          3
+        ],
+        [
+          4
+        ],
+        [
+          5
+        ],
+        [
+          6
+        ],
+        [
+          7
+        ],
+        [
+          8
+        ],
+        [
+          9
+        ],
+        [
+          10
+        ],
+        [
+          11
+        ],
+        [
+          12
+        ],
+        [
+          12,
+          13
+        ],
+        [
+          14
+        ],
+        [
+          15
+        ],
+        [
+          16,
+          17
+        ],
+        [
+          18
+        ],
+        [
+          19
+        ],
+        [
+          20
+        ],
+        [
+          22,
+          23,
+          24,
+          25
+        ],
+        [
+          26
+        ]
+      ],
+      "synthetic_mapped_trt": [
+        1.0,
+        2.0,
+        3.0,
+        4.0,
+        5.0,
+        6.0,
+        7.0,
+        8.0,
+        9.0,
+        10.0,
+        11.0,
+        12.0,
+        27.0,
+        0.0,
+        15.0,
+        16.0,
+        17.0,
+        0.0,
+        18.0,
+        19.0,
+        20.0,
+        0.0,
+        21.0,
+        0.0,
+        0.0,
+        0.0,
+        22.0
+      ],
+      "kernel_checks": [
+        {
+          "sigma_left": 0.5,
+          "sigma_right": 2.0,
+          "cpu_bf16_autocast": false,
+          "sum_abs_error": 0.0,
+          "output_dtype": "torch.float32"
+        },
+        {
+          "sigma_left": 0.5,
+          "sigma_right": 2.0,
+          "cpu_bf16_autocast": true,
+          "sum_abs_error": 0.0,
+          "output_dtype": "torch.float32"
+        },
+        {
+          "sigma_left": 2.0,
+          "sigma_right": 0.5,
+          "cpu_bf16_autocast": false,
+          "sum_abs_error": 1.52587890625e-05,
+          "output_dtype": "torch.float32"
+        },
+        {
+          "sigma_left": 2.0,
+          "sigma_right": 0.5,
+          "cpu_bf16_autocast": true,
+          "sum_abs_error": 1.52587890625e-05,
+          "output_dtype": "torch.float32"
+        }
+      ],
+      "mixed_feature_checks": {
+        "all_five_channels_checked": true,
+        "invalid_features_filtered_before_aggregation": true
+      }
+    },
+    {
+      "row_index": 2500,
+      "index": "2500",
+      "dataset": "Emobank",
+      "fold": "1",
+      "text": "Ask A-Rod how the media can turn on you when you put yourself above your teammates, above the game.",
+      "words": [
+        "Ask",
+        "A",
+        "-",
+        "Rod",
+        "how",
+        "the",
+        "media",
+        "can",
+        "turn",
+        "on",
+        "you",
+        "when",
+        "you",
+        "put",
+        "yourself",
+        "above",
+        "your",
+        "teammates",
+        ",",
+        "above",
+        "the",
+        "game",
+        "."
+      ],
+      "target_tokens": [
+        "Ask",
+        "ĠA",
+        "-R",
+        "od",
+        "Ġhow",
+        "Ġthe",
+        "Ġmedia",
+        "Ġcan",
+        "Ġturn",
+        "Ġon",
+        "Ġyou",
+        "Ġwhen",
+        "Ġyou",
+        "Ġput",
+        "Ġyourself",
+        "Ġabove",
+        "Ġyour",
+        "Ġteammates",
+        ",",
+        "Ġabove",
+        "Ġthe",
+        "Ġgame",
+        "."
+      ],
+      "mapping": [
+        [
+          0
+        ],
+        [
+          1
+        ],
+        [
+          2
+        ],
+        [
+          2,
+          3
+        ],
+        [
+          4
+        ],
+        [
+          5
+        ],
+        [
+          6
+        ],
+        [
+          7
+        ],
+        [
+          8
+        ],
+        [
+          9
+        ],
+        [
+          10
+        ],
+        [
+          11
+        ],
+        [
+          12
+        ],
+        [
+          13
+        ],
+        [
+          14
+        ],
+        [
+          15
+        ],
+        [
+          16
+        ],
+        [
+          17
+        ],
+        [
+          18
+        ],
+        [
+          19
+        ],
+        [
+          20
+        ],
+        [
+          21
+        ],
+        [
+          22
+        ]
+      ],
+      "synthetic_mapped_trt": [
+        1.0,
+        2.0,
+        7.0,
+        0.0,
+        5.0,
+        6.0,
+        7.0,
+        8.0,
+        9.0,
+        10.0,
+        11.0,
+        12.0,
+        13.0,
+        14.0,
+        15.0,
+        16.0,
+        17.0,
+        18.0,
+        19.0,
+        20.0,
+        21.0,
+        22.0,
+        23.0
+      ],
+      "kernel_checks": [
+        {
+          "sigma_left": 0.5,
+          "sigma_right": 2.0,
+          "cpu_bf16_autocast": false,
+          "sum_abs_error": 0.0,
+          "output_dtype": "torch.float32"
+        },
+        {
+          "sigma_left": 0.5,
+          "sigma_right": 2.0,
+          "cpu_bf16_autocast": true,
+          "sum_abs_error": 0.0,
+          "output_dtype": "torch.float32"
+        },
+        {
+          "sigma_left": 2.0,
+          "sigma_right": 0.5,
+          "cpu_bf16_autocast": false,
+          "sum_abs_error": 0.0,
+          "output_dtype": "torch.float32"
+        },
+        {
+          "sigma_left": 2.0,
+          "sigma_right": 0.5,
+          "cpu_bf16_autocast": true,
+          "sum_abs_error": 0.0,
+          "output_dtype": "torch.float32"
+        }
+      ],
+      "mixed_feature_checks": {
+        "all_five_channels_checked": true,
+        "invalid_features_filtered_before_aggregation": true
+      }
+    },
+    {
+      "row_index": 3000,
+      "index": "3000",
+      "dataset": "Emobank",
+      "fold": "2",
+      "text": "Auburn football players are reminded of last year's losses every time they go into the weight room.",
+      "words": [
+        "Auburn",
+        "football",
+        "players",
+        "are",
+        "reminded",
+        "of",
+        "last",
+        "year",
+        "'",
+        "s",
+        "losses",
+        "every",
+        "time",
+        "they",
+        "go",
+        "into",
+        "the",
+        "weight",
+        "room",
+        "."
+      ],
+      "target_tokens": [
+        "A",
+        "ub",
+        "urn",
+        "Ġfootball",
+        "Ġplayers",
+        "Ġare",
+        "Ġreminded",
+        "Ġof",
+        "Ġlast",
+        "Ġyear",
+        "'s",
+        "Ġlosses",
+        "Ġevery",
+        "Ġtime",
+        "Ġthey",
+        "Ġgo",
+        "Ġinto",
+        "Ġthe",
+        "Ġweight",
+        "Ġroom",
+        "."
+      ],
+      "mapping": [
+        [
+          0,
+          1,
+          2
+        ],
+        [
+          3
+        ],
+        [
+          4
+        ],
+        [
+          5
+        ],
+        [
+          6
+        ],
+        [
+          7
+        ],
+        [
+          8
+        ],
+        [
+          9
+        ],
+        [
+          10
+        ],
+        [
+          10
+        ],
+        [
+          11
+        ],
+        [
+          12
+        ],
+        [
+          13
+        ],
+        [
+          14
+        ],
+        [
+          15
+        ],
+        [
+          16
+        ],
+        [
+          17
+        ],
+        [
+          18
+        ],
+        [
+          19
+        ],
+        [
+          20
+        ]
+      ],
+      "synthetic_mapped_trt": [
+        1.0,
+        0.0,
+        0.0,
+        2.0,
+        3.0,
+        4.0,
+        5.0,
+        6.0,
+        7.0,
+        8.0,
+        19.0,
+        11.0,
+        12.0,
+        13.0,
+        14.0,
+        15.0,
+        16.0,
+        17.0,
+        18.0,
+        19.0,
+        20.0
+      ],
+      "kernel_checks": [
+        {
+          "sigma_left": 0.5,
+          "sigma_right": 2.0,
+          "cpu_bf16_autocast": false,
+          "sum_abs_error": 0.0,
+          "output_dtype": "torch.float32"
+        },
+        {
+          "sigma_left": 0.5,
+          "sigma_right": 2.0,
+          "cpu_bf16_autocast": true,
+          "sum_abs_error": 0.0,
+          "output_dtype": "torch.float32"
+        },
+        {
+          "sigma_left": 2.0,
+          "sigma_right": 0.5,
+          "cpu_bf16_autocast": false,
+          "sum_abs_error": 1.52587890625e-05,
+          "output_dtype": "torch.float32"
+        },
+        {
+          "sigma_left": 2.0,
+          "sigma_right": 0.5,
+          "cpu_bf16_autocast": true,
+          "sum_abs_error": 1.52587890625e-05,
+          "output_dtype": "torch.float32"
+        }
+      ],
+      "mixed_feature_checks": {
+        "all_five_channels_checked": true,
+        "invalid_features_filtered_before_aggregation": true
+      }
+    },
+    {
+      "row_index": 3500,
+      "index": "3500",
+      "dataset": "Emobank",
+      "fold": "1",
+      "text": "Now, can we get going?”",
+      "words": [
+        "Now",
+        ",",
+        "can",
+        "we",
+        "get",
+        "going",
+        "?",
+        "”"
+      ],
+      "target_tokens": [
+        "Now",
+        ",",
+        "Ġcan",
+        "Ġwe",
+        "Ġget",
+        "Ġgoing",
+        "?âĢĿ"
+      ],
+      "mapping": [
+        [
+          0
+        ],
+        [
+          1
+        ],
+        [
+          2
+        ],
+        [
+          3
+        ],
+        [
+          4
+        ],
+        [
+          5
+        ],
+        [
+          6
+        ],
+        [
+          6
+        ]
+      ],
+      "synthetic_mapped_trt": [
+        1.0,
+        2.0,
+        3.0,
+        4.0,
+        5.0,
+        6.0,
+        15.0
+      ],
+      "kernel_checks": [
+        {
+          "sigma_left": 0.5,
+          "sigma_right": 2.0,
+          "cpu_bf16_autocast": false,
+          "sum_abs_error": 3.814697265625e-06,
+          "output_dtype": "torch.float32"
+        },
+        {
+          "sigma_left": 0.5,
+          "sigma_right": 2.0,
+          "cpu_bf16_autocast": true,
+          "sum_abs_error": 3.814697265625e-06,
+          "output_dtype": "torch.float32"
+        },
+        {
+          "sigma_left": 2.0,
+          "sigma_right": 0.5,
+          "cpu_bf16_autocast": false,
+          "sum_abs_error": 0.0,
+          "output_dtype": "torch.float32"
+        },
+        {
+          "sigma_left": 2.0,
+          "sigma_right": 0.5,
+          "cpu_bf16_autocast": true,
+          "sum_abs_error": 0.0,
+          "output_dtype": "torch.float32"
+        }
+      ],
+      "mixed_feature_checks": {
+        "all_five_channels_checked": true,
+        "invalid_features_filtered_before_aggregation": true
+      }
+    },
+    {
+      "row_index": 4000,
+      "index": "4000",
+      "dataset": "Emobank",
+      "fold": "1",
+      "text": "In her palms, the droplets of blood swelled into small pools.",
+      "words": [
+        "In",
+        "her",
+        "palms",
+        ",",
+        "the",
+        "droplets",
+        "of",
+        "blood",
+        "swelled",
+        "into",
+        "small",
+        "pools",
+        "."
+      ],
+      "target_tokens": [
+        "In",
+        "Ġher",
+        "Ġpalms",
+        ",",
+        "Ġthe",
+        "Ġdro",
+        "plets",
+        "Ġof",
+        "Ġblood",
+        "Ġsw",
+        "elled",
+        "Ġinto",
+        "Ġsmall",
+        "Ġpools",
+        "."
+      ],
+      "mapping": [
+        [
+          0
+        ],
+        [
+          1
+        ],
+        [
+          2
+        ],
+        [
+          3
+        ],
+        [
+          4
+        ],
+        [
+          5,
+          6
+        ],
+        [
+          7
+        ],
+        [
+          8
+        ],
+        [
+          9,
+          10
+        ],
+        [
+          11
+        ],
+        [
+          12
+        ],
+        [
+          13
+        ],
+        [
+          14
+        ]
+      ],
+      "synthetic_mapped_trt": [
+        1.0,
+        2.0,
+        3.0,
+        4.0,
+        5.0,
+        6.0,
+        0.0,
+        7.0,
+        8.0,
+        9.0,
+        0.0,
+        10.0,
+        11.0,
+        12.0,
+        13.0
+      ],
+      "kernel_checks": [
+        {
+          "sigma_left": 0.5,
+          "sigma_right": 2.0,
+          "cpu_bf16_autocast": false,
+          "sum_abs_error": 0.0,
+          "output_dtype": "torch.float32"
+        },
+        {
+          "sigma_left": 0.5,
+          "sigma_right": 2.0,
+          "cpu_bf16_autocast": true,
+          "sum_abs_error": 0.0,
+          "output_dtype": "torch.float32"
+        },
+        {
+          "sigma_left": 2.0,
+          "sigma_right": 0.5,
+          "cpu_bf16_autocast": false,
+          "sum_abs_error": 0.0,
+          "output_dtype": "torch.float32"
+        },
+        {
+          "sigma_left": 2.0,
+          "sigma_right": 0.5,
+          "cpu_bf16_autocast": true,
+          "sum_abs_error": 0.0,
+          "output_dtype": "torch.float32"
+        }
+      ],
+      "mixed_feature_checks": {
+        "all_five_channels_checked": true,
+        "invalid_features_filtered_before_aggregation": true
+      }
+    },
+    {
+      "row_index": 4500,
+      "index": "4500",
+      "dataset": "Emobank",
+      "fold": "1",
+      "text": "My wife and I did this when we lived in Texas ... planted blue bonnets in a state park.",
+      "words": [
+        "My",
+        "wife",
+        "and",
+        "I",
+        "did",
+        "this",
+        "when",
+        "we",
+        "lived",
+        "in",
+        "Texas",
+        ".",
+        ".",
+        ".",
+        "planted",
+        "blue",
+        "bonnets",
+        "in",
+        "a",
+        "state",
+        "park",
+        "."
+      ],
+      "target_tokens": [
+        "My",
+        "Ġwife",
+        "Ġand",
+        "ĠI",
+        "Ġdid",
+        "Ġthis",
+        "Ġwhen",
+        "Ġwe",
+        "Ġlived",
+        "Ġin",
+        "ĠTexas",
+        "Ġ...",
+        "Ġplanted",
+        "Ġblue",
+        "Ġbon",
+        "nets",
+        "Ġin",
+        "Ġa",
+        "Ġstate",
+        "Ġpark",
+        "."
+      ],
+      "mapping": [
+        [
+          0
+        ],
+        [
+          1
+        ],
+        [
+          2
+        ],
+        [
+          3
+        ],
+        [
+          4
+        ],
+        [
+          5
+        ],
+        [
+          6
+        ],
+        [
+          7
+        ],
+        [
+          8
+        ],
+        [
+          9
+        ],
+        [
+          10
+        ],
+        [
+          11
+        ],
+        [
+          11
+        ],
+        [
+          11
+        ],
+        [
+          12
+        ],
+        [
+          13
+        ],
+        [
+          14,
+          15
+        ],
+        [
+          16
+        ],
+        [
+          17
+        ],
+        [
+          18
+        ],
+        [
+          19
+        ],
+        [
+          20
+        ]
+      ],
+      "synthetic_mapped_trt": [
+        1.0,
+        2.0,
+        3.0,
+        4.0,
+        5.0,
+        6.0,
+        7.0,
+        8.0,
+        9.0,
+        10.0,
+        11.0,
+        39.0,
+        15.0,
+        16.0,
+        17.0,
+        0.0,
+        18.0,
+        19.0,
+        20.0,
+        21.0,
+        22.0
+      ],
+      "kernel_checks": [
+        {
+          "sigma_left": 0.5,
+          "sigma_right": 2.0,
+          "cpu_bf16_autocast": false,
+          "sum_abs_error": 1.52587890625e-05,
+          "output_dtype": "torch.float32"
+        },
+        {
+          "sigma_left": 0.5,
+          "sigma_right": 2.0,
+          "cpu_bf16_autocast": true,
+          "sum_abs_error": 1.52587890625e-05,
+          "output_dtype": "torch.float32"
+        },
+        {
+          "sigma_left": 2.0,
+          "sigma_right": 0.5,
+          "cpu_bf16_autocast": false,
+          "sum_abs_error": 1.52587890625e-05,
+          "output_dtype": "torch.float32"
+        },
+        {
+          "sigma_left": 2.0,
+          "sigma_right": 0.5,
+          "cpu_bf16_autocast": true,
+          "sum_abs_error": 1.52587890625e-05,
+          "output_dtype": "torch.float32"
+        }
+      ],
+      "mixed_feature_checks": {
+        "all_five_channels_checked": true,
+        "invalid_features_filtered_before_aggregation": true
+      }
+    },
+    {
+      "row_index": 5000,
+      "index": "5000",
+      "dataset": "Emobank",
+      "fold": "1",
+      "text": "The NFL's 20 biggest potential free agents",
+      "words": [
+        "The",
+        "NFL",
+        "'",
+        "s",
+        "20",
+        "biggest",
+        "potential",
+        "free",
+        "agents"
+      ],
+      "target_tokens": [
+        "The",
+        "ĠNFL",
+        "'s",
+        "Ġ",
+        "2",
+        "0",
+        "Ġbiggest",
+        "Ġpotential",
+        "Ġfree",
+        "Ġagents"
+      ],
+      "mapping": [
+        [
+          0
+        ],
+        [
+          1
+        ],
+        [
+          2
+        ],
+        [
+          2
+        ],
+        [
+          4,
+          5
+        ],
+        [
+          6
+        ],
+        [
+          7
+        ],
+        [
+          8
+        ],
+        [
+          9
+        ]
+      ],
+      "synthetic_mapped_trt": [
+        1.0,
+        2.0,
+        7.0,
+        0.0,
+        5.0,
+        0.0,
+        6.0,
+        7.0,
+        8.0,
+        9.0
+      ],
+      "kernel_checks": [
+        {
+          "sigma_left": 0.5,
+          "sigma_right": 2.0,
+          "cpu_bf16_autocast": false,
+          "sum_abs_error": 3.814697265625e-06,
+          "output_dtype": "torch.float32"
+        },
+        {
+          "sigma_left": 0.5,
+          "sigma_right": 2.0,
+          "cpu_bf16_autocast": true,
+          "sum_abs_error": 3.814697265625e-06,
+          "output_dtype": "torch.float32"
+        },
+        {
+          "sigma_left": 2.0,
+          "sigma_right": 0.5,
+          "cpu_bf16_autocast": false,
+          "sum_abs_error": 0.0,
+          "output_dtype": "torch.float32"
+        },
+        {
+          "sigma_left": 2.0,
+          "sigma_right": 0.5,
+          "cpu_bf16_autocast": true,
+          "sum_abs_error": 0.0,
+          "output_dtype": "torch.float32"
+        }
+      ],
+      "mixed_feature_checks": {
+        "all_five_channels_checked": true,
+        "invalid_features_filtered_before_aggregation": true
+      }
+    },
+    {
+      "row_index": 5500,
+      "index": "5500",
+      "dataset": "Emobank",
+      "fold": "2",
+      "text": "Experts: Fear likely shackled boy",
+      "words": [
+        "Experts",
+        ":",
+        "Fear",
+        "likely",
+        "shackled",
+        "boy"
+      ],
+      "target_tokens": [
+        "Experts",
+        ":",
+        "ĠFear",
+        "Ġlikely",
+        "Ġshack",
+        "led",
+        "Ġboy"
+      ],
+      "mapping": [
+        [
+          0
+        ],
+        [
+          1
+        ],
+        [
+          2
+        ],
+        [
+          3
+        ],
+        [
+          4,
+          5
+        ],
+        [
+          6
+        ]
+      ],
+      "synthetic_mapped_trt": [
+        1.0,
+        2.0,
+        3.0,
+        4.0,
+        5.0,
+        0.0,
+        6.0
+      ],
+      "kernel_checks": [
+        {
+          "sigma_left": 0.5,
+          "sigma_right": 2.0,
+          "cpu_bf16_autocast": false,
+          "sum_abs_error": 1.9073486328125e-06,
+          "output_dtype": "torch.float32"
+        },
+        {
+          "sigma_left": 0.5,
+          "sigma_right": 2.0,
+          "cpu_bf16_autocast": true,
+          "sum_abs_error": 1.9073486328125e-06,
+          "output_dtype": "torch.float32"
+        },
+        {
+          "sigma_left": 2.0,
+          "sigma_right": 0.5,
+          "cpu_bf16_autocast": false,
+          "sum_abs_error": 0.0,
+          "output_dtype": "torch.float32"
+        },
+        {
+          "sigma_left": 2.0,
+          "sigma_right": 0.5,
+          "cpu_bf16_autocast": true,
+          "sum_abs_error": 0.0,
+          "output_dtype": "torch.float32"
+        }
+      ],
+      "mixed_feature_checks": {
+        "all_five_channels_checked": true,
+        "invalid_features_filtered_before_aggregation": true
+      }
+    },
+    {
+      "row_index": 6000,
+      "index": "6000",
+      "dataset": "Emobank",
+      "fold": "2",
+      "text": "Everybody wins.",
+      "words": [
+        "Everybody",
+        "wins",
+        "."
+      ],
+      "target_tokens": [
+        "Everybody",
+        "Ġwins",
+        "."
+      ],
+      "mapping": [
+        [
+          0
+        ],
+        [
+          1
+        ],
+        [
+          2
+        ]
+      ],
+      "synthetic_mapped_trt": [
+        1.0,
+        2.0,
+        3.0
+      ],
+      "kernel_checks": [
+        {
+          "sigma_left": 0.5,
+          "sigma_right": 2.0,
+          "cpu_bf16_autocast": false,
+          "sum_abs_error": 0.0,
+          "output_dtype": "torch.float32"
+        },
+        {
+          "sigma_left": 0.5,
+          "sigma_right": 2.0,
+          "cpu_bf16_autocast": true,
+          "sum_abs_error": 0.0,
+          "output_dtype": "torch.float32"
+        },
+        {
+          "sigma_left": 2.0,
+          "sigma_right": 0.5,
+          "cpu_bf16_autocast": false,
+          "sum_abs_error": 0.0,
+          "output_dtype": "torch.float32"
+        },
+        {
+          "sigma_left": 2.0,
+          "sigma_right": 0.5,
+          "cpu_bf16_autocast": true,
+          "sum_abs_error": 0.0,
+          "output_dtype": "torch.float32"
+        }
+      ],
+      "mixed_feature_checks": {
+        "all_five_channels_checked": true,
+        "invalid_features_filtered_before_aggregation": true
+      }
+    },
+    {
+      "row_index": 6500,
+      "index": "6500",
+      "dataset": "Emobank",
+      "fold": "1",
+      "text": "One-third of all Hong Kong’s beaches are to be found in a single 14-km (9-mile) stretch of this region’s shoreline.",
+      "words": [
+        "One",
+        "-",
+        "third",
+        "of",
+        "all",
+        "Hong",
+        "Kong",
+        "’",
+        "s",
+        "beaches",
+        "are",
+        "to",
+        "be",
+        "found",
+        "in",
+        "a",
+        "single",
+        "14",
+        "-",
+        "km",
+        "(",
+        "9",
+        "-",
+        "mile",
+        ")",
+        "stretch",
+        "of",
+        "this",
+        "region",
+        "’",
+        "s",
+        "shoreline",
+        "."
+      ],
+      "target_tokens": [
+        "One",
+        "-third",
+        "Ġof",
+        "Ġall",
+        "ĠHong",
+        "ĠKong",
+        "âĢĻs",
+        "Ġbeaches",
+        "Ġare",
+        "Ġto",
+        "Ġbe",
+        "Ġfound",
+        "Ġin",
+        "Ġa",
+        "Ġsingle",
+        "Ġ",
+        "1",
+        "4",
+        "-k",
+        "m",
+        "Ġ(",
+        "9",
+        "-mile",
+        ")",
+        "Ġstretch",
+        "Ġof",
+        "Ġthis",
+        "Ġregion",
+        "âĢĻs",
+        "Ġshoreline",
+        "."
+      ],
+      "mapping": [
+        [
+          0
+        ],
+        [
+          1
+        ],
+        [
+          1
+        ],
+        [
+          2
+        ],
+        [
+          3
+        ],
+        [
+          4
+        ],
+        [
+          5
+        ],
+        [
+          6
+        ],
+        [
+          6
+        ],
+        [
+          7
+        ],
+        [
+          8
+        ],
+        [
+          9
+        ],
+        [
+          10
+        ],
+        [
+          11
+        ],
+        [
+          12
+        ],
+        [
+          13
+        ],
+        [
+          14
+        ],
+        [
+          16,
+          17
+        ],
+        [
+          18
+        ],
+        [
+          18,
+          19
+        ],
+        [
+          20
+        ],
+        [
+          21
+        ],
+        [
+          22
+        ],
+        [
+          22
+        ],
+        [
+          23
+        ],
+        [
+          24
+        ],
+        [
+          25
+        ],
+        [
+          26
+        ],
+        [
+          27
+        ],
+        [
+          28
+        ],
+        [
+          28
+        ],
+        [
+          29
+        ],
+        [
+          30
+        ]
+      ],
+      "synthetic_mapped_trt": [
+        1.0,
+        5.0,
+        4.0,
+        5.0,
+        6.0,
+        7.0,
+        17.0,
+        10.0,
+        11.0,
+        12.0,
+        13.0,
+        14.0,
+        15.0,
+        16.0,
+        17.0,
+        0.0,
+        18.0,
+        0.0,
+        39.0,
+        0.0,
+        21.0,
+        22.0,
+        47.0,
+        25.0,
+        26.0,
+        27.0,
+        28.0,
+        29.0,
+        61.0,
+        32.0,
+        33.0
+      ],
+      "kernel_checks": [
+        {
+          "sigma_left": 0.5,
+          "sigma_right": 2.0,
+          "cpu_bf16_autocast": false,
+          "sum_abs_error": 0.0,
+          "output_dtype": "torch.float32"
+        },
+        {
+          "sigma_left": 0.5,
+          "sigma_right": 2.0,
+          "cpu_bf16_autocast": true,
+          "sum_abs_error": 0.0,
+          "output_dtype": "torch.float32"
+        },
+        {
+          "sigma_left": 2.0,
+          "sigma_right": 0.5,
+          "cpu_bf16_autocast": false,
+          "sum_abs_error": 0.0,
+          "output_dtype": "torch.float32"
+        },
+        {
+          "sigma_left": 2.0,
+          "sigma_right": 0.5,
+          "cpu_bf16_autocast": true,
+          "sum_abs_error": 0.0,
+          "output_dtype": "torch.float32"
+        }
+      ],
+      "mixed_feature_checks": {
+        "all_five_channels_checked": true,
+        "invalid_features_filtered_before_aggregation": true
+      }
+    },
+    {
+      "row_index": 7000,
+      "index": "7000",
+      "dataset": "Emobank",
+      "fold": "1",
+      "text": "Explore the evolution of the Presidential Range, on a four-day geological trek",
+      "words": [
+        "Explore",
+        "the",
+        "evolution",
+        "of",
+        "the",
+        "Presidential",
+        "Range",
+        ",",
+        "on",
+        "a",
+        "four",
+        "-",
+        "day",
+        "geological",
+        "trek"
+      ],
+      "target_tokens": [
+        "Explore",
+        "Ġthe",
+        "Ġevolution",
+        "Ġof",
+        "Ġthe",
+        "ĠPresidential",
+        "ĠRange",
+        ",",
+        "Ġon",
+        "Ġa",
+        "Ġfour",
+        "-day",
+        "Ġgeological",
+        "Ġtrek"
+      ],
+      "mapping": [
+        [
+          0
+        ],
+        [
+          1
+        ],
+        [
+          2
+        ],
+        [
+          3
+        ],
+        [
+          4
+        ],
+        [
+          5
+        ],
+        [
+          6
+        ],
+        [
+          7
+        ],
+        [
+          8
+        ],
+        [
+          9
+        ],
+        [
+          10
+        ],
+        [
+          11
+        ],
+        [
+          11
+        ],
+        [
+          12
+        ],
+        [
+          13
+        ]
+      ],
+      "synthetic_mapped_trt": [
+        1.0,
+        2.0,
+        3.0,
+        4.0,
+        5.0,
+        6.0,
+        7.0,
+        8.0,
+        9.0,
+        10.0,
+        11.0,
+        25.0,
+        14.0,
+        15.0
+      ],
+      "kernel_checks": [
+        {
+          "sigma_left": 0.5,
+          "sigma_right": 2.0,
+          "cpu_bf16_autocast": false,
+          "sum_abs_error": 7.62939453125e-06,
+          "output_dtype": "torch.float32"
+        },
+        {
+          "sigma_left": 0.5,
+          "sigma_right": 2.0,
+          "cpu_bf16_autocast": true,
+          "sum_abs_error": 7.62939453125e-06,
+          "output_dtype": "torch.float32"
+        },
+        {
+          "sigma_left": 2.0,
+          "sigma_right": 0.5,
+          "cpu_bf16_autocast": false,
+          "sum_abs_error": 0.0,
+          "output_dtype": "torch.float32"
+        },
+        {
+          "sigma_left": 2.0,
+          "sigma_right": 0.5,
+          "cpu_bf16_autocast": true,
+          "sum_abs_error": 0.0,
+          "output_dtype": "torch.float32"
+        }
+      ],
+      "mixed_feature_checks": {
+        "all_five_channels_checked": true,
+        "invalid_features_filtered_before_aggregation": true
+      }
+    },
+    {
+      "row_index": 7500,
+      "index": "7500",
+      "dataset": "Emobank",
+      "fold": "2",
+      "text": "Tasha and I became lovers that evening, after a good dinner of paella at her apartment.",
+      "words": [
+        "Tasha",
+        "and",
+        "I",
+        "became",
+        "lovers",
+        "that",
+        "evening",
+        ",",
+        "after",
+        "a",
+        "good",
+        "dinner",
+        "of",
+        "paella",
+        "at",
+        "her",
+        "apartment",
+        "."
+      ],
+      "target_tokens": [
+        "T",
+        "asha",
+        "Ġand",
+        "ĠI",
+        "Ġbecame",
+        "Ġlovers",
+        "Ġthat",
+        "Ġevening",
+        ",",
+        "Ġafter",
+        "Ġa",
+        "Ġgood",
+        "Ġdinner",
+        "Ġof",
+        "Ġpa",
+        "ella",
+        "Ġat",
+        "Ġher",
+        "Ġapartment",
+        "."
+      ],
+      "mapping": [
+        [
+          0,
+          1
+        ],
+        [
+          2
+        ],
+        [
+          3
+        ],
+        [
+          4
+        ],
+        [
+          5
+        ],
+        [
+          6
+        ],
+        [
+          7
+        ],
+        [
+          8
+        ],
+        [
+          9
+        ],
+        [
+          10
+        ],
+        [
+          11
+        ],
+        [
+          12
+        ],
+        [
+          13
+        ],
+        [
+          14,
+          15
+        ],
+        [
+          16
+        ],
+        [
+          17
+        ],
+        [
+          18
+        ],
+        [
+          19
+        ]
+      ],
+      "synthetic_mapped_trt": [
+        1.0,
+        0.0,
+        2.0,
+        3.0,
+        4.0,
+        5.0,
+        6.0,
+        7.0,
+        8.0,
+        9.0,
+        10.0,
+        11.0,
+        12.0,
+        13.0,
+        14.0,
+        0.0,
+        15.0,
+        16.0,
+        17.0,
+        18.0
+      ],
+      "kernel_checks": [
+        {
+          "sigma_left": 0.5,
+          "sigma_right": 2.0,
+          "cpu_bf16_autocast": false,
+          "sum_abs_error": 0.0,
+          "output_dtype": "torch.float32"
+        },
+        {
+          "sigma_left": 0.5,
+          "sigma_right": 2.0,
+          "cpu_bf16_autocast": true,
+          "sum_abs_error": 0.0,
+          "output_dtype": "torch.float32"
+        },
+        {
+          "sigma_left": 2.0,
+          "sigma_right": 0.5,
+          "cpu_bf16_autocast": false,
+          "sum_abs_error": 0.0,
+          "output_dtype": "torch.float32"
+        },
+        {
+          "sigma_left": 2.0,
+          "sigma_right": 0.5,
+          "cpu_bf16_autocast": true,
+          "sum_abs_error": 0.0,
+          "output_dtype": "torch.float32"
+        }
+      ],
+      "mixed_feature_checks": {
+        "all_five_channels_checked": true,
+        "invalid_features_filtered_before_aggregation": true
+      }
+    },
+    {
+      "row_index": 8000,
+      "index": "8000",
+      "dataset": "Emobank",
+      "fold": "1",
+      "text": "So it was as I wrote the preceding.",
+      "words": [
+        "So",
+        "it",
+        "was",
+        "as",
+        "I",
+        "wrote",
+        "the",
+        "preceding",
+        "."
+      ],
+      "target_tokens": [
+        "So",
+        "Ġit",
+        "Ġwas",
+        "Ġas",
+        "ĠI",
+        "Ġwrote",
+        "Ġthe",
+        "Ġpreceding",
+        "."
+      ],
+      "mapping": [
+        [
+          0
+        ],
+        [
+          1
+        ],
+        [
+          2
+        ],
+        [
+          3
+        ],
+        [
+          4
+        ],
+        [
+          5
+        ],
+        [
+          6
+        ],
+        [
+          7
+        ],
+        [
+          8
+        ]
+      ],
+      "synthetic_mapped_trt": [
+        1.0,
+        2.0,
+        3.0,
+        4.0,
+        5.0,
+        6.0,
+        7.0,
+        8.0,
+        9.0
+      ],
+      "kernel_checks": [
+        {
+          "sigma_left": 0.5,
+          "sigma_right": 2.0,
+          "cpu_bf16_autocast": false,
+          "sum_abs_error": 0.0,
+          "output_dtype": "torch.float32"
+        },
+        {
+          "sigma_left": 0.5,
+          "sigma_right": 2.0,
+          "cpu_bf16_autocast": true,
+          "sum_abs_error": 0.0,
+          "output_dtype": "torch.float32"
+        },
+        {
+          "sigma_left": 2.0,
+          "sigma_right": 0.5,
+          "cpu_bf16_autocast": false,
+          "sum_abs_error": 0.0,
+          "output_dtype": "torch.float32"
+        },
+        {
+          "sigma_left": 2.0,
+          "sigma_right": 0.5,
+          "cpu_bf16_autocast": true,
+          "sum_abs_error": 0.0,
+          "output_dtype": "torch.float32"
+        }
+      ],
+      "mixed_feature_checks": {
+        "all_five_channels_checked": true,
+        "invalid_features_filtered_before_aggregation": true
+      }
+    },
+    {
+      "row_index": 8500,
+      "index": "8500",
+      "dataset": "Emobank",
+      "fold": "2",
+      "text": "He pulled out a small leather diary and opened it to a yellowed page marked with yet another small sticky note.",
+      "words": [
+        "He",
+        "pulled",
+        "out",
+        "a",
+        "small",
+        "leather",
+        "diary",
+        "and",
+        "opened",
+        "it",
+        "to",
+        "a",
+        "yellowed",
+        "page",
+        "marked",
+        "with",
+        "yet",
+        "another",
+        "small",
+        "sticky",
+        "note",
+        "."
+      ],
+      "target_tokens": [
+        "He",
+        "Ġpulled",
+        "Ġout",
+        "Ġa",
+        "Ġsmall",
+        "Ġleather",
+        "Ġdiary",
+        "Ġand",
+        "Ġopened",
+        "Ġit",
+        "Ġto",
+        "Ġa",
+        "Ġyellow",
+        "ed",
+        "Ġpage",
+        "Ġmarked",
+        "Ġwith",
+        "Ġyet",
+        "Ġanother",
+        "Ġsmall",
+        "Ġsticky",
+        "Ġnote",
+        "."
+      ],
+      "mapping": [
+        [
+          0
+        ],
+        [
+          1
+        ],
+        [
+          2
+        ],
+        [
+          3
+        ],
+        [
+          4
+        ],
+        [
+          5
+        ],
+        [
+          6
+        ],
+        [
+          7
+        ],
+        [
+          8
+        ],
+        [
+          9
+        ],
+        [
+          10
+        ],
+        [
+          11
+        ],
+        [
+          12,
+          13
+        ],
+        [
+          14
+        ],
+        [
+          15
+        ],
+        [
+          16
+        ],
+        [
+          17
+        ],
+        [
+          18
+        ],
+        [
+          19
+        ],
+        [
+          20
+        ],
+        [
+          21
+        ],
+        [
+          22
+        ]
+      ],
+      "synthetic_mapped_trt": [
+        1.0,
+        2.0,
+        3.0,
+        4.0,
+        5.0,
+        6.0,
+        7.0,
+        8.0,
+        9.0,
+        10.0,
+        11.0,
+        12.0,
+        13.0,
+        0.0,
+        14.0,
+        15.0,
+        16.0,
+        17.0,
+        18.0,
+        19.0,
+        20.0,
+        21.0,
+        22.0
+      ],
+      "kernel_checks": [
+        {
+          "sigma_left": 0.5,
+          "sigma_right": 2.0,
+          "cpu_bf16_autocast": false,
+          "sum_abs_error": 0.0,
+          "output_dtype": "torch.float32"
+        },
+        {
+          "sigma_left": 0.5,
+          "sigma_right": 2.0,
+          "cpu_bf16_autocast": true,
+          "sum_abs_error": 0.0,
+          "output_dtype": "torch.float32"
+        },
+        {
+          "sigma_left": 2.0,
+          "sigma_right": 0.5,
+          "cpu_bf16_autocast": false,
+          "sum_abs_error": 0.0,
+          "output_dtype": "torch.float32"
+        },
+        {
+          "sigma_left": 2.0,
+          "sigma_right": 0.5,
+          "cpu_bf16_autocast": true,
+          "sum_abs_error": 0.0,
+          "output_dtype": "torch.float32"
+        }
+      ],
+      "mixed_feature_checks": {
+        "all_five_channels_checked": true,
+        "invalid_features_filtered_before_aggregation": true
+      }
+    },
+    {
+      "row_index": 9000,
+      "index": "9000",
+      "dataset": "Emobank",
+      "fold": "2",
+      "text": "I wasn't, not really, but I'd lie to get the conversation going.",
+      "words": [
+        "I",
+        "wasn",
+        "'",
+        "t",
+        ",",
+        "not",
+        "really",
+        ",",
+        "but",
+        "I",
+        "'",
+        "d",
+        "lie",
+        "to",
+        "get",
+        "the",
+        "conversation",
+        "going",
+        "."
+      ],
+      "target_tokens": [
+        "I",
+        "Ġwasn",
+        "'t",
+        ",",
+        "Ġnot",
+        "Ġreally",
+        ",",
+        "Ġbut",
+        "ĠI",
+        "'d",
+        "Ġlie",
+        "Ġto",
+        "Ġget",
+        "Ġthe",
+        "Ġconversation",
+        "Ġgoing",
+        "."
+      ],
+      "mapping": [
+        [
+          0
+        ],
+        [
+          1
+        ],
+        [
+          2
+        ],
+        [
+          2
+        ],
+        [
+          3
+        ],
+        [
+          4
+        ],
+        [
+          5
+        ],
+        [
+          6
+        ],
+        [
+          7
+        ],
+        [
+          8
+        ],
+        [
+          9
+        ],
+        [
+          9
+        ],
+        [
+          10
+        ],
+        [
+          11
+        ],
+        [
+          12
+        ],
+        [
+          13
+        ],
+        [
+          14
+        ],
+        [
+          15
+        ],
+        [
+          16
+        ]
+      ],
+      "synthetic_mapped_trt": [
+        1.0,
+        2.0,
+        7.0,
+        5.0,
+        6.0,
+        7.0,
+        8.0,
+        9.0,
+        10.0,
+        23.0,
+        13.0,
+        14.0,
+        15.0,
+        16.0,
+        17.0,
+        18.0,
+        19.0
+      ],
+      "kernel_checks": [
+        {
+          "sigma_left": 0.5,
+          "sigma_right": 2.0,
+          "cpu_bf16_autocast": false,
+          "sum_abs_error": 0.0,
+          "output_dtype": "torch.float32"
+        },
+        {
+          "sigma_left": 0.5,
+          "sigma_right": 2.0,
+          "cpu_bf16_autocast": true,
+          "sum_abs_error": 0.0,
+          "output_dtype": "torch.float32"
+        },
+        {
+          "sigma_left": 2.0,
+          "sigma_right": 0.5,
+          "cpu_bf16_autocast": false,
+          "sum_abs_error": 1.52587890625e-05,
+          "output_dtype": "torch.float32"
+        },
+        {
+          "sigma_left": 2.0,
+          "sigma_right": 0.5,
+          "cpu_bf16_autocast": true,
+          "sum_abs_error": 1.52587890625e-05,
+          "output_dtype": "torch.float32"
+        }
+      ],
+      "mixed_feature_checks": {
+        "all_five_channels_checked": true,
+        "invalid_features_filtered_before_aggregation": true
+      }
+    },
+    {
+      "row_index": 9500,
+      "index": "9500",
+      "dataset": "Emobank",
+      "fold": "2",
+      "text": "Comment #1, by carleen",
+      "words": [
+        "Comment",
+        "#",
+        "1",
+        ",",
+        "by",
+        "carleen"
+      ],
+      "target_tokens": [
+        "Comment",
+        "Ġ#",
+        "1",
+        ",",
+        "Ġby",
+        "Ġcar",
+        "leen"
+      ],
+      "mapping": [
+        [
+          0
+        ],
+        [
+          1
+        ],
+        [
+          2
+        ],
+        [
+          3
+        ],
+        [
+          4
+        ],
+        [
+          5,
+          6
+        ]
+      ],
+      "synthetic_mapped_trt": [
+        1.0,
+        2.0,
+        3.0,
+        4.0,
+        5.0,
+        6.0,
+        0.0
+      ],
+      "kernel_checks": [
+        {
+          "sigma_left": 0.5,
+          "sigma_right": 2.0,
+          "cpu_bf16_autocast": false,
+          "sum_abs_error": 0.0,
+          "output_dtype": "torch.float32"
+        },
+        {
+          "sigma_left": 0.5,
+          "sigma_right": 2.0,
+          "cpu_bf16_autocast": true,
+          "sum_abs_error": 0.0,
+          "output_dtype": "torch.float32"
+        },
+        {
+          "sigma_left": 2.0,
+          "sigma_right": 0.5,
+          "cpu_bf16_autocast": false,
+          "sum_abs_error": 0.0,
+          "output_dtype": "torch.float32"
+        },
+        {
+          "sigma_left": 2.0,
+          "sigma_right": 0.5,
+          "cpu_bf16_autocast": true,
+          "sum_abs_error": 0.0,
+          "output_dtype": "torch.float32"
+        }
+      ],
+      "mixed_feature_checks": {
+        "all_five_channels_checked": true,
+        "invalid_features_filtered_before_aggregation": true
+      }
+    },
+    {
+      "row_index": 10000,
+      "index": "10000",
+      "dataset": "Emobank",
+      "fold": "2",
+      "text": "El Espectador has been a special target because of the extraordinary courage of its publisher and his staff.",
+      "words": [
+        "El",
+        "Espectador",
+        "has",
+        "been",
+        "a",
+        "special",
+        "target",
+        "because",
+        "of",
+        "the",
+        "extraordinary",
+        "courage",
+        "of",
+        "its",
+        "publisher",
+        "and",
+        "his",
+        "staff",
+        "."
+      ],
+      "target_tokens": [
+        "El",
+        "ĠEs",
+        "pect",
+        "ador",
+        "Ġhas",
+        "Ġbeen",
+        "Ġa",
+        "Ġspecial",
+        "Ġtarget",
+        "Ġbecause",
+        "Ġof",
+        "Ġthe",
+        "Ġextraordinary",
+        "Ġcourage",
+        "Ġof",
+        "Ġits",
+        "Ġpublisher",
+        "Ġand",
+        "Ġhis",
+        "Ġstaff",
+        "."
+      ],
+      "mapping": [
+        [
+          0
+        ],
+        [
+          1,
+          2,
+          3
+        ],
+        [
+          4
+        ],
+        [
+          5
+        ],
+        [
+          6
+        ],
+        [
+          7
+        ],
+        [
+          8
+        ],
+        [
+          9
+        ],
+        [
+          10
+        ],
+        [
+          11
+        ],
+        [
+          12
+        ],
+        [
+          13
+        ],
+        [
+          14
+        ],
+        [
+          15
+        ],
+        [
+          16
+        ],
+        [
+          17
+        ],
+        [
+          18
+        ],
+        [
+          19
+        ],
+        [
+          20
+        ]
+      ],
+      "synthetic_mapped_trt": [
+        1.0,
+        2.0,
+        0.0,
+        0.0,
+        3.0,
+        4.0,
+        5.0,
+        6.0,
+        7.0,
+        8.0,
+        9.0,
+        10.0,
+        11.0,
+        12.0,
+        13.0,
+        14.0,
+        15.0,
+        16.0,
+        17.0,
+        18.0,
+        19.0
+      ],
+      "kernel_checks": [
+        {
+          "sigma_left": 0.5,
+          "sigma_right": 2.0,
+          "cpu_bf16_autocast": false,
+          "sum_abs_error": 1.52587890625e-05,
+          "output_dtype": "torch.float32"
+        },
+        {
+          "sigma_left": 0.5,
+          "sigma_right": 2.0,
+          "cpu_bf16_autocast": true,
+          "sum_abs_error": 1.52587890625e-05,
+          "output_dtype": "torch.float32"
+        },
+        {
+          "sigma_left": 2.0,
+          "sigma_right": 0.5,
+          "cpu_bf16_autocast": false,
+          "sum_abs_error": 0.0,
+          "output_dtype": "torch.float32"
+        },
+        {
+          "sigma_left": 2.0,
+          "sigma_right": 0.5,
+          "cpu_bf16_autocast": true,
+          "sum_abs_error": 0.0,
+          "output_dtype": "torch.float32"
+        }
+      ],
+      "mixed_feature_checks": {
+        "all_five_channels_checked": true,
+        "invalid_features_filtered_before_aggregation": true
+      }
+    },
+    {
+      "row_index": 10500,
+      "index": "10500",
+      "dataset": "EmoTales sentences",
+      "fold": "2",
+      "text": "\"he who gets the crystal ball, and holds it before the enchanter, will destroy his power with it, and I shall resume my true shape.\"",
+      "words": [
+        "\"",
+        "he",
+        "who",
+        "gets",
+        "the",
+        "crystal",
+        "ball",
+        ",",
+        "and",
+        "holds",
+        "it",
+        "before",
+        "the",
+        "enchanter",
+        ",",
+        "will",
+        "destroy",
+        "his",
+        "power",
+        "with",
+        "it",
+        ",",
+        "and",
+        "I",
+        "shall",
+        "resume",
+        "my",
+        "true",
+        "shape",
+        ".",
+        "\""
+      ],
+      "target_tokens": [
+        "\"",
+        "he",
+        "Ġwho",
+        "Ġgets",
+        "Ġthe",
+        "Ġcrystal",
+        "Ġball",
+        ",",
+        "Ġand",
+        "Ġholds",
+        "Ġit",
+        "Ġbefore",
+        "Ġthe",
+        "Ġen",
+        "chan",
+        "ter",
+        ",",
+        "Ġwill",
+        "Ġdestroy",
+        "Ġhis",
+        "Ġpower",
+        "Ġwith",
+        "Ġit",
+        ",",
+        "Ġand",
+        "ĠI",
+        "Ġshall",
+        "Ġresume",
+        "Ġmy",
+        "Ġtrue",
+        "Ġshape",
+        ".\""
+      ],
+      "mapping": [
+        [
+          0
+        ],
+        [
+          1
+        ],
+        [
+          2
+        ],
+        [
+          3
+        ],
+        [
+          4
+        ],
+        [
+          5
+        ],
+        [
+          6
+        ],
+        [
+          7
+        ],
+        [
+          8
+        ],
+        [
+          9
+        ],
+        [
+          10
+        ],
+        [
+          11
+        ],
+        [
+          12
+        ],
+        [
+          13,
+          14,
+          15
+        ],
+        [
+          16
+        ],
+        [
+          17
+        ],
+        [
+          18
+        ],
+        [
+          19
+        ],
+        [
+          20
+        ],
+        [
+          21
+        ],
+        [
+          22
+        ],
+        [
+          23
+        ],
+        [
+          24
+        ],
+        [
+          25
+        ],
+        [
+          26
+        ],
+        [
+          27
+        ],
+        [
+          28
+        ],
+        [
+          29
+        ],
+        [
+          30
+        ],
+        [
+          31
+        ],
+        [
+          31
+        ]
+      ],
+      "synthetic_mapped_trt": [
+        1.0,
+        2.0,
+        3.0,
+        4.0,
+        5.0,
+        6.0,
+        7.0,
+        8.0,
+        9.0,
+        10.0,
+        11.0,
+        12.0,
+        13.0,
+        14.0,
+        0.0,
+        0.0,
+        15.0,
+        16.0,
+        17.0,
+        18.0,
+        19.0,
+        20.0,
+        21.0,
+        22.0,
+        23.0,
+        24.0,
+        25.0,
+        26.0,
+        27.0,
+        28.0,
+        29.0,
+        61.0
+      ],
+      "kernel_checks": [
+        {
+          "sigma_left": 0.5,
+          "sigma_right": 2.0,
+          "cpu_bf16_autocast": false,
+          "sum_abs_error": 0.0,
+          "output_dtype": "torch.float32"
+        },
+        {
+          "sigma_left": 0.5,
+          "sigma_right": 2.0,
+          "cpu_bf16_autocast": true,
+          "sum_abs_error": 0.0,
+          "output_dtype": "torch.float32"
+        },
+        {
+          "sigma_left": 2.0,
+          "sigma_right": 0.5,
+          "cpu_bf16_autocast": false,
+          "sum_abs_error": 3.0517578125e-05,
+          "output_dtype": "torch.float32"
+        },
+        {
+          "sigma_left": 2.0,
+          "sigma_right": 0.5,
+          "cpu_bf16_autocast": true,
+          "sum_abs_error": 3.0517578125e-05,
+          "output_dtype": "torch.float32"
+        }
+      ],
+      "mixed_feature_checks": {
+        "all_five_channels_checked": true,
+        "invalid_features_filtered_before_aggregation": true
+      }
+    },
+    {
+      "row_index": 11000,
+      "index": "11000",
+      "dataset": "EmoTales sentences",
+      "fold": "2",
+      "text": "\"I have scarcely closed my eyes all night.\"",
+      "words": [
+        "\"",
+        "I",
+        "have",
+        "scarcely",
+        "closed",
+        "my",
+        "eyes",
+        "all",
+        "night",
+        ".",
+        "\""
+      ],
+      "target_tokens": [
+        "\"I",
+        "Ġhave",
+        "Ġscarcely",
+        "Ġclosed",
+        "Ġmy",
+        "Ġeyes",
+        "Ġall",
+        "Ġnight",
+        ".\""
+      ],
+      "mapping": [
+        [
+          0
+        ],
+        [
+          0
+        ],
+        [
+          1
+        ],
+        [
+          2
+        ],
+        [
+          3
+        ],
+        [
+          4
+        ],
+        [
+          5
+        ],
+        [
+          6
+        ],
+        [
+          7
+        ],
+        [
+          8
+        ],
+        [
+          8
+        ]
+      ],
+      "synthetic_mapped_trt": [
+        3.0,
+        3.0,
+        4.0,
+        5.0,
+        6.0,
+        7.0,
+        8.0,
+        9.0,
+        21.0
+      ],
+      "kernel_checks": [
+        {
+          "sigma_left": 0.5,
+          "sigma_right": 2.0,
+          "cpu_bf16_autocast": false,
+          "sum_abs_error": 0.0,
+          "output_dtype": "torch.float32"
+        },
+        {
+          "sigma_left": 0.5,
+          "sigma_right": 2.0,
+          "cpu_bf16_autocast": true,
+          "sum_abs_error": 0.0,
+          "output_dtype": "torch.float32"
+        },
+        {
+          "sigma_left": 2.0,
+          "sigma_right": 0.5,
+          "cpu_bf16_autocast": false,
+          "sum_abs_error": 0.0,
+          "output_dtype": "torch.float32"
+        },
+        {
+          "sigma_left": 2.0,
+          "sigma_right": 0.5,
+          "cpu_bf16_autocast": true,
+          "sum_abs_error": 0.0,
+          "output_dtype": "torch.float32"
+        }
+      ],
+      "mixed_feature_checks": {
+        "all_five_channels_checked": true,
+        "invalid_features_filtered_before_aggregation": true
+      }
+    },
+    {
+      "row_index": 11500,
+      "index": "11500",
+      "dataset": "fb",
+      "fold": "1",
+      "text": "is contemplating how to spend his Xbox points...",
+      "words": [
+        "is",
+        "contemplating",
+        "how",
+        "to",
+        "spend",
+        "his",
+        "Xbox",
+        "points",
+        ".",
+        ".",
+        "."
+      ],
+      "target_tokens": [
+        "is",
+        "Ġcontemplating",
+        "Ġhow",
+        "Ġto",
+        "Ġspend",
+        "Ġhis",
+        "ĠXbox",
+        "Ġpoints",
+        "..."
+      ],
+      "mapping": [
+        [
+          0
+        ],
+        [
+          1
+        ],
+        [
+          2
+        ],
+        [
+          3
+        ],
+        [
+          4
+        ],
+        [
+          5
+        ],
+        [
+          6
+        ],
+        [
+          7
+        ],
+        [
+          8
+        ],
+        [
+          8
+        ],
+        [
+          8
+        ]
+      ],
+      "synthetic_mapped_trt": [
+        1.0,
+        2.0,
+        3.0,
+        4.0,
+        5.0,
+        6.0,
+        7.0,
+        8.0,
+        30.0
+      ],
+      "kernel_checks": [
+        {
+          "sigma_left": 0.5,
+          "sigma_right": 2.0,
+          "cpu_bf16_autocast": false,
+          "sum_abs_error": 0.0,
+          "output_dtype": "torch.float32"
+        },
+        {
+          "sigma_left": 0.5,
+          "sigma_right": 2.0,
+          "cpu_bf16_autocast": true,
+          "sum_abs_error": 0.0,
+          "output_dtype": "torch.float32"
+        },
+        {
+          "sigma_left": 2.0,
+          "sigma_right": 0.5,
+          "cpu_bf16_autocast": false,
+          "sum_abs_error": 0.0,
+          "output_dtype": "torch.float32"
+        },
+        {
+          "sigma_left": 2.0,
+          "sigma_right": 0.5,
+          "cpu_bf16_autocast": true,
+          "sum_abs_error": 0.0,
+          "output_dtype": "torch.float32"
+        }
+      ],
+      "mixed_feature_checks": {
+        "all_five_channels_checked": true,
+        "invalid_features_filtered_before_aggregation": true
+      }
+    },
+    {
+      "row_index": 12000,
+      "index": "12000",
+      "dataset": "fb",
+      "fold": "1",
+      "text": "Always remember that you are unique. Just like everybody else.",
+      "words": [
+        "Always",
+        "remember",
+        "that",
+        "you",
+        "are",
+        "unique",
+        ".",
+        "Just",
+        "like",
+        "everybody",
+        "else",
+        "."
+      ],
+      "target_tokens": [
+        "Always",
+        "Ġremember",
+        "Ġthat",
+        "Ġyou",
+        "Ġare",
+        "Ġunique",
+        ".",
+        "ĠJust",
+        "Ġlike",
+        "Ġeverybody",
+        "Ġelse",
+        "."
+      ],
+      "mapping": [
+        [
+          0
+        ],
+        [
+          1
+        ],
+        [
+          2
+        ],
+        [
+          3
+        ],
+        [
+          4
+        ],
+        [
+          5
+        ],
+        [
+          6
+        ],
+        [
+          7
+        ],
+        [
+          8
+        ],
+        [
+          9
+        ],
+        [
+          10
+        ],
+        [
+          11
+        ]
+      ],
+      "synthetic_mapped_trt": [
+        1.0,
+        2.0,
+        3.0,
+        4.0,
+        5.0,
+        6.0,
+        7.0,
+        8.0,
+        9.0,
+        10.0,
+        11.0,
+        12.0
+      ],
+      "kernel_checks": [
+        {
+          "sigma_left": 0.5,
+          "sigma_right": 2.0,
+          "cpu_bf16_autocast": false,
+          "sum_abs_error": 0.0,
+          "output_dtype": "torch.float32"
+        },
+        {
+          "sigma_left": 0.5,
+          "sigma_right": 2.0,
+          "cpu_bf16_autocast": true,
+          "sum_abs_error": 0.0,
+          "output_dtype": "torch.float32"
+        },
+        {
+          "sigma_left": 2.0,
+          "sigma_right": 0.5,
+          "cpu_bf16_autocast": false,
+          "sum_abs_error": 0.0,
+          "output_dtype": "torch.float32"
+        },
+        {
+          "sigma_left": 2.0,
+          "sigma_right": 0.5,
+          "cpu_bf16_autocast": true,
+          "sum_abs_error": 0.0,
+          "output_dtype": "torch.float32"
+        }
+      ],
+      "mixed_feature_checks": {
+        "all_five_channels_checked": true,
+        "invalid_features_filtered_before_aggregation": true
+      }
+    },
+    {
+      "row_index": 12500,
+      "index": "12500",
+      "dataset": "fb",
+      "fold": "1",
+      "text": "I'd very much like some peach pie or peach cheesecake right now.  Somebody make this happen plz.",
+      "words": [
+        "I",
+        "'",
+        "d",
+        "very",
+        "much",
+        "like",
+        "some",
+        "peach",
+        "pie",
+        "or",
+        "peach",
+        "cheesecake",
+        "right",
+        "now",
+        ".",
+        "Somebody",
+        "make",
+        "this",
+        "happen",
+        "plz",
+        "."
+      ],
+      "target_tokens": [
+        "I",
+        "'d",
+        "Ġvery",
+        "Ġmuch",
+        "Ġlike",
+        "Ġsome",
+        "Ġpeach",
+        "Ġpie",
+        "Ġor",
+        "Ġpeach",
+        "Ġchees",
+        "ecake",
+        "Ġright",
+        "Ġnow",
+        ".",
+        "Ġ",
+        "ĠSomebody",
+        "Ġmake",
+        "Ġthis",
+        "Ġhappen",
+        "Ġpl",
+        "z",
+        "."
+      ],
+      "mapping": [
+        [
+          0
+        ],
+        [
+          1
+        ],
+        [
+          1
+        ],
+        [
+          2
+        ],
+        [
+          3
+        ],
+        [
+          4
+        ],
+        [
+          5
+        ],
+        [
+          6
+        ],
+        [
+          7
+        ],
+        [
+          8
+        ],
+        [
+          9
+        ],
+        [
+          10,
+          11
+        ],
+        [
+          12
+        ],
+        [
+          13
+        ],
+        [
+          14
+        ],
+        [
+          16
+        ],
+        [
+          17
+        ],
+        [
+          18
+        ],
+        [
+          19
+        ],
+        [
+          20,
+          21
+        ],
+        [
+          22
+        ]
+      ],
+      "synthetic_mapped_trt": [
+        1.0,
+        5.0,
+        4.0,
+        5.0,
+        6.0,
+        7.0,
+        8.0,
+        9.0,
+        10.0,
+        11.0,
+        12.0,
+        0.0,
+        13.0,
+        14.0,
+        15.0,
+        0.0,
+        16.0,
+        17.0,
+        18.0,
+        19.0,
+        20.0,
+        0.0,
+        21.0
+      ],
+      "kernel_checks": [
+        {
+          "sigma_left": 0.5,
+          "sigma_right": 2.0,
+          "cpu_bf16_autocast": false,
+          "sum_abs_error": 0.0,
+          "output_dtype": "torch.float32"
+        },
+        {
+          "sigma_left": 0.5,
+          "sigma_right": 2.0,
+          "cpu_bf16_autocast": true,
+          "sum_abs_error": 0.0,
+          "output_dtype": "torch.float32"
+        },
+        {
+          "sigma_left": 2.0,
+          "sigma_right": 0.5,
+          "cpu_bf16_autocast": false,
+          "sum_abs_error": 1.52587890625e-05,
+          "output_dtype": "torch.float32"
+        },
+        {
+          "sigma_left": 2.0,
+          "sigma_right": 0.5,
+          "cpu_bf16_autocast": true,
+          "sum_abs_error": 1.52587890625e-05,
+          "output_dtype": "torch.float32"
+        }
+      ],
+      "mixed_feature_checks": {
+        "all_five_channels_checked": true,
+        "invalid_features_filtered_before_aggregation": true
+      }
+    },
+    {
+      "row_index": 13000,
+      "index": "13000",
+      "dataset": "fb",
+      "fold": "2",
+      "text": "Is very thankful that it is over!! Thanks to everyone that came to the wedding",
+      "words": [
+        "Is",
+        "very",
+        "thankful",
+        "that",
+        "it",
+        "is",
+        "over",
+        "!",
+        "!",
+        "Thanks",
+        "to",
+        "everyone",
+        "that",
+        "came",
+        "to",
+        "the",
+        "wedding"
+      ],
+      "target_tokens": [
+        "Is",
+        "Ġvery",
+        "Ġthankful",
+        "Ġthat",
+        "Ġit",
+        "Ġis",
+        "Ġover",
+        "!!",
+        "ĠThanks",
+        "Ġto",
+        "Ġeveryone",
+        "Ġthat",
+        "Ġcame",
+        "Ġto",
+        "Ġthe",
+        "Ġwedding"
+      ],
+      "mapping": [
+        [
+          0
+        ],
+        [
+          1
+        ],
+        [
+          2
+        ],
+        [
+          3
+        ],
+        [
+          4
+        ],
+        [
+          5
+        ],
+        [
+          6
+        ],
+        [
+          7
+        ],
+        [
+          7
+        ],
+        [
+          8
+        ],
+        [
+          9
+        ],
+        [
+          10
+        ],
+        [
+          11
+        ],
+        [
+          12
+        ],
+        [
+          13
+        ],
+        [
+          14
+        ],
+        [
+          15
+        ]
+      ],
+      "synthetic_mapped_trt": [
+        1.0,
+        2.0,
+        3.0,
+        4.0,
+        5.0,
+        6.0,
+        7.0,
+        17.0,
+        10.0,
+        11.0,
+        12.0,
+        13.0,
+        14.0,
+        15.0,
+        16.0,
+        17.0
+      ],
+      "kernel_checks": [
+        {
+          "sigma_left": 0.5,
+          "sigma_right": 2.0,
+          "cpu_bf16_autocast": false,
+          "sum_abs_error": 0.0,
+          "output_dtype": "torch.float32"
+        },
+        {
+          "sigma_left": 0.5,
+          "sigma_right": 2.0,
+          "cpu_bf16_autocast": true,
+          "sum_abs_error": 0.0,
+          "output_dtype": "torch.float32"
+        },
+        {
+          "sigma_left": 2.0,
+          "sigma_right": 0.5,
+          "cpu_bf16_autocast": false,
+          "sum_abs_error": 0.0,
+          "output_dtype": "torch.float32"
+        },
+        {
+          "sigma_left": 2.0,
+          "sigma_right": 0.5,
+          "cpu_bf16_autocast": true,
+          "sum_abs_error": 0.0,
+          "output_dtype": "torch.float32"
+        }
+      ],
+      "mixed_feature_checks": {
+        "all_five_channels_checked": true,
+        "invalid_features_filtered_before_aggregation": true
+      }
+    },
+    {
+      "row_index": 13500,
+      "index": "13500",
+      "dataset": "fb",
+      "fold": "1",
+      "text": "The color of your bra made the news BUT WILL THIS? Let's support our troops. If you support our troops please post this on your status and leave it for at least one hour. There should be no excuses from anyone!! This should appear in everyone's status! Please do this for the ones that make this...The Land Of The Free and the Home Of the Brave..",
+      "words": [
+        "The",
+        "color",
+        "of",
+        "your",
+        "bra",
+        "made",
+        "the",
+        "news",
+        "BUT",
+        "WILL",
+        "THIS",
+        "?",
+        "Let",
+        "'",
+        "s",
+        "support",
+        "our",
+        "troops",
+        ".",
+        "If",
+        "you",
+        "support",
+        "our",
+        "troops",
+        "please",
+        "post",
+        "this",
+        "on",
+        "your",
+        "status",
+        "and",
+        "leave",
+        "it",
+        "for",
+        "at",
+        "least",
+        "one",
+        "hour",
+        ".",
+        "There",
+        "should",
+        "be",
+        "no",
+        "excuses",
+        "from",
+        "anyone",
+        "!",
+        "!",
+        "This",
+        "should",
+        "appear",
+        "in",
+        "everyone",
+        "'",
+        "s",
+        "status",
+        "!",
+        "Please",
+        "do",
+        "this",
+        "for",
+        "the",
+        "ones",
+        "that",
+        "make",
+        "this",
+        ".",
+        ".",
+        ".",
+        "The",
+        "Land",
+        "Of",
+        "The",
+        "Free",
+        "and",
+        "the",
+        "Home",
+        "Of",
+        "the",
+        "Brave",
+        ".",
+        "."
+      ],
+      "target_tokens": [
+        "The",
+        "Ġcolor",
+        "Ġof",
+        "Ġyour",
+        "Ġbra",
+        "Ġmade",
+        "Ġthe",
+        "Ġnews",
+        "ĠBUT",
+        "ĠWILL",
+        "ĠTHIS",
+        "?",
+        "ĠLet",
+        "'s",
+        "Ġsupport",
+        "Ġour",
+        "Ġtroops",
+        ".",
+        "ĠIf",
+        "Ġyou",
+        "Ġsupport",
+        "Ġour",
+        "Ġtroops",
+        "Ġplease",
+        "Ġpost",
+        "Ġthis",
+        "Ġon",
+        "Ġyour",
+        "Ġstatus",
+        "Ġand",
+        "Ġleave",
+        "Ġit",
+        "Ġfor",
+        "Ġat",
+        "Ġleast",
+        "Ġone",
+        "Ġhour",
+        ".",
+        "ĠThere",
+        "Ġshould",
+        "Ġbe",
+        "Ġno",
+        "Ġexcuses",
+        "Ġfrom",
+        "Ġanyone",
+        "!!",
+        "ĠThis",
+        "Ġshould",
+        "Ġappear",
+        "Ġin",
+        "Ġeveryone",
+        "'s",
+        "Ġstatus",
+        "!",
+        "ĠPlease",
+        "Ġdo",
+        "Ġthis",
+        "Ġfor",
+        "Ġthe",
+        "Ġones",
+        "Ġthat",
+        "Ġmake",
+        "Ġthis",
+        "...",
+        "The",
+        "ĠLand",
+        "ĠOf",
+        "ĠThe",
+        "ĠFree",
+        "Ġand",
+        "Ġthe",
+        "ĠHome",
+        "ĠOf",
+        "Ġthe",
+        "ĠBrave",
+        ".."
+      ],
+      "mapping": [
+        [
+          0
+        ],
+        [
+          1
+        ],
+        [
+          2
+        ],
+        [
+          3
+        ],
+        [
+          4
+        ],
+        [
+          5
+        ],
+        [
+          6
+        ],
+        [
+          7
+        ],
+        [
+          8
+        ],
+        [
+          9
+        ],
+        [
+          10
+        ],
+        [
+          11
+        ],
+        [
+          12
+        ],
+        [
+          13
+        ],
+        [
+          13
+        ],
+        [
+          14
+        ],
+        [
+          15
+        ],
+        [
+          16
+        ],
+        [
+          17
+        ],
+        [
+          18
+        ],
+        [
+          19
+        ],
+        [
+          20
+        ],
+        [
+          21
+        ],
+        [
+          22
+        ],
+        [
+          23
+        ],
+        [
+          24
+        ],
+        [
+          25
+        ],
+        [
+          26
+        ],
+        [
+          27
+        ],
+        [
+          28
+        ],
+        [
+          29
+        ],
+        [
+          30
+        ],
+        [
+          31
+        ],
+        [
+          32
+        ],
+        [
+          33
+        ],
+        [
+          34
+        ],
+        [
+          35
+        ],
+        [
+          36
+        ],
+        [
+          37
+        ],
+        [
+          38
+        ],
+        [
+          39
+        ],
+        [
+          40
+        ],
+        [
+          41
+        ],
+        [
+          42
+        ],
+        [
+          43
+        ],
+        [
+          44
+        ],
+        [
+          45
+        ],
+        [
+          45
+        ],
+        [
+          46
+        ],
+        [
+          47
+        ],
+        [
+          48
+        ],
+        [
+          49
+        ],
+        [
+          50
+        ],
+        [
+          51
+        ],
+        [
+          51
+        ],
+        [
+          52
+        ],
+        [
+          53
+        ],
+        [
+          54
+        ],
+        [
+          55
+        ],
+        [
+          56
+        ],
+        [
+          57
+        ],
+        [
+          58
+        ],
+        [
+          59
+        ],
+        [
+          60
+        ],
+        [
+          61
+        ],
+        [
+          62
+        ],
+        [
+          63
+        ],
+        [
+          63
+        ],
+        [
+          63
+        ],
+        [
+          64
+        ],
+        [
+          65
+        ],
+        [
+          66
+        ],
+        [
+          67
+        ],
+        [
+          68
+        ],
+        [
+          69
+        ],
+        [
+          70
+        ],
+        [
+          71
+        ],
+        [
+          72
+        ],
+        [
+          73
+        ],
+        [
+          74
+        ],
+        [
+          75
+        ],
+        [
+          75
+        ]
+      ],
+      "synthetic_mapped_trt": [
+        1.0,
+        2.0,
+        3.0,
+        4.0,
+        5.0,
+        6.0,
+        7.0,
+        8.0,
+        9.0,
+        10.0,
+        11.0,
+        12.0,
+        13.0,
+        29.0,
+        16.0,
+        17.0,
+        18.0,
+        19.0,
+        20.0,
+        21.0,
+        22.0,
+        23.0,
+        24.0,
+        25.0,
+        26.0,
+        27.0,
+        28.0,
+        29.0,
+        30.0,
+        31.0,
+        32.0,
+        33.0,
+        34.0,
+        35.0,
+        36.0,
+        37.0,
+        38.0,
+        39.0,
+        40.0,
+        41.0,
+        42.0,
+        43.0,
+        44.0,
+        45.0,
+        46.0,
+        95.0,
+        49.0,
+        50.0,
+        51.0,
+        52.0,
+        53.0,
+        109.0,
+        56.0,
+        57.0,
+        58.0,
+        59.0,
+        60.0,
+        61.0,
+        62.0,
+        63.0,
+        64.0,
+        65.0,
+        66.0,
+        204.0,
+        70.0,
+        71.0,
+        72.0,
+        73.0,
+        74.0,
+        75.0,
+        76.0,
+        77.0,
+        78.0,
+        79.0,
+        80.0,
+        163.0
+      ],
+      "kernel_checks": [
+        {
+          "sigma_left": 0.5,
+          "sigma_right": 2.0,
+          "cpu_bf16_autocast": false,
+          "sum_abs_error": 0.0,
+          "output_dtype": "torch.float32"
+        },
+        {
+          "sigma_left": 0.5,
+          "sigma_right": 2.0,
+          "cpu_bf16_autocast": true,
+          "sum_abs_error": 0.0,
+          "output_dtype": "torch.float32"
+        },
+        {
+          "sigma_left": 2.0,
+          "sigma_right": 0.5,
+          "cpu_bf16_autocast": false,
+          "sum_abs_error": 0.0,
+          "output_dtype": "torch.float32"
+        },
+        {
+          "sigma_left": 2.0,
+          "sigma_right": 0.5,
+          "cpu_bf16_autocast": true,
+          "sum_abs_error": 0.0,
+          "output_dtype": "torch.float32"
+        }
+      ],
+      "mixed_feature_checks": {
+        "all_five_channels_checked": true,
+        "invalid_features_filtered_before_aggregation": true
+      }
+    },
+    {
+      "row_index": 14000,
+      "index": "14000",
+      "dataset": "fb",
+      "fold": "1",
+      "text": "I received an email from Walmart informing me that they miss me.  Thanks Walmart.  I don't miss you back, but I appreciate the sentiment.",
+      "words": [
+        "I",
+        "received",
+        "an",
+        "email",
+        "from",
+        "Walmart",
+        "informing",
+        "me",
+        "that",
+        "they",
+        "miss",
+        "me",
+        ".",
+        "Thanks",
+        "Walmart",
+        ".",
+        "I",
+        "don",
+        "'",
+        "t",
+        "miss",
+        "you",
+        "back",
+        ",",
+        "but",
+        "I",
+        "appreciate",
+        "the",
+        "sentiment",
+        "."
+      ],
+      "target_tokens": [
+        "I",
+        "Ġreceived",
+        "Ġan",
+        "Ġemail",
+        "Ġfrom",
+        "ĠWalmart",
+        "Ġinforming",
+        "Ġme",
+        "Ġthat",
+        "Ġthey",
+        "Ġmiss",
+        "Ġme",
+        ".",
+        "Ġ",
+        "ĠThanks",
+        "ĠWalmart",
+        ".",
+        "Ġ",
+        "ĠI",
+        "Ġdon",
+        "'t",
+        "Ġmiss",
+        "Ġyou",
+        "Ġback",
+        ",",
+        "Ġbut",
+        "ĠI",
+        "Ġappreciate",
+        "Ġthe",
+        "Ġsentiment",
+        "."
+      ],
+      "mapping": [
+        [
+          0
+        ],
+        [
+          1
+        ],
+        [
+          2
+        ],
+        [
+          3
+        ],
+        [
+          4
+        ],
+        [
+          5
+        ],
+        [
+          6
+        ],
+        [
+          7
+        ],
+        [
+          8
+        ],
+        [
+          9
+        ],
+        [
+          10
+        ],
+        [
+          11
+        ],
+        [
+          12
+        ],
+        [
+          14
+        ],
+        [
+          15
+        ],
+        [
+          16
+        ],
+        [
+          18
+        ],
+        [
+          19
+        ],
+        [
+          20
+        ],
+        [
+          20
+        ],
+        [
+          21
+        ],
+        [
+          22
+        ],
+        [
+          23
+        ],
+        [
+          24
+        ],
+        [
+          25
+        ],
+        [
+          26
+        ],
+        [
+          27
+        ],
+        [
+          28
+        ],
+        [
+          29
+        ],
+        [
+          30
+        ]
+      ],
+      "synthetic_mapped_trt": [
+        1.0,
+        2.0,
+        3.0,
+        4.0,
+        5.0,
+        6.0,
+        7.0,
+        8.0,
+        9.0,
+        10.0,
+        11.0,
+        12.0,
+        13.0,
+        0.0,
+        14.0,
+        15.0,
+        16.0,
+        0.0,
+        17.0,
+        18.0,
+        39.0,
+        21.0,
+        22.0,
+        23.0,
+        24.0,
+        25.0,
+        26.0,
+        27.0,
+        28.0,
+        29.0,
+        30.0
+      ],
+      "kernel_checks": [
+        {
+          "sigma_left": 0.5,
+          "sigma_right": 2.0,
+          "cpu_bf16_autocast": false,
+          "sum_abs_error": 3.0517578125e-05,
+          "output_dtype": "torch.float32"
+        },
+        {
+          "sigma_left": 0.5,
+          "sigma_right": 2.0,
+          "cpu_bf16_autocast": true,
+          "sum_abs_error": 3.0517578125e-05,
+          "output_dtype": "torch.float32"
+        },
+        {
+          "sigma_left": 2.0,
+          "sigma_right": 0.5,
+          "cpu_bf16_autocast": false,
+          "sum_abs_error": 3.0517578125e-05,
+          "output_dtype": "torch.float32"
+        },
+        {
+          "sigma_left": 2.0,
+          "sigma_right": 0.5,
+          "cpu_bf16_autocast": true,
+          "sum_abs_error": 3.0517578125e-05,
+          "output_dtype": "torch.float32"
+        }
+      ],
+      "mixed_feature_checks": {
+        "all_five_channels_checked": true,
+        "invalid_features_filtered_before_aggregation": true
+      }
+    }
+  ],
+  "et_model_loaded": false,
+  "scope": "Alignment and mapping correctness with synthetic features; no ET2 prediction coverage, learned checkpoints, or task-performance claims."
+}

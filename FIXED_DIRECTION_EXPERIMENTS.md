@@ -12,6 +12,12 @@ only to learned `asym-gaussian`. The existing `min_sigma=1e-6` remains, so effec
 widths are approximately 0.500001 and 2.000001. Diagnostics record zero sigma
 updates; the rest of the model is trained normally.
 
+Both direction runs and the matched raw-TRT control must start fresh with the
+corrected version-2 `gaze_alignment` policy. Older results use a different
+alignment and cannot serve as the matched raw control. Old gaze checkpoints
+without that contract cannot resume under the corrected code. The training
+settings in the commands below are unchanged.
+
 ## Server commands
 
 Publish the updated repository code to GitHub main before running this block.

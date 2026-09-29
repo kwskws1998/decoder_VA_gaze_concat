@@ -10,7 +10,7 @@ from typing import Sequence
 import torch
 from torch import nn
 
-from .alignment import align_words_to_tokens
+from .alignment import GAZE_ALIGNMENT_CONTRACT, remap_word_features_to_tokens
 
 
 ET2_FEATURE_NAMES = ("nFix", "FFD", "GPT", "TRT", "fixProp")
@@ -303,6 +303,7 @@ class ET2GazeProvider:
             self.revision,
             self.filename,
             self.feature_indices,
+            GAZE_ALIGNMENT_CONTRACT["version"],
             tuple(int(token_id) for token_id in valid_token_ids),
         )
 
@@ -391,7 +392,7 @@ class ET2GazeProvider:
         token_ids: Sequence[int],
         attention_mask: Sequence[int],
     ) -> list[int | None]:
-        """Read fast-tokenizer word IDs or reconstruct them by exact alignment."""
+        """Require the ET tokenizer's original word IDs, including truncation boundaries."""
 
         word_ids_method = getattr(encoded, "word_ids", None)
         if callable(word_ids_method):
@@ -402,17 +403,7 @@ class ET2GazeProvider:
             if word_ids is not None:
                 return list(word_ids)
 
-        alignment = align_words_to_tokens(
-            words,
-            token_ids,
-            attention_mask,
-            self._et_tokenizer,
-        )
-        word_ids: list[int | None] = [None] * len(token_ids)
-        for word_index, indices in enumerate(alignment.word_to_token_indices):
-            for token_index in indices:
-                word_ids[token_index] = word_index
-        return word_ids
+        raise ValueError("ET2 requires a fast tokenizer with original word_ids; text-search fallback is unsafe.")
 
     def _map_predictions_to_target(
         self,
@@ -420,8 +411,10 @@ class ET2GazeProvider:
         word_features: torch.Tensor,
         word_feature_mask: torch.Tensor,
         target_ids: Sequence[int],
+        *,
+        text: str | None = None,
     ) -> tuple[torch.Tensor, torch.Tensor]:
-        """Place finite ET word predictions on exact target first subwords."""
+        """Align occurrences exactly, summing nFix/TRT collisions and averaging other channels."""
 
         if (
             word_features.ndim != 2
@@ -431,35 +424,12 @@ class ET2GazeProvider:
             raise ValueError("word_features must have shape [num_words, num_features].")
         if word_feature_mask.ndim != 1 or word_feature_mask.shape[0] != len(words):
             raise ValueError("word_feature_mask must have shape [num_words].")
-        output = torch.zeros(
-            len(target_ids),
-            len(self.feature_indices),
-            dtype=torch.float32,
+        return remap_word_features_to_tokens(
+            word_features, words, target_ids, [1] * len(target_ids), self.tokenizer,
+            len(self.feature_indices), word_feature_mask=word_feature_mask,
+            sum_feature_indices=tuple(i for i, feature in enumerate(self.feature_indices) if feature in (0, 3)),
+            text=text,
         )
-        mapped_mask = torch.zeros(len(target_ids), dtype=torch.bool)
-        if not words:
-            return output, mapped_mask
-
-        alignment = align_words_to_tokens(
-            words,
-            target_ids,
-            [1] * len(target_ids),
-            self.tokenizer,
-        )
-        for word_index, indices in enumerate(alignment.word_to_token_indices):
-            if (
-                not indices
-                or word_index >= word_features.shape[0]
-                or not bool(word_feature_mask[word_index].item())
-            ):
-                continue
-            feature = word_features[word_index]
-            if not bool(torch.isfinite(feature).all().item()):
-                continue
-            first_subword = indices[0]
-            output[first_subword] = feature
-            mapped_mask[first_subword] = True
-        return output, mapped_mask
 
     def _predict_uncached(
         self,
@@ -568,6 +538,7 @@ class ET2GazeProvider:
                 word_features,
                 word_feature_mask,
                 target_rows[result_index],
+                text=decoded_rows[result_index],
             )
 
         if any(result is None for result in results):

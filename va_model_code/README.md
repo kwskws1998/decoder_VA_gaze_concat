@@ -70,9 +70,35 @@ linear head. This implementation:
 - freezes the complete ET model;
 - selects any non-empty subset of the five raw channels
   `(nFix, FFD, GPT, TRT, fixProp)`; the default remains TRT at index 3;
-- aligns ET words monotonically to the first exact Qwen subword;
-- caches detached results by model revision, selected channels, and the complete
-  token sequence.
+- aligns ET segments by their exact character occurrences to the first
+  overlapping visible Qwen token;
+- caches detached results by model revision, selected channels, alignment
+  version, and the complete token sequence.
+
+### Occurrence-preserving alignment
+
+Alignment version 2 uses the decoded valid Qwen text as the shared coordinate
+system. ET segments must cover that text in order, skipping only whitespace.
+The fast Qwen tokenizer supplies character offsets, and re-encoding the decoded
+text must reproduce the original lexical token IDs exactly. Alignment never
+searches ahead for a later matching word or punctuation mark. Unsupported
+tokenizers, incomplete text coverage, or a failed token-ID round trip raise an
+error instead of silently assigning gaze to another occurrence.
+
+Each valid ET prediction contributes at the first Qwen token overlapping a
+non-whitespace character of its segment. A merged Qwen token such as `!!!` can
+receive several ET segments. These collisions sum `nFix` and `TRT` and take the
+arithmetic mean of `FFD`, `GPT`, and `fixProp`, using only valid, finite ET
+predictions. Signed ET outputs remain signed. A token with a valid contribution
+stays in the gaze mask even when its resulting TRT is zero.
+
+The full policy is recorded as `gaze_alignment` in the model config, saved
+architecture and reconstruction metadata, and run manifests. Reload and resume
+require the exact version-2 contract for every gaze condition, including raw TRT.
+Old gaze checkpoints lack this contract and cannot be evaluated or resumed with
+the corrected alignment; historical evaluation requires their original code.
+Start new matched raw and redistribution runs to compare the corrected pipeline.
+Text-only checkpoint compatibility is unchanged.
 
 Each sample is packed before batch padding:
 
@@ -84,7 +110,7 @@ This preserves the prefix order in the official
 [`gaze_reward` GazeConcat implementation](https://github.com/Telefonica-Scientific-Research/gaze_reward/blob/main/rlhf_rw/models/reward_model_general_sp.py#L154-L210):
 eye-start boundary, projected gaze sequence, eye-end boundary, then text. The
 Qwen adaptation uses trainable boundary parameters and compact selected gaze
-vectors mapped to exact Qwen first-subword positions rather than adding tokenizer
+vectors anchored at the verified Qwen token positions rather than adding tokenizer
 vocabulary items or retaining every predictor position.
 
 The causal decoder is pooled at each sample's last valid text token. That token
@@ -107,8 +133,8 @@ log-variance head is used. The commands below use MSE as the simplest baseline.
 ## Gaze redistribution
 
 `--gaze-redistribution` is an independent optional transformation, not a new
-concat architecture. The default is `none`, which preserves the existing raw
-gaze path and adds no learned parameters. `asym-gaussian` requires
+concat architecture. The default is `none`, which uses raw gaze after the
+alignment described above and adds no learned parameters. `asym-gaussian` requires
 `--gaze-fusion prefix-concat` and TRT among `--gaze-features`; invalid
 combinations fail before model downloads.
 
@@ -121,7 +147,8 @@ frozen ET2 -> Qwen alignment + gaze mask -> raw-aligned-feature cache
           -> unchanged gaze-prefix packing -> Qwen -> VA head
 ```
 
-The cache contains only raw ET2 predictions. Redistribution is outside ET2's
+The cache contains aligned ET2 predictions before redistribution, including the
+collision aggregation described above. Redistribution is outside ET2's
 inference-only context and executes on every forward pass, so its two learned
 log-width parameters receive VA-loss gradients in both full and LoRA modes when
 a row has at least two valid gaze positions. A one-position row is an identity
@@ -145,10 +172,10 @@ Regular Trainer logs include `redistribution_sigma_left`,
 `redistribution_learning_rate`, so movement can be audited during training.
 
 Mask handling is mandatory. The model passes the provider's explicit
-`gaze_mask`, which marks valid mapped first subwords, rather than deriving a
-mask from `TRT != 0` or using only the text padding mask. Both sources and
-destinations are masked. Padding, special tokens, continuation subwords, and
-unmapped positions neither contribute nor receive TRT. Valid zero-valued TRT
+`gaze_mask`, which marks token anchors with valid ET contributions, rather than
+deriving a mask from `TRT != 0` or using only the text padding mask. Both sources and
+destinations are masked. Padding, special tokens, and positions without a valid
+ET anchor neither contribute nor receive TRT. Valid zero-valued TRT
 positions remain eligible destinations. Each valid source's Gaussian weights
 sum to one across valid destinations, preserving the total valid signed TRT
 up to numerical roundoff; an all-masked row returns zeros.
@@ -179,10 +206,11 @@ Schema-7 run and architecture manifests record the canonical
 `gaze_redistribution` configuration; `model.safetensors` stores the two learned
 width parameters alongside the existing model weights. Initialization values
 in JSON are not the learned final widths. New default run names and archive
-condition names distinguish raw gaze from redistribution. Legacy schema-5/6
-models retain disabled redistribution; a schema-7 checkpoint must record the
-setting explicitly. Resume requires the same configuration and cannot add or
-remove redistribution. Enabled resume supports ordinary single-file Trainer
+condition names distinguish raw gaze from redistribution. A schema-7 checkpoint
+must record this setting explicitly. Legacy schema-5/6 metadata can imply disabled
+redistribution, but historical gaze weights are rejected when they lack the
+current `gaze_alignment` contract. Resume requires the same configuration and
+cannot add or remove redistribution. Enabled resume supports ordinary single-file Trainer
 `model.safetensors` checkpoints, not adapter-only, pickle, sharded, or symlinked
 weight layouts. Before replacing any fold manifest, it safely inspects the two
 named Gaussian-width tensors and requires finite FP32 scalars, preventing
@@ -737,11 +765,14 @@ checking. The pinned Qwen checkpoint must be available locally or from Hugging
 Face during reconstruction; ET2 weights remain external and are fetched lazily
 only when gaze inference starts.
 
-The selectable-mode, selectable-feature, hard-sigmoid two-output head uses
-architecture manifest schema version 6. Version 5 is accepted only as the
-legacy LoRA-only form and is narrowly migrated to `finetuning_mode=lora`;
-versions 4 and earlier remain incompatible. `--resume-from-checkpoint` requires
-a checkpoint under the selected held-out fold and a matching run manifest.
+The current architecture manifest uses schema version 7. Schema versions 5 and 6
+remain accepted only when all applicable contracts match; historical text-only
+models are unaffected by the alignment correction. Historical gaze models without
+the current `gaze_alignment` contract are rejected regardless of schema version.
+Version 5 is the legacy LoRA-only form and is narrowly migrated to
+`finetuning_mode=lora`; versions 4 and earlier remain incompatible.
+`--resume-from-checkpoint` requires a checkpoint under the selected held-out fold
+and a matching run manifest.
 Version-5 run manifests without a mode can resume only as LoRA. A LoRA
 checkpoint can never resume as full fine-tuning, or vice versa.
 
@@ -879,10 +910,13 @@ full test score remains the primary benchmark result; the fine-tuning-novel-text
 subset is a separately labeled contamination diagnostic. Base-model pretraining
 contamination cannot be established from this repository.
 
-### Current seed-43 BF16 checkpoint paths on the Vast.ai server
+### Historical seed-43 BF16 checkpoint paths on the Vast.ai server
 
-The following commands use the two raw-text-free Hugging Face runs already
-materialized on the benchmark server. Set the paths once from the repository's
+The following paths refer to two historical raw-text-free Hugging Face runs
+materialized on the benchmark server. Their gaze checkpoint predates alignment
+version 2 and requires its original code for evaluation; the current loader
+rejects it. For new comparisons, replace both run paths with matched corrected
+runs. Set the paths once from the repository's
 `va_model_code` directory:
 
 ```bash

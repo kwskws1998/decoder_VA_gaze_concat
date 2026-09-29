@@ -226,7 +226,11 @@ def test_v7_checkpoint_roundtrip_restores_learned_sigmas_and_predictions(tmp_pat
     assert manifest["gaze_redistribution"] == manifest["reconstruction"]["gaze_redistribution"]
     assert manifest["gaze_redistribution"]["init_sigma_left"] == 1.0
     assert manifest["gaze_redistribution_trainable_parameters"] == 2
+    assert manifest["gaze_alignment"] == model_module.GAZE_ALIGNMENT_CONTRACT
+    assert manifest["reconstruction"]["gaze_alignment"] == manifest["gaze_alignment"]
+    assert model.config.gaze_alignment == manifest["gaze_alignment"]
     loaded, _ = load_saved_decoder_va_model(tmp_path, tokenizer=tokenizer, dtype=torch.float32)
+    assert loaded.config.gaze_alignment == manifest["gaze_alignment"]
     for name, expected in model.state_dict().items():
         assert torch.equal(loaded.state_dict()[name], expected)
     model.gaze_provider = FakeGazeProvider((0, 3))
@@ -253,6 +257,96 @@ def test_v7_contract_tampering_rejected_before_backbone(tmp_path, fake_checkpoin
     path.write_text(json.dumps(manifest), encoding="utf-8")
     _deny_backbone_load(monkeypatch)
     with pytest.raises(ValueError, match="gaze_redistribution|redistribution"):
+        load_saved_decoder_va_model(tmp_path, tokenizer=tokenizer, dtype=torch.float32)
+
+
+@pytest.mark.parametrize("owner", ["architecture", "reconstruction"])
+@pytest.mark.parametrize("change", ["remove", "version", "reduction", "extra_field"])
+@pytest.mark.parametrize("enabled", [False, True])
+def test_alignment_contract_rejected_before_backbone(
+    tmp_path, fake_checkpoint_factory, monkeypatch, owner, change, enabled
+):
+    """Raw gaze and redistributed gaze both require the exact alignment contract."""
+
+    model, tokenizer = fake_checkpoint_factory(enabled=enabled)
+    path, manifest = _save(model, tmp_path)
+    target = manifest if owner == "architecture" else manifest["reconstruction"]
+    if change == "remove":
+        del target["gaze_alignment"]
+    elif change == "version":
+        target["gaze_alignment"]["version"] = 1
+    elif change == "reduction":
+        target["gaze_alignment"]["collision_reduction"]["TRT"] = "mean"
+    else:
+        target["gaze_alignment"]["unknown_option"] = True
+    path.write_text(json.dumps(manifest), encoding="utf-8")
+    _deny_backbone_load(monkeypatch)
+    with pytest.raises(ValueError, match="gaze_alignment"):
+        load_saved_decoder_va_model(tmp_path, tokenizer=tokenizer, dtype=torch.float32)
+
+
+@pytest.mark.parametrize("version", [True, 2.0, "2", None])
+def test_alignment_contract_requires_integer_version(version):
+    """Numerically equal JSON values cannot impersonate an integer contract version."""
+
+    contract = {**model_module.GAZE_ALIGNMENT_CONTRACT, "version": version}
+    with pytest.raises(ValueError, match="gaze_alignment"):
+        model_module.validate_gaze_alignment_contract(
+            contract, gaze_fusion="prefix-concat", context="Test checkpoint"
+        )
+
+
+@pytest.mark.parametrize("version", [5, 6, 7])
+def test_historical_gaze_checkpoint_requires_original_alignment(
+    tmp_path, fake_checkpoint_factory, monkeypatch, version
+):
+    """All historical gaze schemas fail instead of silently changing their inputs."""
+
+    model, tokenizer = fake_checkpoint_factory(enabled=False, mode="lora")
+    path, manifest = _save(model, tmp_path)
+    manifest["schema_version"] = version
+    del manifest["gaze_alignment"]
+    del manifest["reconstruction"]["gaze_alignment"]
+    path.write_text(json.dumps(manifest), encoding="utf-8")
+    _deny_backbone_load(monkeypatch)
+    with pytest.raises(ValueError, match="gaze_alignment"):
+        load_saved_decoder_va_model(tmp_path, tokenizer=tokenizer, dtype=torch.float32)
+
+
+@pytest.mark.parametrize("version", [5, 6, 7])
+def test_historical_text_only_checkpoint_does_not_require_gaze_alignment(
+    tmp_path, fake_checkpoint_factory, version
+):
+    """The gaze-only correction leaves text-only reconstruction unchanged."""
+
+    model, tokenizer = fake_checkpoint_factory(enabled=False, mode="lora", gaze_fusion="none")
+    path, manifest = _save(model, tmp_path)
+    assert manifest["gaze_alignment"] is None
+    assert manifest["reconstruction"]["gaze_alignment"] is None
+    manifest["schema_version"] = version
+    del manifest["gaze_alignment"]
+    del manifest["reconstruction"]["gaze_alignment"]
+    path.write_text(json.dumps(manifest), encoding="utf-8")
+    restored, _ = load_saved_decoder_va_model(tmp_path, tokenizer=tokenizer, dtype=torch.float32)
+    assert restored.gaze_alignment is None
+    assert restored.config.gaze_alignment is None
+    for name, expected in model.state_dict().items():
+        assert torch.equal(restored.state_dict()[name], expected)
+
+
+@pytest.mark.parametrize("owner", ["architecture", "reconstruction"])
+def test_text_only_checkpoint_rejects_active_alignment_metadata(
+    tmp_path, fake_checkpoint_factory, monkeypatch, owner
+):
+    """Text-only compatibility must not accept contradictory active gaze metadata."""
+
+    model, tokenizer = fake_checkpoint_factory(enabled=False, gaze_fusion="none")
+    path, manifest = _save(model, tmp_path)
+    target = manifest if owner == "architecture" else manifest["reconstruction"]
+    target["gaze_alignment"] = model_module.GAZE_ALIGNMENT_CONTRACT
+    path.write_text(json.dumps(manifest), encoding="utf-8")
+    _deny_backbone_load(monkeypatch)
+    with pytest.raises(ValueError, match="text-only.*gaze_alignment"):
         load_saved_decoder_va_model(tmp_path, tokenizer=tokenizer, dtype=torch.float32)
 
 

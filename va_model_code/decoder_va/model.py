@@ -14,6 +14,7 @@ from torch import nn
 from torch.nn import functional as F
 from transformers.modeling_outputs import SequenceClassifierOutput
 
+from .alignment import GAZE_ALIGNMENT_CONTRACT
 from .gaze import (
     DEFAULT_ET2_FILENAME,
     DEFAULT_ET2_REPO_ID,
@@ -96,6 +97,32 @@ def _normalize_finetuning_mode(value: str) -> str:
     return normalized
 
 
+def validate_gaze_alignment_contract(
+    value: Any,
+    *,
+    gaze_fusion: str,
+    context: str,
+) -> dict[str, Any] | None:
+    """Reject gaze weights trained with an unknown or incompatible alignment."""
+
+    if gaze_fusion == "none":
+        if value is not None:
+            raise ValueError(f"{context}: text-only models must not declare gaze_alignment.")
+        return None
+    if (
+        not isinstance(value, dict)
+        or type(value.get("version")) is not int
+        or value != GAZE_ALIGNMENT_CONTRACT
+    ):
+        raise ValueError(
+            f"{context}: missing or incompatible gaze_alignment contract. "
+            "Old gaze checkpoints cannot be loaded or resumed with the corrected "
+            "ET2-to-token alignment. Start a new training run with the current "
+            "alignment; evaluate historical weights using their original code."
+        )
+    return copy.deepcopy(GAZE_ALIGNMENT_CONTRACT)
+
+
 class DecoderVARegressor(nn.Module):
     """Pool a causal decoder at the final valid text token."""
 
@@ -132,6 +159,11 @@ class DecoderVARegressor(nn.Module):
         self.hidden_size = _hidden_size(self.config)
         self.output_dim = 2
         self.gaze_fusion = _normalize_gaze_fusion(gaze_fusion)
+        self.gaze_alignment = (
+            copy.deepcopy(GAZE_ALIGNMENT_CONTRACT)
+            if self.gaze_fusion == "prefix-concat"
+            else None
+        )
         self.gaze_provider = gaze_provider
         self.gaze_projection_dim = int(gaze_projection_dim)
         self.gaze_projection_dropout = tuple(
@@ -201,6 +233,7 @@ class DecoderVARegressor(nn.Module):
         self.config.num_labels = self.output_dim
         self.config.problem_type = "regression"
         self.config.gaze_fusion = self.gaze_fusion
+        self.config.gaze_alignment = copy.deepcopy(self.gaze_alignment)
         self.config.gaze_redistribution = copy.deepcopy(self.gaze_redistribution)
         self.config.gaze_feature_count = self.gaze_feature_count
         self.config.gaze_concat_order = (
@@ -435,6 +468,7 @@ class DecoderVARegressor(nn.Module):
             "decoder_commit": self._reconstruction_config["decoder_revision"],
             "finetuning_mode": self._reconstruction_config["finetuning_mode"],
             "gaze_fusion": self.gaze_fusion,
+            "gaze_alignment": copy.deepcopy(self.gaze_alignment),
             "gaze_redistribution": copy.deepcopy(self.gaze_redistribution),
             "gaze_features": list(active_names),
             "gaze_feature_indices": list(active_indices),
@@ -672,6 +706,7 @@ def build_qwen_va_model(
         "decoder_revision": str(model_revision),
         "finetuning_mode": normalized_finetuning_mode,
         "gaze_fusion": normalized_fusion,
+        "gaze_alignment": copy.deepcopy(model.gaze_alignment),
         "gaze_redistribution": copy.deepcopy(normalized_redistribution),
         "et_repo_id": str(et_repo_id),
         "et_revision": str(et_revision),
@@ -794,6 +829,12 @@ def load_saved_decoder_va_model(
     if saved_fusion not in GAZE_FUSIONS:
         raise ValueError(
             f"Saved model declares unsupported gaze fusion {saved_fusion!r}."
+        )
+    for owner, metadata in (("architecture", manifest), ("reconstruction", reconstruction)):
+        validate_gaze_alignment_contract(
+            metadata.get("gaze_alignment"),
+            gaze_fusion=saved_fusion,
+            context=f"Saved {owner} metadata",
         )
     raw_feature_indices = reconstruction["et_feature_indices"]
     if not isinstance(raw_feature_indices, list):

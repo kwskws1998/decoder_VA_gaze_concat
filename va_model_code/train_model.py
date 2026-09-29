@@ -25,6 +25,7 @@ from decoder_va.evaluation import (
     write_oof_reports,
 )
 from decoder_va.filters import dataset_counts, load_filtered_folds
+from decoder_va.alignment import GAZE_ALIGNMENT_CONTRACT
 from decoder_va.gaze import (
     ET2_FEATURE_NAMES,
     et2_feature_indices_from_names,
@@ -46,6 +47,7 @@ from decoder_va.model import (
     OUTPUT_ACTIVATION,
     PRE_REDISTRIBUTION_MANIFEST_VERSION,
     build_qwen_va_model,
+    validate_gaze_alignment_contract,
 )
 from decoder_va.paths import (
     RESULTS_ROOT,
@@ -597,6 +599,7 @@ def _validate_resume_contract(
         "model_revision",
         "finetuning_mode",
         "gaze_fusion",
+        "gaze_alignment",
         "gaze_redistribution",
         "gaze_features",
         "gaze_feature_indices",
@@ -641,6 +644,11 @@ def _validate_resume_contract(
                 "Resume checkpoint contract mismatch; refusing to reinterpret "
                 f"unsupported {label} architecture_manifest_version={schema_version!r}."
             )
+        manifest["gaze_alignment"] = validate_gaze_alignment_contract(
+            manifest.get("gaze_alignment"),
+            gaze_fusion=manifest["gaze_fusion"],
+            context=f"Resume {label} manifest",
+        )
         if "gaze_redistribution" not in manifest:
             if schema_version not in legacy_versions:
                 raise ValueError(
@@ -922,6 +930,11 @@ def run(args: argparse.Namespace) -> Path | None:
     run_manifest = {
         **vars(args),
         "gaze_redistribution": _redistribution_config(args),
+        "gaze_alignment": (
+            _json_ready(GAZE_ALIGNMENT_CONTRACT)
+            if args.gaze_fusion == "prefix-concat"
+            else None
+        ),
         "redistribution_weight_decay": args.redistribution_weight_decay,
         "architecture_manifest_version": ARCHITECTURE_MANIFEST_VERSION,
         "loss": loss_name,

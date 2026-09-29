@@ -107,12 +107,28 @@ decay; all other trainable parameters keep the main optimizer settings.
 `--sentence-only` retains exactly `EmoTales sentences`, `Emobank`, and `fb` in
 both folds.
 Configuration is recorded in training and architecture manifests; learned
-parameters are stored with the model weights. Existing checkpoints keep their
-original raw-gaze behavior: train a new condition to enable redistribution.
+parameters are stored with the model weights. Train a new condition to enable
+redistribution; checkpoint loading does not add it to previously trained weights.
 
 See [the implementation details and full BF16 command](va_model_code/README.md#gaze-redistribution)
 for mask semantics, source provenance, and the FP32 variant. GPU memory for the
 new condition has not been measured; 24 GB is not a verified memory guarantee.
+
+## Gaze alignment and checkpoint compatibility
+
+The corrected ET2-to-Qwen alignment uses each segment's character position in
+the decoded text and verified Qwen tokenizer offsets. Repeated punctuation or
+words cannot jump to a later occurrence. Each segment contributes at its first
+overlapping visible Qwen token. When several ET2 segments share that token,
+`nFix` and `TRT` are summed; `FFD`, `GPT`, and `fixProp` are averaged. This
+applies to both raw gaze and redistributed gaze.
+
+New runs and saved models record the full version-2 `gaze_alignment` contract.
+Old gaze checkpoints without this contract are rejected on reload or resume;
+use their original code for historical evaluation and start new training runs
+for corrected comparisons. The raw control and every redistribution condition
+must use the same corrected alignment. Historical text-only checkpoints remain
+compatible when their other architecture and training contracts match.
 
 ## Result-path contract
 

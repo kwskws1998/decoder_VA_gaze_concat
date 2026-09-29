@@ -53,6 +53,29 @@ class FakeTargetTokenizer:
                 pieces.append(token)
         return "".join(pieces)
 
+    def __call__(self, text, *, add_special_tokens=False, return_offsets_mapping=False):
+        """Expose exact offsets for this fixture's deliberately small vocabulary."""
+
+        vocabulary = {
+            "Hello": ((10, 3), (11, 2)), "world": ((12, 5),),
+            "!": ((13, 1),), "later": ((14, 5),), "你": ((20, 1),),
+            "好": ((21, 1),), "，": ((22, 1),),
+        }
+        ids, offsets = [], []
+        cursor = 0
+        while cursor < len(text):
+            if text[cursor].isspace():
+                cursor += 1
+                continue
+            word = next((word for word in vocabulary if text.startswith(word, cursor)), None)
+            if word is None:
+                raise ValueError(f"Text outside fixture vocabulary at {cursor}.")
+            for token_id, length in vocabulary[word]:
+                ids.append(token_id)
+                offsets.append((cursor, cursor + length))
+                cursor += length
+        return {"input_ids": ids, "offset_mapping": offsets}
+
     def batch_decode(
         self,
         rows,
@@ -291,16 +314,20 @@ def test_et2_asset_loader_preserves_pinned_identity_and_prefix_space(
     assert calls["strict"] is True
 
 
-def test_exact_alignment_does_not_consume_tokens_after_mismatch():
+def test_exact_alignment_rejects_source_mismatch_instead_of_searching_ahead():
     tokenizer = FakeTargetTokenizer()
+    with pytest.raises(ValueError, match="exact source occurrences"):
+        align_words_to_tokens(
+            ["absent", "Hello", "world"], [0, 10, 11, 12, 2], [1] * 5, tokenizer,
+        )
     alignment = align_words_to_tokens(
-        ["absent", "Hello", "world"],
+        ["Hello", "world"],
         [0, 10, 11, 12, 2],
         [1, 1, 1, 1, 1],
         tokenizer,
     )
 
-    assert alignment.word_to_token_indices == ((), (1, 2), (3,))
+    assert alignment.word_to_token_indices == ((1, 2), (3,))
     assert alignment.first_subword_mask == (False, True, False, True, False)
 
 

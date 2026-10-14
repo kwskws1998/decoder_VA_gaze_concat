@@ -19,11 +19,16 @@ import uuid
 import zipfile
 
 import numpy as np
+import pandas as pd
 
 if __package__:
     from .decoder_va.contracts import LOSS_CHOICES, MODEL_ALIASES
     from .decoder_va.evaluation import calculate_va_metrics
-    from .decoder_va.filters import SENTENCE_ONLY_DATASET_NAMES
+    from .decoder_va.filters import (
+        SENTENCE_ONLY_DATASET_NAMES,
+        TRAIN_EVAL_TEXT_OVERLAP_CONTRACT,
+        exclude_eval_text_overlaps,
+    )
     from .decoder_va.gaze import ET2_FEATURE_NAMES
     from .decoder_va.model import (
         ARCHITECTURE_MANIFEST_VERSION,
@@ -36,6 +41,9 @@ if __package__:
         GAZE_PREFIX_POOLING,
         OUTPUT_ACTIVATION,
         PRE_REDISTRIBUTION_MANIFEST_VERSION,
+        PRE_PRECISION_MANIFEST_VERSION,
+        validate_precision_contract,
+        validate_gaze_alignment_contract,
     )
     from .decoder_va.paths import (
         RESULTS_ROOT,
@@ -47,7 +55,11 @@ if __package__:
 else:
     from decoder_va.contracts import LOSS_CHOICES, MODEL_ALIASES
     from decoder_va.evaluation import calculate_va_metrics
-    from decoder_va.filters import SENTENCE_ONLY_DATASET_NAMES
+    from decoder_va.filters import (
+        SENTENCE_ONLY_DATASET_NAMES,
+        TRAIN_EVAL_TEXT_OVERLAP_CONTRACT,
+        exclude_eval_text_overlaps,
+    )
     from decoder_va.gaze import ET2_FEATURE_NAMES
     from decoder_va.model import (
         ARCHITECTURE_MANIFEST_VERSION,
@@ -60,6 +72,9 @@ else:
         GAZE_PREFIX_POOLING,
         OUTPUT_ACTIVATION,
         PRE_REDISTRIBUTION_MANIFEST_VERSION,
+        PRE_PRECISION_MANIFEST_VERSION,
+        validate_precision_contract,
+        validate_gaze_alignment_contract,
     )
     from decoder_va.paths import (
         RESULTS_ROOT,
@@ -333,6 +348,18 @@ def _saved_redistribution_contract(
     return contract
 
 
+def _validate_current_model_contracts(
+    metadata: Mapping[str, object], parameters: Mapping[str, object], *, label: str
+) -> None:
+    """Require the precision and ET2 semantics recorded by current models."""
+
+    _require_fields(metadata, ("precision_contract", "gaze_alignment"), label=label)
+    validate_precision_contract(metadata["precision_contract"], context=label)
+    validate_gaze_alignment_contract(
+        metadata["gaze_alignment"], gaze_fusion=parameters["gaze_fusion"], context=label
+    )
+
+
 def _validate_training_parameters(parameters: Mapping[str, object]) -> None:
     """Validate the minimum reproducibility and condition identity contract."""
 
@@ -354,12 +381,37 @@ def _validate_training_parameters(parameters: Mapping[str, object]) -> None:
     ):
         _strict_int(parameters[field], label=field, positive=True)
     if parameters["architecture_manifest_version"] not in {
-        PRE_REDISTRIBUTION_MANIFEST_VERSION, ARCHITECTURE_MANIFEST_VERSION
+        PRE_REDISTRIBUTION_MANIFEST_VERSION, PRE_PRECISION_MANIFEST_VERSION,
+        ARCHITECTURE_MANIFEST_VERSION
     }:
         raise ValueError(
             "architecture_manifest_version must be a supported schema version: "
-            f"{PRE_REDISTRIBUTION_MANIFEST_VERSION} or {ARCHITECTURE_MANIFEST_VERSION}."
+            f"{PRE_REDISTRIBUTION_MANIFEST_VERSION}, {PRE_PRECISION_MANIFEST_VERSION} "
+            f"or {ARCHITECTURE_MANIFEST_VERSION}."
         )
+    if parameters["architecture_manifest_version"] == ARCHITECTURE_MANIFEST_VERSION:
+        _validate_current_model_contracts(parameters, parameters, label="training_parameters.json")
+        _require_fields(parameters, (
+            "compute_dtype", "backbone_parameter_dtype", "trainable_parameter_dtype",
+            "training_text_overlap_contract",
+        ), label="training_parameters.json")
+        if parameters["compute_dtype"] not in {"float32", "bfloat16", "float16"}:
+            raise ValueError("Unsupported compute_dtype.")
+        if parameters["dtype"] not in {"float32", "bfloat16", "float16"}:
+            raise ValueError("Unsupported parameter dtype.")
+        if parameters["backbone_parameter_dtype"] != parameters["dtype"]:
+            raise ValueError("backbone_parameter_dtype disagrees with dtype.")
+        if parameters["trainable_parameter_dtype"] != "float32":
+            raise ValueError("trainable_parameter_dtype must be float32.")
+        if parameters["finetuning_mode"] == "full" and parameters["dtype"] != "float32":
+            raise ValueError("Full fine-tuning requires float32 parameter dtype.")
+        contract = parameters["training_text_overlap_contract"]
+        if (
+            not isinstance(contract, dict)
+            or type(contract.get("version")) is not int
+            or contract != TRAIN_EVAL_TEXT_OVERLAP_CONTRACT
+        ):
+            raise ValueError("Invalid training_text_overlap_contract.")
     for field in ("epochs", "learning_rate"):
         if _finite_number(parameters[field], label=field) <= 0:
             raise ValueError(f"{field} must be positive.")
@@ -826,6 +878,8 @@ def _validate_architecture(
         (architecture, "architecture"),
         (reconstruction, "architecture reconstruction"),
     ):
+        if parameters["architecture_manifest_version"] == ARCHITECTURE_MANIFEST_VERSION:
+            _validate_current_model_contracts(source, parameters, label=f"Fold {fold} {label}")
         if _saved_redistribution_contract(
             source, parameters, label=f"Fold {fold} {label}"
         ) != expected_redistribution:
@@ -926,6 +980,8 @@ def _validate_result_contract(
         fold_prefix = f"heldout_fold{fold}"
         manifest_label = f"{fold_prefix}/run_manifest.json"
         manifest = _load_json_object(snapshots[manifest_label], manifest_label)
+        if parameters["architecture_manifest_version"] == ARCHITECTURE_MANIFEST_VERSION:
+            _validate_current_model_contracts(manifest, parameters, label=manifest_label)
         if _saved_redistribution_contract(
             manifest, parameters, label=manifest_label
         ) != _saved_redistribution_contract(
@@ -979,7 +1035,32 @@ def _validate_result_contract(
             positive=True,
         )
         total_rows = sum(parameters["dataset_counts_after_filter"].values())
-        if training_rows != total_rows - evaluation_rows:
+        excluded_rows = 0
+        if parameters["architecture_manifest_version"] == ARCHITECTURE_MANIFEST_VERSION:
+            audit = manifest.get("training_text_overlap")
+            if (
+                not isinstance(audit, dict)
+                or audit.get("contract") != parameters["training_text_overlap_contract"]
+                or type(audit["contract"].get("version")) is not int
+            ):
+                raise ValueError(f"{manifest_label} has invalid training_text_overlap.")
+            for field in (
+                "train_rows_before", "train_rows_after", "excluded_train_rows",
+                "eval_rows", "overlapping_eval_rows", "shared_normalized_texts",
+            ):
+                value = _strict_int(audit.get(field), label=f"training_text_overlap.{field}")
+                if value < 0:
+                    raise ValueError(f"training_text_overlap.{field} cannot be negative.")
+            excluded_rows = audit["excluded_train_rows"]
+            if (
+                audit["train_rows_before"] != total_rows - evaluation_rows
+                or audit["train_rows_after"] != training_rows
+                or audit["eval_rows"] != evaluation_rows
+                or audit["overlapping_eval_rows"] > evaluation_rows
+                or audit["shared_normalized_texts"] > min(excluded_rows, audit["overlapping_eval_rows"])
+            ):
+                raise ValueError(f"{manifest_label} has inconsistent training_text_overlap counts.")
+        if training_rows != total_rows - evaluation_rows - excluded_rows:
             raise ValueError(
                 f"{manifest_label} training_rows does not match the opposite fold."
             )
@@ -1134,6 +1215,20 @@ def _validate_result_contract(
         raise ValueError(
             "OOF predictions are not the exact union of the fold predictions."
         )
+    if (
+        parameters["architecture_manifest_version"] == ARCHITECTURE_MANIFEST_VERSION
+        and set(_held_out_folds(parameters)) == {1, 2}
+    ):
+        frames = {
+            fold: pd.DataFrame([row for row in oof_rows if row["held_out_fold"] == str(fold)])
+            for fold in (1, 2)
+        }
+        for fold in (1, 2):
+            _, expected_audit = exclude_eval_text_overlaps(frames[3 - fold], frames[fold])
+            label = f"heldout_fold{fold}/run_manifest.json"
+            recorded_audit = _load_json_object(snapshots[label], label)["training_text_overlap"]
+            if recorded_audit != expected_audit:
+                raise ValueError(f"{label} training_text_overlap does not match OOF texts.")
 
     oof_metrics = _load_json_object(
         snapshots["oof_metrics.json"],

@@ -3,6 +3,7 @@
 from pathlib import Path
 from types import SimpleNamespace
 import subprocess
+import sys
 
 import pytest
 
@@ -105,3 +106,43 @@ def test_python_subprocesses_do_not_invoke_a_shell(monkeypatch):
     runtime.run(['/path with spaces/python', '-m', 'pip', 'check'])
     assert captured['command'][0] == '/path with spaces/python'
     assert captured.get('shell', False) is False
+
+
+@pytest.mark.parametrize(
+    "stdout,stderr",
+    [("probe started", "CUDA error: out of memory"), ("stdout-only failure", ""), ("", "")],
+)
+def test_gpu_probe_failure_preserves_child_diagnostics(monkeypatch, stdout, stderr):
+    """Exercise a real failed subprocess without requiring CUDA or model packages."""
+
+    probe = (
+        "import sys\n"
+        f"sys.stdout.write({stdout!r})\n"
+        f"sys.stderr.write({stderr!r})\n"
+        "sys.exit(7)\n"
+    )
+    monkeypatch.setattr(runtime, "GPU_PROBE_CODE", probe)
+    with pytest.raises(RuntimeError, match="CUDA forward/backward check failed") as caught:
+        runtime.check_gpu(sys.executable)
+    message = str(caught.value)
+    assert "exit status 7" in message
+    assert "nvidia-smi" in message
+    if stdout:
+        assert "GPU probe stdout:\n" + stdout in message
+    if stderr:
+        assert "GPU probe stderr:\n" + stderr in message
+    assert isinstance(caught.value.__cause__, subprocess.CalledProcessError)
+
+
+@pytest.mark.parametrize("selected,expected", [(None, "GPU-existing"), (2, "2")])
+def test_gpu_probe_success_preserves_visibility_and_final_json(monkeypatch, selected, expected):
+    """Preserve device selection and parse the last JSON line on a successful probe."""
+
+    monkeypatch.setenv("CUDA_VISIBLE_DEVICES", "GPU-existing")
+    monkeypatch.setattr(
+        runtime, "GPU_PROBE_CODE",
+        "import json, os\nprint('probe started')\n"
+        "print(json.dumps({'visible': os.environ['CUDA_VISIBLE_DEVICES'], 'cuda_forward_backward': 'passed'}))\n",
+    )
+    result = runtime.check_gpu(sys.executable, gpu=selected)
+    assert result == {"visible": expected, "cuda_forward_backward": "passed"}

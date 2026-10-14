@@ -9,6 +9,7 @@ import os
 from pathlib import Path
 import re
 from typing import Iterable, Mapping, Sequence
+import unicodedata
 
 import pandas as pd
 
@@ -22,6 +23,12 @@ SENTENCE_ONLY_DATASET_NAMES = (
     "Emobank",
     "fb",
 )
+TRAIN_EVAL_TEXT_OVERLAP_CONTRACT = {
+    "version": 1,
+    "normalization": "NFKC+casefold+whitespace-collapse",
+    "policy": "exclude_train_rows_matching_eval_text",
+    "evaluation_rows": "unchanged",
+}
 
 
 @dataclass(frozen=True)
@@ -187,6 +194,53 @@ def dataset_counts(folds: Mapping[str, pd.DataFrame]) -> dict[str, int]:
         raise ValueError("Every fold must contain dataset_of_origin.")
     counts = merged.groupby("dataset_of_origin", sort=True).size()
     return {str(name): int(value) for name, value in counts.items()}
+
+
+def _normalized_overlap_keys(frame: pd.DataFrame, *, split_name: str) -> list[str]:
+    """Normalize valid string texts without silently converting missing values."""
+
+    if list(frame.columns).count("text") != 1:
+        raise ValueError(f"{split_name} frame must contain exactly one text column.")
+    keys: list[str] = []
+    for row_position, value in enumerate(frame["text"]):
+        if not isinstance(value, str):
+            raise ValueError(
+                f"{split_name} text at row position {row_position} must be a string; "
+                f"got {type(value).__name__}. Missing texts must be handled before splitting."
+            )
+        keys.append(" ".join(unicodedata.normalize("NFKC", value).casefold().split()))
+    return keys
+
+
+def exclude_eval_text_overlaps(
+    train_frame: pd.DataFrame,
+    eval_frame: pd.DataFrame,
+) -> tuple[pd.DataFrame, dict[str, object]]:
+    """Remove training texts present in evaluation, preserving both folds' order.
+
+    Matching ignores Unicode compatibility differences, case, and whitespace;
+    labels and corpus names do not affect exclusion. Empty strings remain valid
+    matching keys. Neither input is mutated, and the returned training copy
+    retains its original index. An all-overlap input returns an empty copy so
+    callers can raise an error with their held-out fold context.
+    """
+
+    train_keys = _normalized_overlap_keys(train_frame, split_name="Training")
+    eval_keys = _normalized_overlap_keys(eval_frame, split_name="Evaluation")
+    eval_key_set = set(eval_keys)
+    shared_keys = set(train_keys).intersection(eval_key_set)
+    keep_train_rows = [key not in eval_key_set for key in train_keys]
+    retained = train_frame.loc[keep_train_rows].copy()
+    audit: dict[str, object] = {
+        "contract": dict(TRAIN_EVAL_TEXT_OVERLAP_CONTRACT),
+        "train_rows_before": len(train_frame),
+        "train_rows_after": len(retained),
+        "excluded_train_rows": len(train_frame) - len(retained),
+        "eval_rows": len(eval_frame),
+        "overlapping_eval_rows": sum(key in shared_keys for key in eval_keys),
+        "shared_normalized_texts": len(shared_keys),
+    }
+    return retained, audit
 
 
 def filter_fold_frames(

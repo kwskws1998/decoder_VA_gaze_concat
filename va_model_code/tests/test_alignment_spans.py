@@ -79,7 +79,7 @@ def test_repeated_punctuation_preserves_each_source_occurrence():
     """Merged punctuation cannot steal the final matching punctuation token."""
 
     tokenizer = punctuation_fixture()
-    words = segment_text_for_et2(tokenizer.text)
+    words = ["I", "love", "this", "!", "!", "!", "I", "hate", "that", "!"]
 
     result = align_words_to_tokens(words, tokenizer.ids, [1] * 8, tokenizer)
 
@@ -93,7 +93,7 @@ def test_provider_sums_all_merged_trt_and_keeps_final_punctuation_identity():
     """TRT conservation requires adding collisions instead of overwriting them."""
 
     tokenizer = punctuation_fixture()
-    words = segment_text_for_et2(tokenizer.text)
+    words = ["I", "love", "this", "!", "!", "!", "I", "hate", "that", "!"]
     provider = ET2GazeProvider(tokenizer=tokenizer)
     word_features = torch.arange(1, 11, dtype=torch.float32).unsqueeze(-1)
 
@@ -115,7 +115,7 @@ def test_contraction_shared_token_retains_later_repeated_word():
         "It's here. It isn't!",
         [(0, 2), (2, 4), (4, 9), (9, 10), (10, 13), (13, 17), (17, 19), (19, 20)],
     )
-    words = segment_text_for_et2(tokenizer.text)
+    words = ["It", "'", "s", "here", ".", "It", "isn", "'", "t", "!"]
 
     result = align_words_to_tokens(words, tokenizer.ids, [1] * 8, tokenizer)
 
@@ -131,7 +131,7 @@ def test_collision_aggregation_uses_only_finite_valid_words(excluded):
 
     tokenizer = OffsetTokenizerFixture("!!! a", [(0, 3), (3, 5)])
     provider = ET2GazeProvider(tokenizer=tokenizer, feature_indices=(0, 1, 2, 3, 4))
-    words = segment_text_for_et2(tokenizer.text)
+    words = ["!", "!", "!", "a"]
     features = torch.tensor(
         [[1, 10, 100, 1000, 0.1], [2, 20, 200, 2000, 0.2],
          [3, 30, 300, 3000, 0.3], [4, 40, 400, 4000, 0.4]],
@@ -158,7 +158,7 @@ def test_no_valid_collisions_leave_position_unmapped():
     provider = ET2GazeProvider(tokenizer=tokenizer)
 
     output, mask = provider._map_predictions_to_target(
-        segment_text_for_et2(tokenizer.text), torch.tensor([[1.0], [2.0], [3.0], [4.0]]),
+        ["!", "!", "!", "a"], torch.tensor([[1.0], [2.0], [3.0], [4.0]]),
         torch.tensor([False, False, False, True]), tokenizer.ids,
     )
 
@@ -170,7 +170,7 @@ def test_cjk_segments_share_one_target_token_without_dropping_mass():
     """The actual Qwen vocabulary can represent multiple CJK segments in one token."""
 
     tokenizer = OffsetTokenizerFixture("你好!", [(0, 2), (2, 3)])
-    words = segment_text_for_et2(tokenizer.text)
+    words = ["你", "好", "!"]
 
     output, mask = remap_word_features_to_tokens(
         [[2.0], [3.0], [7.0]], words, tokenizer.ids, [1, 1], tokenizer, 1,
@@ -223,7 +223,7 @@ def test_overlapping_byte_token_offsets_choose_first_token_once_per_segment():
         "👩\u200d🔬 x",
         [(0, 1), (0, 1), (0, 1), (1, 2), (1, 2), (2, 3), (2, 3), (2, 3), (3, 5)],
     )
-    words = segment_text_for_et2(tokenizer.text)
+    words = ["👩", "\u200d", "🔬", "x"]
 
     result = align_words_to_tokens(words, tokenizer.ids, [1] * 9, tokenizer)
 
@@ -315,15 +315,14 @@ def test_whitespace_only_text_does_not_create_a_gaze_position():
     assert result.first_subword_mask == (False,)
 
 
-def test_signed_trt_is_preserved_when_segments_share_a_token():
-    """Unconstrained ET predictions must not be silently clamped during alignment."""
+def test_signed_features_are_preserved_by_generic_alignment():
+    """Alignment conserves signed inputs; ET2 clipping belongs at predictor extraction."""
 
     tokenizer = OffsetTokenizerFixture("!!!", [(0, 3)])
-    provider = ET2GazeProvider(tokenizer=tokenizer)
 
-    output, mask = provider._map_predictions_to_target(
-        ["!", "!", "!"], torch.tensor([[-3.0], [2.0], [-4.0]]),
-        torch.ones(3, dtype=torch.bool), tokenizer.ids,
+    output, mask = remap_word_features_to_tokens(
+        [[-3.0], [2.0], [-4.0]], ["!", "!", "!"], tokenizer.ids,
+        [1], tokenizer, 1,
     )
 
     assert output[0, 0].item() == -5.0

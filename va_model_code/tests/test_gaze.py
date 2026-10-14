@@ -5,7 +5,7 @@ import torch
 from torch import nn
 
 from va_model_code.decoder_va import gaze as gaze_module
-from va_model_code.decoder_va.alignment import align_words_to_tokens
+from va_model_code.decoder_va.alignment import GAZE_ALIGNMENT_CONTRACT, align_words_to_tokens
 from va_model_code.decoder_va.gaze import (
     ET2_FEATURE_NAMES,
     ET2GazeProvider,
@@ -123,6 +123,9 @@ class FakeETTokenizer:
     all_special_ids = [0, 1, 2]
     all_special_tokens = ["<s>", "<pad>", "</s>"]
 
+    def __init__(self):
+        self.word_rows_seen = []
+
     def __call__(
         self,
         word_rows,
@@ -132,6 +135,7 @@ class FakeETTokenizer:
         truncation,
         max_length,
     ):
+        self.word_rows_seen.append([list(words) for words in word_rows])
         encoded_rows = []
         word_id_rows = []
         for words in word_rows:
@@ -331,17 +335,41 @@ def test_exact_alignment_rejects_source_mismatch_instead_of_searching_ahead():
     assert alignment.first_subword_mask == (False, True, False, True, False)
 
 
-def test_segmenter_handles_whitespace_cjk_and_punctuation_together():
-    assert segment_text_for_et2("Hello, 世界! 안녕.") == [
-        "Hello",
-        ",",
-        "世",
-        "界",
-        "!",
-        "안",
-        "녕",
-        ".",
-    ]
+@pytest.mark.parametrize(
+    "text, expected",
+    [
+        ("Hello, 世界! 안녕.", ["Hello,", "世界!", "안녕."]),
+        ("  I'm\t sad!!! \n", ["I'm", "sad!!!"]),
+        ("x\u00a0x\u2003👩\u200d🔬", ["x", "x", "👩\u200d🔬"]),
+        (" \n\t", []),
+    ],
+)
+def test_segmenter_matches_pinned_et2_whitespace_preprocessing(text, expected):
+    assert segment_text_for_et2(text) == expected
+
+
+def test_et2_preprocessing_identity_is_in_versioned_alignment_contract():
+    assert GAZE_ALIGNMENT_CONTRACT["version"] == 3
+    assert GAZE_ALIGNMENT_CONTRACT["et2_preprocessing"] == {
+        "segmentation": "unicode_whitespace_split",
+        "subword_selection": "first_active_subword",
+        "negative_predictions": "clamp_min_zero",
+        "nonfinite_predictions": "error_at_selected_first_subword",
+    }
+
+
+def test_provider_tokenizes_contractions_and_punctuation_as_whitespace_words():
+    from va_model_code.tests.test_alignment_spans import OffsetTokenizerFixture
+
+    tokenizer = OffsetTokenizerFixture("I'm sad!!!", [(0, 1), (1, 3), (3, 7), (7, 10)])
+    provider = FakeET2GazeProvider(tokenizer)
+    ids = torch.tensor([tokenizer.ids])
+
+    features, mask = provider.compute(ids, torch.ones_like(ids))
+
+    assert provider._et_tokenizer.word_rows_seen == [[["I'm", "sad!!!"]]]
+    assert features[0, :, 0].tolist() == [10.0, 0.0, 13.0, 0.0]
+    assert mask.tolist() == [[True, False, True, False]]
 
 
 def test_provider_is_lazy_frozen_batched_cached_and_first_subword_aligned():
@@ -377,8 +405,9 @@ def test_provider_is_lazy_frozen_batched_cached_and_first_subword_aligned():
     )
     assert features.shape == (3, 6, 1)
     assert mapped_mask.dtype == torch.bool
-    assert mapped_mask[0].tolist() == [False, True, False, True, True, False]
-    assert features[0, :, 0].tolist() == [0.0, 10.0, 0.0, 13.0, 16.0, 0.0]
+    assert provider._et_tokenizer.word_rows_seen == [[["Hello", "world!"], ["later"]]]
+    assert mapped_mask[0].tolist() == [False, True, False, True, False, False]
+    assert features[0, :, 0].tolist() == [0.0, 10.0, 0.0, 13.0, 0.0, 0.0]
     assert torch.equal(features[0], features[1])
 
     cached_features, cached_mask = provider.compute(input_ids, attention_mask)
@@ -387,6 +416,98 @@ def test_provider_is_lazy_frozen_batched_cached_and_first_subword_aligned():
     assert torch.equal(cached_mask, mapped_mask)
     assert all(cache_value[0].device.type == "cpu" for cache_value in provider._cache.values())
     assert all(cache_value[1].device.type == "cpu" for cache_value in provider._cache.values())
+
+
+def test_provider_clips_negative_first_subword_values_before_mapping_and_caching(monkeypatch):
+    provider = FakeET2GazeProvider(FakeTargetTokenizer(), feature_indices=(0, 3, 4))
+    original_forward = provider.fake_model.forward
+
+    def negative_first_subword(input_ids, attention_mask):
+        predictions = original_forward(input_ids, attention_mask)
+        predictions[:, 1, :] = torch.tensor([-2.0, 1.0, 2.0, -3.0, 0.25])
+        return predictions
+
+    monkeypatch.setattr(provider.fake_model, "forward", negative_first_subword)
+    ids = torch.tensor([[0, 10, 11, 2]])
+    features, mask = provider.compute(ids, torch.ones_like(ids))
+
+    assert features[0, 1].tolist() == [0.0, 0.0, 0.25]
+    assert mask.tolist() == [[False, True, False, False]]
+    cached_features, cached_mask = provider.compute(ids, torch.ones_like(ids))
+    torch.testing.assert_close(cached_features, features, rtol=0, atol=0)
+    assert torch.equal(cached_mask, mask)
+    assert provider.fake_model.batch_sizes == [1]
+
+
+@pytest.mark.parametrize("nonfinite", [float("nan"), float("inf"), float("-inf")])
+def test_provider_rejects_nonfinite_first_subword_without_fallback_or_cache_write(monkeypatch, nonfinite):
+    provider = FakeET2GazeProvider(FakeTargetTokenizer())
+    original_forward = provider.fake_model.forward
+
+    def nonfinite_first_subword(input_ids, attention_mask):
+        predictions = original_forward(input_ids, attention_mask)
+        predictions[-1, 1, 3] = nonfinite
+        return predictions
+
+    monkeypatch.setattr(provider.fake_model, "forward", nonfinite_first_subword)
+    ids = torch.tensor([[0, 14, 2, 1], [0, 10, 11, 2]])
+    attention = torch.tensor([[1, 1, 1, 0], [1, 1, 1, 1]])
+
+    with pytest.raises(RuntimeError, match="nonfinite selected first-subword.*later subwords"):
+        provider.compute(ids, attention)
+
+    assert not provider._cache
+    monkeypatch.setattr(provider.fake_model, "forward", original_forward)
+    features, mask = provider.compute(ids, attention)
+    assert features[1, 1, 0].item() == 10.0
+    assert mask[1].tolist() == [False, True, False, False]
+    assert len(provider._cache) == 2
+
+
+def test_provider_ignores_nonfirst_subword_output_and_preserves_existing_cache(monkeypatch):
+    provider = FakeET2GazeProvider(FakeTargetTokenizer())
+    later_ids = torch.tensor([[0, 14, 2]])
+    cached_features, cached_mask = provider.compute(later_ids, torch.ones_like(later_ids))
+    original_forward = provider.fake_model.forward
+
+    def nonfinite_later_subword(input_ids, attention_mask):
+        predictions = original_forward(input_ids, attention_mask)
+        predictions[:, 2, 3] = float("nan")
+        return predictions
+
+    monkeypatch.setattr(provider.fake_model, "forward", nonfinite_later_subword)
+    ids = torch.tensor([[0, 10, 11, 2]])
+    features, mask = provider.compute(ids, torch.ones_like(ids))
+    assert features[0, 1, 0].item() == 10.0
+    assert mask.tolist() == [[False, True, False, False]]
+    final_features, final_mask = provider.compute(later_ids, torch.ones_like(later_ids))
+    torch.testing.assert_close(final_features, cached_features, rtol=0, atol=0)
+    assert torch.equal(final_mask, cached_mask)
+    assert provider.fake_model.batch_sizes == [1, 1]
+
+
+def test_failed_new_prediction_does_not_corrupt_cached_raw_features(monkeypatch):
+    provider = FakeET2GazeProvider(FakeTargetTokenizer())
+    later_ids = torch.tensor([[0, 14, 2]])
+    features, mask = provider.compute(later_ids, torch.ones_like(later_ids))
+    existing_key = next(iter(provider._cache))
+    original_forward = provider.fake_model.forward
+
+    def nonfinite_first_subword(input_ids, attention_mask):
+        predictions = original_forward(input_ids, attention_mask)
+        predictions[:, 1, 3] = float("nan")
+        return predictions
+
+    monkeypatch.setattr(provider.fake_model, "forward", nonfinite_first_subword)
+    ids = torch.tensor([[0, 10, 11, 2]])
+    with pytest.raises(RuntimeError, match="nonfinite selected first-subword"):
+        provider.compute(ids, torch.ones_like(ids))
+
+    assert list(provider._cache) == [existing_key]
+    final_features, final_mask = provider.compute(later_ids, torch.ones_like(later_ids))
+    torch.testing.assert_close(final_features, features, rtol=0, atol=0)
+    assert torch.equal(final_mask, mask)
+    assert provider.fake_model.batch_sizes == [1, 1]
 
 
 def test_provider_returns_every_selected_channel_in_canonical_order():

@@ -24,7 +24,12 @@ from decoder_va.evaluation import (
     trainer_compute_metrics,
     write_oof_reports,
 )
-from decoder_va.filters import dataset_counts, load_filtered_folds
+from decoder_va.filters import (
+    TRAIN_EVAL_TEXT_OVERLAP_CONTRACT,
+    dataset_counts,
+    exclude_eval_text_overlaps,
+    load_filtered_folds,
+)
 from decoder_va.alignment import GAZE_ALIGNMENT_CONTRACT
 from decoder_va.gaze import (
     ET2_FEATURE_NAMES,
@@ -43,9 +48,11 @@ from decoder_va.model import (
     FINETUNING_MODES,
     GAZE_PREFIX_ORDER,
     GAZE_PREFIX_POOLING,
-    LEGACY_LORA_MANIFEST_VERSION,
     OUTPUT_ACTIVATION,
-    PRE_REDISTRIBUTION_MANIFEST_VERSION,
+    PRECISION_CONTRACT,
+    backbone_parameter_dtype,
+    validate_precision_contract,
+    validate_saved_trainable_precision,
     build_qwen_va_model,
     validate_gaze_alignment_contract,
 )
@@ -414,7 +421,7 @@ def _runtime_precision(
     use_cpu: bool,
     precision: str = "auto",
 ) -> tuple[torch.dtype, bool, bool]:
-    """Resolve model dtype and Trainer mixed-precision flags."""
+    """Resolve compute dtype and Trainer autocast flags, separately from weight storage."""
 
     normalized = str(precision).strip().lower()
     if normalized not in PRECISION_MODES:
@@ -595,6 +602,10 @@ def _validate_resume_contract(
         "loss",
         "output_dim",
         "dtype",
+        "compute_dtype",
+        "backbone_parameter_dtype",
+        "trainable_parameter_dtype",
+        "precision_contract",
         "model_id",
         "model_revision",
         "finetuning_mode",
@@ -627,34 +638,32 @@ def _validate_resume_contract(
         "fold_sha256",
         "excluded_dataset_names",
         "dataset_counts_after_filter",
+        "training_text_overlap_contract",
+        "training_text_overlap",
+        "training_rows",
+        "evaluation_rows",
         "sentence_only",
     )
     expected_manifest = dict(expected_manifest)
-    legacy_versions = {
-        LEGACY_LORA_MANIFEST_VERSION,
-        PRE_REDISTRIBUTION_MANIFEST_VERSION,
-    }
     for label, manifest in (
         ("recorded", recorded_manifest),
         ("expected", expected_manifest),
     ):
         schema_version = manifest.get("architecture_manifest_version")
-        if schema_version not in legacy_versions | {ARCHITECTURE_MANIFEST_VERSION}:
+        if type(schema_version) is not int or schema_version != ARCHITECTURE_MANIFEST_VERSION:
             raise ValueError(
-                "Resume checkpoint contract mismatch; refusing to reinterpret "
-                f"unsupported {label} architecture_manifest_version={schema_version!r}."
+                "Resume checkpoint contract mismatch; refusing historical "
+                "precision and gaze_alignment semantics: "
+                f"{label} architecture_manifest_version={schema_version!r}. Start a new run."
             )
+        validate_precision_contract(manifest.get("precision_contract"), context=f"Resume {label} manifest")
         manifest["gaze_alignment"] = validate_gaze_alignment_contract(
             manifest.get("gaze_alignment"),
             gaze_fusion=manifest["gaze_fusion"],
             context=f"Resume {label} manifest",
         )
         if "gaze_redistribution" not in manifest:
-            if schema_version not in legacy_versions:
-                raise ValueError(
-                    f"Resume {label} manifest is missing gaze_redistribution."
-                )
-            manifest["gaze_redistribution"] = {"method": "none"}
+            raise ValueError(f"Resume {label} manifest is missing gaze_redistribution.")
         manifest["gaze_redistribution"] = validate_redistribution_contract(
             manifest["gaze_redistribution"],
             gaze_fusion=manifest["gaze_fusion"],
@@ -662,30 +671,6 @@ def _validate_resume_contract(
         )
         if "sentence_only" not in manifest:
             manifest["sentence_only"] = False
-        if (
-            schema_version in legacy_versions
-            and manifest["gaze_redistribution"] != {"method": "none"}
-        ):
-            raise ValueError(
-                "Legacy resume manifests cannot enable gaze_redistribution. "
-                "Start a new training condition instead."
-            )
-    if recorded_manifest["architecture_manifest_version"] in legacy_versions:
-        if expected_manifest["gaze_redistribution"] != {"method": "none"}:
-            raise ValueError(
-                "Cannot resume a legacy checkpoint with gaze_redistribution enabled; "
-                "start a new training condition instead."
-            )
-        if (
-            recorded_manifest["architecture_manifest_version"]
-            == LEGACY_LORA_MANIFEST_VERSION
-            and "finetuning_mode" not in recorded_manifest
-            and expected_manifest.get("finetuning_mode") == "lora"
-        ):
-            recorded_manifest["finetuning_mode"] = "lora"
-        recorded_manifest["architecture_manifest_version"] = (
-            expected_manifest["architecture_manifest_version"]
-        )
     if expected_manifest.get("finetuning_mode") == "lora":
         contract_fields += ("lora_rank", "lora_alpha", "lora_dropout")
     if expected_manifest["gaze_redistribution"]["method"] != "none":
@@ -848,10 +833,21 @@ def run(args: argparse.Namespace) -> Path | None:
         return None
     if any(frame.empty for frame in filtered.folds.values()):
         raise ValueError("Dataset exclusions left at least one fold empty.")
+    training_folds = []
+    for held_out_fold, training_fold, train_frame, eval_frame in _fold_specifications(
+        filtered, args.held_out_folds
+    ):
+        train_frame, overlap_audit = exclude_eval_text_overlaps(train_frame, eval_frame)
+        if train_frame.empty:
+            raise ValueError(
+                f"Held-out fold {held_out_fold}: no training rows remain after "
+                "excluding texts also present in the evaluation fold."
+            )
+        training_folds.append((held_out_fold, training_fold, train_frame, eval_frame, overlap_audit))
     if args.dry_run:
         dtype, bf16, fp16 = _runtime_precision(args.use_cpu, args.precision)
         dry_run_root = _resolve_output_dir(args)
-        for held_out_fold in args.held_out_folds:
+        for held_out_fold, _, train_frame, eval_frame, overlap_audit in training_folds:
             fold_seed = int(args.seed) + int(held_out_fold) - 1
             _training_arguments(
                 args,
@@ -859,6 +855,11 @@ def run(args: argparse.Namespace) -> Path | None:
                 bf16=bf16,
                 fp16=fp16,
                 fold_seed=fold_seed,
+            )
+            print(
+                f"Held-out fold {held_out_fold}: {len(train_frame):,} training rows "
+                f"after excluding {overlap_audit['excluded_train_rows']:,} overlapping rows; "
+                f"{len(eval_frame):,} evaluation rows unchanged."
             )
         _print_dataset_counts("Validated datasets:", filtered_counts)
         print(f"Excluded: {', '.join(filtered.excluded_names) or '<none>'}")
@@ -868,7 +869,8 @@ def run(args: argparse.Namespace) -> Path | None:
         )
         print(
             f"Fine-tuning mode: {args.finetuning_mode}; "
-            f"precision: {args.precision} -> {str(dtype).replace('torch.', '')}; "
+            f"compute precision: {args.precision} -> {str(dtype).replace('torch.', '')}; "
+            f"backbone storage: {str(backbone_parameter_dtype(dtype, args.finetuning_mode)).replace('torch.', '')}; "
             f"learning rate: {args.learning_rate:g}"
         )
         print(f"Gaze redistribution: {_redistribution_config(args)}")
@@ -939,7 +941,11 @@ def run(args: argparse.Namespace) -> Path | None:
         "architecture_manifest_version": ARCHITECTURE_MANIFEST_VERSION,
         "loss": loss_name,
         "output_dim": 2,
-        "dtype": dtype,
+        "dtype": backbone_parameter_dtype(dtype, args.finetuning_mode),
+        "compute_dtype": dtype,
+        "backbone_parameter_dtype": backbone_parameter_dtype(dtype, args.finetuning_mode),
+        "trainable_parameter_dtype": "float32",
+        "precision_contract": dict(PRECISION_CONTRACT),
         "effective_output_dir": str(output_dir.resolve()),
         "results_root": str(RESULTS_ROOT.resolve()),
         "python_version": platform.python_version(),
@@ -958,6 +964,7 @@ def run(args: argparse.Namespace) -> Path | None:
         },
         "excluded_dataset_names": filtered.excluded_names,
         "dataset_counts_after_filter": filtered_counts,
+        "training_text_overlap_contract": dict(TRAIN_EVAL_TEXT_OVERLAP_CONTRACT),
         "fold_protocol": "two-fold out-of-fold; train the opposite fold and predict held-out",
         "gaze_features": active_feature_names,
         "gaze_feature_indices": active_feature_indices,
@@ -985,10 +992,7 @@ def run(args: argparse.Namespace) -> Path | None:
     }
     fold_predictions = []
 
-    for held_out_fold, training_fold, train_frame, eval_frame in _fold_specifications(
-        filtered,
-        args.held_out_folds,
-    ):
+    for held_out_fold, training_fold, train_frame, eval_frame, overlap_audit in training_folds:
         fold_output = output_dir / f"heldout_fold{held_out_fold}"
         fold_seed = int(args.seed) + int(held_out_fold) - 1
         expected_fold_manifest = {
@@ -998,6 +1002,7 @@ def run(args: argparse.Namespace) -> Path | None:
             "training_fold": training_fold,
             "training_rows": len(train_frame),
             "evaluation_rows": len(eval_frame),
+            "training_text_overlap": overlap_audit,
         }
         _validate_resume_contract(args, fold_output, expected_fold_manifest)
         training_arguments = _training_arguments(
@@ -1012,6 +1017,11 @@ def run(args: argparse.Namespace) -> Path | None:
             f"Training fold {training_fold} ({len(train_frame):,} rows); "
             f"evaluating held-out fold {held_out_fold} ({len(eval_frame):,} rows); "
             f"fine-tuning mode: {args.finetuning_mode}."
+        )
+        print(
+            "Training text overlap: excluded "
+            f"{overlap_audit['excluded_train_rows']:,} training rows matching "
+            "held-out text; evaluation rows unchanged."
         )
         train_dataset = TokenizedVADataset(
             train_frame,
@@ -1043,6 +1053,10 @@ def run(args: argparse.Namespace) -> Path | None:
             lora_dropout=args.lora_dropout,
             attn_implementation=args.attn_implementation,
         )
+        if args.resume_from_checkpoint:
+            validate_saved_trainable_precision(
+                model, Path(args.resume_from_checkpoint) / "model.safetensors"
+            )
         parameter_summary = model.trainable_parameter_summary()
         print(
             "Trainable parameters: "

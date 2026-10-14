@@ -1,0 +1,216 @@
+{
+  "versions": {
+    "torch": "2.12.1",
+    "transformers": "5.16.1",
+    "accelerate": "1.14.0"
+  },
+  "scalar_updates": [
+    {
+      "fused": false,
+      "dtype": "torch.float32",
+      "before": [
+        0.0010000000474974513,
+        0.009999999776482582,
+        0.019999999552965164,
+        0.10000000149011612,
+        1.0
+      ],
+      "after": [
+        -0.025933969765901566,
+        -0.01693803444504738,
+        -0.006941880565136671,
+        0.0730367973446846,
+        0.9727022647857666
+      ],
+      "moment_dtype": "torch.float32"
+    },
+    {
+      "fused": false,
+      "dtype": "torch.bfloat16",
+      "before": [
+        0.00099945068359375,
+        0.010009765625,
+        0.02001953125,
+        0.10009765625,
+        1.0
+      ],
+      "after": [
+        -0.00390625,
+        0.010009765625,
+        0.02001953125,
+        0.10009765625,
+        1.0
+      ],
+      "moment_dtype": "torch.bfloat16"
+    },
+    {
+      "fused": true,
+      "dtype": "torch.float32",
+      "before": [
+        0.0010000000474974513,
+        0.009999999776482582,
+        0.019999999552965164,
+        0.10000000149011612,
+        1.0
+      ],
+      "after": [
+        -0.025933969765901566,
+        -0.01693803444504738,
+        -0.006941880565136671,
+        0.0730367973446846,
+        0.9727022647857666
+      ],
+      "moment_dtype": "torch.float32"
+    },
+    {
+      "fused": true,
+      "dtype": "torch.bfloat16",
+      "before": [
+        0.00099945068359375,
+        0.010009765625,
+        0.02001953125,
+        0.10009765625,
+        1.0
+      ],
+      "after": [
+        -0.00390625,
+        0.010009765625,
+        0.02001953125,
+        0.10009765625,
+        1.0
+      ],
+      "moment_dtype": "torch.bfloat16"
+    }
+  ],
+  "trainer_runs": [
+    {
+      "backbone_upcast": false,
+      "optimizer_argument": "OptimizerNames.ADAMW_TORCH_FUSED",
+      "optimizer_class": "AdamW",
+      "optimizer_defaults": {
+        "lr": 6e-06,
+        "betas": [
+          0.9,
+          0.999
+        ],
+        "eps": 1e-08,
+        "weight_decay": 0.01,
+        "amsgrad": false,
+        "maximize": false,
+        "foreach": null,
+        "capturable": false,
+        "differentiable": false,
+        "fused": true,
+        "decoupled_weight_decay": true
+      },
+      "groups": {
+        "backbone.": {
+          "total": 5200,
+          "changed": 338,
+          "changed_percent": 6.5,
+          "parameter_dtypes": [
+            "torch.bfloat16"
+          ],
+          "moment_dtypes": {
+            "torch.bfloat16": 20
+          }
+        },
+        "gaze_projector.": {
+          "total": 208,
+          "changed": 208,
+          "changed_percent": 100.0,
+          "parameter_dtypes": [
+            "torch.float32"
+          ],
+          "moment_dtypes": {
+            "torch.float32": 8
+          }
+        },
+        "regression_head.": {
+          "total": 66,
+          "changed": 66,
+          "changed_percent": 100.0,
+          "parameter_dtypes": [
+            "torch.float32"
+          ],
+          "moment_dtypes": {
+            "torch.float32": 4
+          }
+        }
+      }
+    },
+    {
+      "backbone_upcast": true,
+      "optimizer_argument": "OptimizerNames.ADAMW_TORCH_FUSED",
+      "optimizer_class": "AdamW",
+      "optimizer_defaults": {
+        "lr": 6e-06,
+        "betas": [
+          0.9,
+          0.999
+        ],
+        "eps": 1e-08,
+        "weight_decay": 0.01,
+        "amsgrad": false,
+        "maximize": false,
+        "foreach": null,
+        "capturable": false,
+        "differentiable": false,
+        "fused": true,
+        "decoupled_weight_decay": true
+      },
+      "groups": {
+        "backbone.": {
+          "total": 5200,
+          "changed": 4800,
+          "changed_percent": 92.3076923076923,
+          "parameter_dtypes": [
+            "torch.float32"
+          ],
+          "moment_dtypes": {
+            "torch.float32": 20
+          }
+        },
+        "gaze_projector.": {
+          "total": 208,
+          "changed": 208,
+          "changed_percent": 100.0,
+          "parameter_dtypes": [
+            "torch.float32"
+          ],
+          "moment_dtypes": {
+            "torch.float32": 8
+          }
+        },
+        "regression_head.": {
+          "total": 66,
+          "changed": 66,
+          "changed_percent": 100.0,
+          "parameter_dtypes": [
+            "torch.float32"
+          ],
+          "moment_dtypes": {
+            "torch.float32": 4
+          }
+        }
+      }
+    }
+  ],
+  "hardsigmoid": {
+    "bf16_logits": [
+      -0.00099945068359375,
+      0.0,
+      0.00099945068359375
+    ],
+    "bf16_activation": [
+      0.5,
+      0.5,
+      0.5
+    ],
+    "fp32_activation": [
+      0.49983343482017517,
+      0.5,
+      0.5001665949821472
+    ]
+  }
+}

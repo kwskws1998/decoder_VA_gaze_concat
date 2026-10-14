@@ -178,7 +178,8 @@ def test_native_decoder_checkpointed_training_and_strict_reload(
     kernel = model.gaze_redistributor.kernel
     assert kernel.log_sigma_left.dtype == torch.float32
     assert kernel.log_sigma_right.dtype == torch.float32
-    assert next(model.backbone.parameters()).dtype == dtype
+    assert next(model.backbone.parameters()).dtype == (torch.float32 if finetuning_mode == "full" else dtype)
+    assert all(parameter.dtype == torch.float32 for parameter in model.parameters() if parameter.requires_grad)
     inputs = {
         "input_ids": torch.tensor([[1, 2, 3, 7, 4, 0], [1, 8, 5, 3, 9, 4]]),
         "attention_mask": torch.tensor([[1, 1, 1, 1, 1, 0], [1, 1, 1, 1, 1, 1]]),
@@ -302,3 +303,55 @@ def test_real_trainer_checkpoint_resume_keeps_sigma_state(tmp_path, monkeypatch)
     )
     result = resumed.train(resume_from_checkpoint=str(checkpoint))
     assert result.global_step == 2
+
+
+def test_real_trainer_bf16_autocast_updates_fp32_qwen_weights(tmp_path, monkeypatch):
+    """Exercise actual Trainer/Accelerate BF16 with FP32 hybrid Qwen weights and moments."""
+
+    from va_model_code.tests.test_alignment_training_integration import tiny_native_qwen_backbone
+
+    monkeypatch.setattr(
+        model_module, "_load_qwen_text_backbone",
+        lambda *args, dtype, **kwargs: tiny_native_qwen_backbone(dtype),
+    )
+    torch.manual_seed(42)
+    model = build_qwen_va_model(
+        SimpleNamespace(padding_side="right"), model_id="offline/tiny-qwen",
+        gaze_fusion="none", finetuning_mode="full", dtype=torch.bfloat16,
+        classifier_dropout=0,
+    )
+    initial = {name: parameter.detach().clone() for name, parameter in model.backbone.named_parameters()}
+    final_head_dtypes = []
+    backbone_output_dtypes = []
+    model.regression_head[-1].register_forward_hook(
+        lambda module, args, output: final_head_dtypes.append(output.dtype)
+    )
+    model.backbone.layers[-1].mlp.down_proj.register_forward_hook(
+        lambda module, args, output: backbone_output_dtypes.append(output.dtype)
+    )
+    arguments = TrainingArguments(
+        output_dir=str(tmp_path), max_steps=3, per_device_train_batch_size=2,
+        use_cpu=True, bf16=True, learning_rate=6e-6, weight_decay=0,
+        save_strategy="no", report_to="none", disable_tqdm=True,
+        gradient_checkpointing=True,
+        gradient_checkpointing_kwargs={"use_reentrant": False},
+        remove_unused_columns=False, label_names=["labels"],
+    )
+    rows = [
+        {"input_ids": torch.tensor([1, 2, 5, 4]), "attention_mask": torch.ones(4, dtype=torch.long), "labels": torch.tensor([0.2, 0.8])},
+        {"input_ids": torch.tensor([1, 8, 3, 6]), "attention_mask": torch.ones(4, dtype=torch.long), "labels": torch.tensor([0.9, 0.1])},
+    ]
+    trainer = VARegressionTrainer(
+        model=model, args=arguments, train_dataset=rows,
+        data_collator=default_data_collator, loss_name="mse",
+    )
+    result = trainer.train()
+    assert result.global_step == 3
+    assert final_head_dtypes and set(final_head_dtypes) == {torch.float32}
+    assert backbone_output_dtypes and set(backbone_output_dtypes) == {torch.bfloat16}
+    assert all(parameter.dtype == torch.float32 for parameter in model.parameters() if parameter.requires_grad)
+    trained = [(name, parameter) for name, parameter in model.backbone.named_parameters() if parameter in trainer.optimizer.state]
+    assert trained
+    assert all(trainer.optimizer.state[parameter]["exp_avg"].dtype == torch.float32 for _, parameter in trained)
+    assert all(trainer.optimizer.state[parameter]["exp_avg_sq"].dtype == torch.float32 for _, parameter in trained)
+    assert sum((parameter.detach() != initial[name]).sum().item() for name, parameter in trained) > 0

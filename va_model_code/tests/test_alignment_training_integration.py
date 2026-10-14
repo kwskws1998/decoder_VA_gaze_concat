@@ -47,13 +47,15 @@ def test_corrected_et_compute_cache_and_checkpointed_decoder_sigma_updates(dtype
     provider = FakeET2GazeProvider(tokenizer)
     input_ids = torch.tensor([tokenizer.ids + [31, 31]] * 2)
     attention_mask = torch.tensor([[1] * 8 + [0, 0]] * 2)
-    expected_raw = torch.tensor([10.0, 13.0, 16.0, 66.0, 28.0, 31.0, 34.0, 37.0, 0.0, 0.0])
+    expected_raw = torch.tensor([10.0, 13.0, 16.0, 0.0, 19.0, 22.0, 25.0, 0.0, 0.0, 0.0])
     expected_raw = expected_raw[None, :, None].expand(2, -1, -1)
+    expected_mask = torch.tensor([[True, True, True, False, True, True, True, False, False, False]] * 2)
 
     raw, gaze_mask = provider.compute(input_ids, attention_mask)
 
     torch.testing.assert_close(raw, expected_raw, rtol=0, atol=0)
-    assert torch.equal(gaze_mask, attention_mask.bool())
+    assert torch.equal(gaze_mask, expected_mask)
+    assert provider._et_tokenizer.word_rows_seen == [[["I", "love", "this!!!", "I", "hate", "that!"]]]
     assert provider.fake_model.batch_sizes == [1]
     assert provider.load_count == 1
     assert not provider.fake_model.scale.requires_grad
@@ -80,7 +82,7 @@ def test_corrected_et_compute_cache_and_checkpointed_decoder_sigma_updates(dtype
     model.gradient_checkpointing_enable({"use_reentrant": False}, every_n_layers=1)
     model.train()
     assert model.backbone.is_gradient_checkpointing
-    assert next(model.backbone.parameters()).dtype == dtype
+    assert next(model.backbone.parameters()).dtype == torch.float32
     kernel = model.gaze_redistributor.kernel
     parameters = tuple(kernel.parameters())
     assert all(parameter.dtype == torch.float32 for parameter in parameters)

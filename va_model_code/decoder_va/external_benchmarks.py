@@ -30,7 +30,12 @@ from torch.utils.data import Dataset
 
 from .downloads import sha256_file
 from .evaluation import calculate_va_metrics
-from .filters import SENTENCE_ONLY_DATASET_NAMES, read_fold
+from .filters import (
+    SENTENCE_ONLY_DATASET_NAMES,
+    TRAIN_EVAL_TEXT_OVERLAP_CONTRACT,
+    exclude_eval_text_overlaps,
+    read_fold,
+)
 from .model import (
     ARCHITECTURE_MANIFEST_FILENAME,
     ARCHITECTURE_MANIFEST_VERSION,
@@ -38,8 +43,11 @@ from .model import (
     DEFAULT_GAZE_PROJECTION_DIM,
     DEFAULT_GAZE_PROJECTION_DROPOUT,
     OUTPUT_ACTIVATION,
+    PRE_PRECISION_MANIFEST_VERSION,
     PRE_REDISTRIBUTION_MANIFEST_VERSION,
     SAFE_WEIGHTS_FILENAME,
+    validate_gaze_alignment_contract,
+    validate_precision_contract,
 )
 from .preprocessing import FOLD_FILENAMES
 from .redistribution import validate_redistribution_contract
@@ -164,6 +172,14 @@ RUN_CONTRACT_FIELDS = (
     "eval_batch_size",
     "excluded_dataset_names",
     "fold_sha256",
+)
+CURRENT_RUN_CONTRACT_FIELDS = (
+    "compute_dtype",
+    "backbone_parameter_dtype",
+    "trainable_parameter_dtype",
+    "precision_contract",
+    "gaze_alignment",
+    "training_text_overlap_contract",
 )
 
 
@@ -1791,6 +1807,11 @@ def _validate_architecture_provenance(
         "output_activation": parameters["output_activation"],
         "output_names": list(MODEL_OUTPUT_NAMES),
     }
+    if parameters["architecture_manifest_version"] == ARCHITECTURE_MANIFEST_VERSION:
+        expected_top_level.update(
+            precision_contract=parameters["precision_contract"],
+            gaze_alignment=parameters["gaze_alignment"],
+        )
     for field, expected in expected_top_level.items():
         if architecture.get(field) != expected:
             raise ValueError(
@@ -1810,6 +1831,13 @@ def _validate_architecture_provenance(
         (architecture, "architecture"),
         (reconstruction, "architecture reconstruction"),
     ):
+        if parameters["architecture_manifest_version"] == ARCHITECTURE_MANIFEST_VERSION:
+            validate_precision_contract(source.get("precision_contract"), context=label)
+            if "gaze_alignment" not in source:
+                raise ValueError(f"{label} is missing gaze_alignment.")
+            validate_gaze_alignment_contract(
+                source["gaze_alignment"], gaze_fusion=parameters["gaze_fusion"], context=label,
+            )
         if _saved_redistribution_contract(
             source, parameters, label=f"Held-out fold {held_out_fold} {label}"
         ) != expected_redistribution:
@@ -1843,6 +1871,11 @@ def _validate_architecture_provenance(
         "attn_implementation": parameters["attn_implementation"],
         "backbone_dtype_at_construction": parameters["dtype"],
     }
+    if parameters["architecture_manifest_version"] == ARCHITECTURE_MANIFEST_VERSION:
+        expected_reconstruction.update(
+            precision_contract=parameters["precision_contract"],
+            gaze_alignment=parameters["gaze_alignment"],
+        )
     for field, expected in expected_reconstruction.items():
         if reconstruction.get(field) != expected:
             raise ValueError(
@@ -1953,7 +1986,7 @@ def _validate_root_run_parameters(root: Path, parameters: Mapping[str, Any]) -> 
         )
     if type(parameters["architecture_manifest_version"]) is not int or parameters[
         "architecture_manifest_version"
-    ] not in {PRE_REDISTRIBUTION_MANIFEST_VERSION, ARCHITECTURE_MANIFEST_VERSION}:
+    ] not in {PRE_REDISTRIBUTION_MANIFEST_VERSION, PRE_PRECISION_MANIFEST_VERSION, ARCHITECTURE_MANIFEST_VERSION}:
         raise ValueError(
             "training_parameters.json uses an unsupported architecture manifest version."
         )
@@ -1965,6 +1998,26 @@ def _validate_root_run_parameters(root: Path, parameters: Mapping[str, Any]) -> 
         raise ValueError("Saved finetuning_mode must be full or lora.")
     if parameters["gaze_fusion"] not in {"none", "prefix-concat"}:
         raise ValueError("Saved gaze_fusion must be none or prefix-concat.")
+    if parameters["architecture_manifest_version"] == ARCHITECTURE_MANIFEST_VERSION:
+        missing_current = sorted(set(CURRENT_RUN_CONTRACT_FIELDS).difference(parameters))
+        if missing_current:
+            raise ValueError("training_parameters.json is missing current contract field(s): " + ", ".join(missing_current))
+        validate_precision_contract(parameters["precision_contract"], context="training_parameters.json")
+        validate_gaze_alignment_contract(
+            parameters["gaze_alignment"], gaze_fusion=parameters["gaze_fusion"],
+            context="training_parameters.json",
+        )
+        if parameters["compute_dtype"] not in {"bfloat16", "float16", "float32"}:
+            raise ValueError("Saved compute_dtype must be bfloat16, float16, or float32.")
+        if parameters["backbone_parameter_dtype"] != parameters["dtype"]:
+            raise ValueError("Saved backbone_parameter_dtype disagrees with dtype storage.")
+        if parameters["trainable_parameter_dtype"] != "float32":
+            raise ValueError("Saved trainable_parameter_dtype must be float32.")
+        if parameters["finetuning_mode"] == "full" and parameters["dtype"] != "float32":
+            raise ValueError("Full finetuning requires float32 dtype storage.")
+        overlap_contract = parameters["training_text_overlap_contract"]
+        if not isinstance(overlap_contract, dict) or type(overlap_contract.get("version")) is not int or overlap_contract != TRAIN_EVAL_TEXT_OVERLAP_CONTRACT:
+            raise ValueError("Saved training_text_overlap_contract is missing or incompatible.")
     _saved_redistribution_contract(
         parameters, parameters, label="training_parameters.json"
     )
@@ -2127,6 +2180,12 @@ def discover_completed_run(
         architecture_path = model_dir / ARCHITECTURE_MANIFEST_FILENAME
         weights_path = model_dir / SAFE_WEIGHTS_FILENAME
         run_manifest = _read_json_object(run_manifest_path, "fold run manifest")
+        if training_parameters["architecture_manifest_version"] == ARCHITECTURE_MANIFEST_VERSION:
+            validate_precision_contract(run_manifest.get("precision_contract"), context=str(run_manifest_path))
+            validate_gaze_alignment_contract(
+                run_manifest.get("gaze_alignment"), gaze_fusion=training_parameters["gaze_fusion"],
+                context=str(run_manifest_path),
+            )
         if _saved_redistribution_contract(
             run_manifest, training_parameters, label=str(run_manifest_path)
         ) != _saved_redistribution_contract(
@@ -2179,7 +2238,27 @@ def discover_completed_run(
                 raise ValueError(
                     f"Fold manifest {field} must be a positive integer: {run_manifest_path}"
                 )
-        if run_manifest["training_rows"] != total_rows - run_manifest["evaluation_rows"]:
+        training_rows_before = total_rows - run_manifest["evaluation_rows"]
+        if training_parameters["architecture_manifest_version"] == ARCHITECTURE_MANIFEST_VERSION:
+            overlap_audit = run_manifest.get("training_text_overlap")
+            count_names = (
+                "train_rows_before", "train_rows_after", "excluded_train_rows",
+                "eval_rows", "overlapping_eval_rows", "shared_normalized_texts",
+            )
+            if (
+                not isinstance(overlap_audit, dict)
+                or overlap_audit.get("contract") != TRAIN_EVAL_TEXT_OVERLAP_CONTRACT
+                or type(overlap_audit["contract"].get("version")) is not int
+                or any(type(overlap_audit.get(name)) is not int or overlap_audit[name] < 0 for name in count_names)
+                or overlap_audit["train_rows_before"] != training_rows_before
+                or overlap_audit["train_rows_after"] != run_manifest["training_rows"]
+                or overlap_audit["eval_rows"] != run_manifest["evaluation_rows"]
+                or overlap_audit["excluded_train_rows"] + overlap_audit["train_rows_after"] != training_rows_before
+                or overlap_audit["overlapping_eval_rows"] > run_manifest["evaluation_rows"]
+                or overlap_audit["shared_normalized_texts"] > min(overlap_audit["excluded_train_rows"], overlap_audit["overlapping_eval_rows"])
+            ):
+                raise ValueError(f"Fold manifest training_text_overlap audit is invalid: {run_manifest_path}")
+        elif run_manifest["training_rows"] != training_rows_before:
             raise ValueError(
                 f"Fold manifest row counts do not reconstruct the complete corpus: "
                 f"{run_manifest_path}"
@@ -2250,10 +2329,21 @@ def discover_completed_run(
             training_parameters,
             fold_prediction_frames,
         )
+        if training_parameters["architecture_manifest_version"] == ARCHITECTURE_MANIFEST_VERSION:
+            for member in members:
+                _, expected_audit = exclude_eval_text_overlaps(
+                    fold_prediction_frames[member.training_fold - 1],
+                    fold_prediction_frames[member.held_out_fold - 1],
+                )
+                if member.run_manifest["training_text_overlap"] != expected_audit:
+                    raise ValueError(f"{member.name} training_text_overlap disagrees with persisted fold texts.")
 
     first, second = members
     mismatches = []
-    for field in RUN_CONTRACT_FIELDS:
+    contract_fields = RUN_CONTRACT_FIELDS
+    if training_parameters["architecture_manifest_version"] == ARCHITECTURE_MANIFEST_VERSION:
+        contract_fields += CURRENT_RUN_CONTRACT_FIELDS
+    for field in contract_fields:
         if first.run_manifest.get(field) != second.run_manifest.get(field):
             mismatches.append(
                 f"{field}: {first.run_manifest.get(field)!r} != "
@@ -2365,6 +2455,12 @@ def audit_finetuning_text_overlap(
                 f"observed {sorted(retained_sources)}, expected "
                 f"{list(SENTENCE_ONLY_DATASET_NAMES)}."
             )
+        if member.run_manifest.get("architecture_manifest_version") == ARCHITECTURE_MANIFEST_VERSION:
+            eval_frame = fold_frames[member.held_out_fold]
+            eval_filtered = eval_frame.loc[~eval_frame["dataset_of_origin"].astype(str).isin(excluded)].copy()
+            filtered, actual_overlap_audit = exclude_eval_text_overlaps(filtered, eval_filtered)
+            if member.run_manifest.get("training_text_overlap_contract") != TRAIN_EVAL_TEXT_OVERLAP_CONTRACT or member.run_manifest.get("training_text_overlap") != actual_overlap_audit:
+                raise ValueError(f"Training-text overlap provenance mismatch for {member.name}.")
         expected_rows = int(member.run_manifest.get("training_rows", -1))
         if len(filtered) != expected_rows:
             raise ValueError(
@@ -2906,6 +3002,11 @@ def _write_external_evaluation_payload(
                 "file_sha256": member.file_sha256,
                 "finetuning_mode": member.run_manifest.get("finetuning_mode"),
                 "dtype": member.run_manifest.get("dtype"),
+                **(
+                    {field: member.run_manifest[field] for field in CURRENT_RUN_CONTRACT_FIELDS}
+                    if member.run_manifest.get("architecture_manifest_version") == ARCHITECTURE_MANIFEST_VERSION
+                    else {}
+                ),
                 "gaze_fusion": member.run_manifest.get("gaze_fusion"),
                 "gaze_features": member.run_manifest.get("gaze_features"),
                 "gaze_redistribution": _saved_redistribution_contract(

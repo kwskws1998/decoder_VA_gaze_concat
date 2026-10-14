@@ -9,7 +9,13 @@ import torch
 
 
 GAZE_ALIGNMENT_CONTRACT = {
-    "version": 2,
+    "version": 3,
+    "et2_preprocessing": {
+        "segmentation": "unicode_whitespace_split",
+        "subword_selection": "first_active_subword",
+        "negative_predictions": "clamp_min_zero",
+        "nonfinite_predictions": "error_at_selected_first_subword",
+    },
     "word_spans": "decoded_text_exact",
     "token_spans": "verified_tokenizer_offsets",
     "anchor": "first_overlapping_non_whitespace_token",

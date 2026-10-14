@@ -1,0 +1,1507 @@
+{
+  "comparisons": {
+    "new_left_vs_new_raw": {
+      "metric_deltas": {
+        "ccc_arousal": 0.007758375347978186,
+        "ccc_mean": 0.005201977367585431,
+        "ccc_valence": 0.002645579387192565,
+        "mae_arousal": -0.0014252635040875941,
+        "mae_mean": -0.0011689391749243466,
+        "mae_valence": -0.0009126148457610922,
+        "mse_arousal": -0.00030350087266480495,
+        "mse_mean": -0.00021919136571232727,
+        "mse_valence": -0.00013488185875985131,
+        "pearson_corr_arousal": 0.007371720546123228,
+        "pearson_corr_mean": 0.006316087730061426,
+        "pearson_corr_valence": 0.005260454913999402,
+        "rmse_arousal": -0.001698358033944497,
+        "rmse_valence": -0.0009426792967315578
+      },
+      "mse_reduction_percent": 3.290666231011133
+    },
+    "new_left_vs_new_right": {
+      "metric_deltas": {
+        "ccc_arousal": 0.005161354306882582,
+        "ccc_mean": 0.00387130959145332,
+        "ccc_valence": 0.0025812648760239476,
+        "mae_arousal": -0.000980941061690499,
+        "mae_mean": -0.0008140412992989898,
+        "mae_valence": -0.0006471415369074807,
+        "mse_arousal": -0.00017499830055679212,
+        "mse_mean": -0.00013917710503941194,
+        "mse_valence": -0.0001033559095220335,
+        "pearson_corr_arousal": 0.004272261052032045,
+        "pearson_corr_mean": 0.004229489395563557,
+        "pearson_corr_valence": 0.004186717739094958,
+        "rmse_arousal": -0.0009832062537972752,
+        "rmse_valence": -0.0007234552133946609
+      },
+      "mse_reduction_percent": 2.1148358916895478
+    },
+    "new_left_vs_old_learned_lr0.05": {
+      "metric_deltas": {
+        "ccc_arousal": -0.0005041326688037806,
+        "ccc_mean": -0.000634457631238261,
+        "ccc_valence": -0.0007647825936729635,
+        "mae_arousal": -0.00012606066737818472,
+        "mae_mean": -0.00012729079291275147,
+        "mae_valence": -0.00012852091844730434,
+        "mse_arousal": -2.600808098920243e-05,
+        "mse_mean": -2.6843992166371983e-05,
+        "mse_valence": -2.7679903343541534e-05,
+        "pearson_corr_arousal": 0.0005190916148724023,
+        "pearson_corr_mean": 0.0005981526752236732,
+        "pearson_corr_valence": 0.0006772137355747221,
+        "rmse_arousal": -0.0001468130781305116,
+        "rmse_valence": -0.00019446970675596198
+      },
+      "mse_reduction_percent": 0.4149856641051035
+    }
+  },
+  "historical_rows_labels_folds_match_new": true,
+  "historical_runs": {
+    "fixed": {
+      "datasets": {
+        "EmoTales sentences": {
+          "ccc_arousal": 0.8038579892791782,
+          "ccc_mean": 0.7665813933631315,
+          "ccc_valence": 0.7293047974470848,
+          "mae_arousal": 0.06324291334197085,
+          "mae_mean": 0.058458751478769874,
+          "mae_valence": 0.05367458961556889,
+          "mse_arousal": 0.0087288940461318,
+          "mse_mean": 0.007237662549855922,
+          "mse_valence": 0.005746431053580044,
+          "n_examples": 1395,
+          "pearson_corr_arousal": 0.8173854065271234,
+          "pearson_corr_mean": 0.780527335334505,
+          "pearson_corr_valence": 0.7436692641418867,
+          "rmse_arousal": 0.09342855048715998,
+          "rmse_valence": 0.07580521785193975
+        },
+        "Emobank": {
+          "ccc_arousal": 0.8117249391402502,
+          "ccc_mean": 0.783909550542636,
+          "ccc_valence": 0.7560941619450218,
+          "mae_arousal": 0.060774548382790256,
+          "mae_mean": 0.05548274317818124,
+          "mae_valence": 0.05019093797357223,
+          "mse_arousal": 0.007982846440660146,
+          "mse_mean": 0.006522647358622381,
+          "mse_valence": 0.005062448276584617,
+          "n_examples": 10062,
+          "pearson_corr_arousal": 0.8223412768924947,
+          "pearson_corr_mean": 0.7945469715965008,
+          "pearson_corr_valence": 0.7667526663005068,
+          "rmse_arousal": 0.08934677633054337,
+          "rmse_valence": 0.07115088387774685
+        },
+        "fb": {
+          "ccc_arousal": 0.8171392964726779,
+          "ccc_mean": 0.7878907356758881,
+          "ccc_valence": 0.7586421748790982,
+          "mae_arousal": 0.061633340020974474,
+          "mae_mean": 0.056126953363547255,
+          "mae_valence": 0.05062056670612004,
+          "mse_arousal": 0.007898142581137116,
+          "mse_mean": 0.0065067755902621215,
+          "mse_valence": 0.005115408599387128,
+          "n_examples": 2895,
+          "pearson_corr_arousal": 0.8287381709188901,
+          "pearson_corr_mean": 0.7980730116605042,
+          "pearson_corr_valence": 0.7674078524021182,
+          "rmse_arousal": 0.08887149476146508,
+          "rmse_valence": 0.07152208469687617
+        }
+      },
+      "metric_recomputation_max_abs_error": 2.220446049250313e-16,
+      "metrics": {
+        "ccc_arousal": 0.8120307827629714,
+        "ccc_mean": 0.7830441523681602,
+        "ccc_valence": 0.7540575219733489,
+        "mae_arousal": 0.06118770131691792,
+        "mae_mean": 0.05590195444253156,
+        "mae_valence": 0.0506162075681452,
+        "mse_arousal": 0.00803827556108335,
+        "mse_mean": 0.006588944559177554,
+        "mse_valence": 0.00513961355727176,
+        "n_examples": 14352.0,
+        "pearson_corr_arousal": 0.8231088321064427,
+        "pearson_corr_mean": 0.7938793525523485,
+        "pearson_corr_valence": 0.7646498729982544,
+        "rmse_arousal": 0.0896564306733396,
+        "rmse_valence": 0.07169109817314671
+      },
+      "run_name": "paper7_sentence_only_qwen_full_gaze_TRT_fixed_bf16_gc_b16_seed42_20260915_182633"
+    },
+    "learned_lr0.001": {
+      "datasets": {
+        "EmoTales sentences": {
+          "ccc_arousal": 0.8148556384873559,
+          "ccc_mean": 0.771532716867334,
+          "ccc_valence": 0.7282097952473123,
+          "mae_arousal": 0.06154787089929358,
+          "mae_mean": 0.05767891517703465,
+          "mae_valence": 0.053809959454775715,
+          "mse_arousal": 0.008298981524767718,
+          "mse_mean": 0.007051950513014191,
+          "mse_valence": 0.005804919501260666,
+          "n_examples": 1395,
+          "pearson_corr_arousal": 0.8261557777658882,
+          "pearson_corr_mean": 0.7838544362674349,
+          "pearson_corr_valence": 0.7415530947689817,
+          "rmse_arousal": 0.09109874601095076,
+          "rmse_valence": 0.07619002232090936
+        },
+        "Emobank": {
+          "ccc_arousal": 0.8147427333584636,
+          "ccc_mean": 0.7868853246214613,
+          "ccc_valence": 0.759027915884459,
+          "mae_arousal": 0.06046569595697255,
+          "mae_mean": 0.05537369557127099,
+          "mae_valence": 0.05028169518556943,
+          "mse_arousal": 0.007869586863867024,
+          "mse_mean": 0.0064463288126847115,
+          "mse_valence": 0.005023070761502399,
+          "n_examples": 10062,
+          "pearson_corr_arousal": 0.8246480218338705,
+          "pearson_corr_mean": 0.7968591923454373,
+          "pearson_corr_valence": 0.7690703628570041,
+          "rmse_arousal": 0.08871069193658127,
+          "rmse_valence": 0.07087362528827207
+        },
+        "fb": {
+          "ccc_arousal": 0.81537711593219,
+          "ccc_mean": 0.7840787422670376,
+          "ccc_valence": 0.7527803686018851,
+          "mae_arousal": 0.06157301878218824,
+          "mae_mean": 0.056260657164433875,
+          "mae_valence": 0.050948295546679505,
+          "mse_arousal": 0.007995847163712532,
+          "mse_mean": 0.006615164358730337,
+          "mse_valence": 0.005234481553748141,
+          "n_examples": 2895,
+          "pearson_corr_arousal": 0.825978779698544,
+          "pearson_corr_mean": 0.7937799242559465,
+          "pearson_corr_valence": 0.7615810688133487,
+          "rmse_arousal": 0.08941950102585304,
+          "rmse_valence": 0.07234971702604054
+        }
+      },
+      "metric_recomputation_max_abs_error": 3.3306690738754696e-16,
+      "metrics": {
+        "ccc_arousal": 0.8148843214955365,
+        "ccc_mean": 0.7848334169289387,
+        "ccc_valence": 0.754782512362341,
+        "mae_arousal": 0.060794244843785344,
+        "mae_mean": 0.05577667321635507,
+        "mae_valence": 0.050759101588924806,
+        "mse_arousal": 0.0079367920701107,
+        "mse_mean": 0.006539251135549937,
+        "mse_valence": 0.005141710200989174,
+        "n_examples": 14352.0,
+        "pearson_corr_arousal": 0.8250560827550542,
+        "pearson_corr_mean": 0.7949631276257221,
+        "pearson_corr_valence": 0.7648701724963901,
+        "rmse_arousal": 0.0890886753190926,
+        "rmse_valence": 0.07170571944405253
+      },
+      "run_name": "paper7_sentence_only_qwen_full_gaze_TRT_learned_bf16_gc_b16_seed42_20260915_213700"
+    },
+    "learned_lr0.05": {
+      "datasets": {
+        "EmoTales sentences": {
+          "ccc_arousal": 0.8150330083892187,
+          "ccc_mean": 0.7739529277766446,
+          "ccc_valence": 0.7328728471640706,
+          "mae_arousal": 0.06162032630548255,
+          "mae_mean": 0.05722236053944702,
+          "mae_valence": 0.05282439477341149,
+          "mse_arousal": 0.008358577831963298,
+          "mse_mean": 0.006969562572414267,
+          "mse_valence": 0.005580547312865236,
+          "n_examples": 1395,
+          "pearson_corr_arousal": 0.8246790693264733,
+          "pearson_corr_mean": 0.7875532166426045,
+          "pearson_corr_valence": 0.7504273639587355,
+          "rmse_arousal": 0.0914252581728009,
+          "rmse_valence": 0.07470306093370764
+        },
+        "Emobank": {
+          "ccc_arousal": 0.8181665985115693,
+          "ccc_mean": 0.7876842248123199,
+          "ccc_valence": 0.7572018511130706,
+          "mae_arousal": 0.06015405453492754,
+          "mae_mean": 0.05507303492331411,
+          "mae_valence": 0.04999201531170069,
+          "mse_arousal": 0.00779602673144263,
+          "mse_mean": 0.0064015973098907894,
+          "mse_valence": 0.005007167888338949,
+          "n_examples": 10062,
+          "pearson_corr_arousal": 0.8267078913326807,
+          "pearson_corr_mean": 0.7977798980671577,
+          "pearson_corr_valence": 0.7688519048016346,
+          "rmse_arousal": 0.08829511159425889,
+          "rmse_valence": 0.07076134459108976
+        },
+        "fb": {
+          "ccc_arousal": 0.8204213272276114,
+          "ccc_mean": 0.7885160925054505,
+          "ccc_valence": 0.7566108577832896,
+          "mae_arousal": 0.06100010321908252,
+          "mae_mean": 0.05551857645454493,
+          "mae_valence": 0.05003704969000734,
+          "mse_arousal": 0.007835294783948853,
+          "mse_mean": 0.006460355434540023,
+          "mse_valence": 0.005085416085131192,
+          "n_examples": 2895,
+          "pearson_corr_arousal": 0.8298721600103756,
+          "pearson_corr_mean": 0.7986097761157763,
+          "pearson_corr_valence": 0.7673473922211771,
+          "rmse_arousal": 0.0885172004976934,
+          "rmse_valence": 0.07131210335652141
+        }
+      },
+      "metric_recomputation_max_abs_error": 3.3306690738754696e-16,
+      "metrics": {
+        "ccc_arousal": 0.8183113888661863,
+        "ccc_mean": 0.7865418383611129,
+        "ccc_valence": 0.7547722878560397,
+        "mae_arousal": 0.06046723458373975,
+        "mae_mean": 0.05537181920198041,
+        "mae_valence": 0.050276403820221055,
+        "mse_arousal": 0.007858627051762577,
+        "mse_mean": 0.006468655302649973,
+        "mse_valence": 0.005078683553537368,
+        "n_examples": 14352.0,
+        "pearson_corr_arousal": 0.8271410806210401,
+        "pearson_corr_mean": 0.7969484744324977,
+        "pearson_corr_valence": 0.7667558682439555,
+        "rmse_arousal": 0.0886488976342209,
+        "rmse_valence": 0.07126488303180865
+      },
+      "run_name": "paper7_sentence_only_qwen_full_gaze_TRT_learned_sigma_lr0p05_bf16_gc_b16_seed42_20260916_044918"
+    },
+    "raw": {
+      "datasets": {
+        "EmoTales sentences": {
+          "ccc_arousal": 0.8084052992695799,
+          "ccc_mean": 0.7667101744292704,
+          "ccc_valence": 0.7250150495889607,
+          "mae_arousal": 0.0641573895930603,
+          "mae_mean": 0.059345252898698644,
+          "mae_valence": 0.05453311620433698,
+          "mse_arousal": 0.008671351518954283,
+          "mse_mean": 0.007243401527919581,
+          "mse_valence": 0.00581545153688488,
+          "n_examples": 1395,
+          "pearson_corr_arousal": 0.8179609721476058,
+          "pearson_corr_mean": 0.7790835311663682,
+          "pearson_corr_valence": 0.7402060901851307,
+          "rmse_arousal": 0.09312009191873837,
+          "rmse_valence": 0.0762591078946304
+        },
+        "Emobank": {
+          "ccc_arousal": 0.8151682316491151,
+          "ccc_mean": 0.7861310679243532,
+          "ccc_valence": 0.7570939041995911,
+          "mae_arousal": 0.061064590371758654,
+          "mae_mean": 0.055658675377210705,
+          "mae_valence": 0.050252760382662756,
+          "mse_arousal": 0.007844439023081823,
+          "mse_mean": 0.006447660985871028,
+          "mse_valence": 0.005050882948660233,
+          "n_examples": 10062,
+          "pearson_corr_arousal": 0.8252638150548471,
+          "pearson_corr_mean": 0.7964777630215208,
+          "pearson_corr_valence": 0.7676917109881946,
+          "rmse_arousal": 0.08856883776521979,
+          "rmse_valence": 0.07106956415133157
+        },
+        "fb": {
+          "ccc_arousal": 0.8146161622235245,
+          "ccc_mean": 0.7795362322383528,
+          "ccc_valence": 0.744456302253181,
+          "mae_arousal": 0.062421459461432044,
+          "mae_mean": 0.05704466677713167,
+          "mae_valence": 0.05166787409283131,
+          "mse_arousal": 0.0080145190645256,
+          "mse_mean": 0.006698978390628826,
+          "mse_valence": 0.005383437716732051,
+          "n_examples": 2895,
+          "pearson_corr_arousal": 0.8254981271052172,
+          "pearson_corr_mean": 0.7897997049970389,
+          "pearson_corr_valence": 0.7541012828888607,
+          "rmse_arousal": 0.08952384634568378,
+          "rmse_valence": 0.07337191367772855
+        }
+      },
+      "metric_recomputation_max_abs_error": 1.1102230246251565e-16,
+      "metrics": {
+        "ccc_arousal": 0.8143667920078347,
+        "ccc_mean": 0.7829119243926232,
+        "ccc_valence": 0.7514570567774118,
+        "mae_arousal": 0.06163890690801285,
+        "mae_mean": 0.0562965809475317,
+        "mae_valence": 0.05095425498705054,
+        "mse_arousal": 0.007959121621445943,
+        "mse_mean": 0.006575700418906951,
+        "mse_valence": 0.005192279216367959,
+        "n_examples": 14352.0,
+        "pearson_corr_arousal": 0.8245595843112647,
+        "pearson_corr_mean": 0.7934143466440169,
+        "pearson_corr_valence": 0.7622691089767689,
+        "rmse_arousal": 0.0892139093496409,
+        "rmse_valence": 0.07205747162069981
+      },
+      "run_name": "paper7_sentence_only_qwen_full_gaze_TRT_raw_bf16_gc_b16_seed42_20260915_151345"
+    }
+  },
+  "initial_common_probe_predictions_match": true,
+  "input_sha256": {
+    "/Users/wansookim/Downloads/qwen3.5-0.8b_full_gaze_TRT_redistribution_asym-gaussian_sentence_only_no_iemocap_seed42_results_only (1).zip": "d6c8db31ae4956bbccedc1b94f264133cc25da48645442ffed5d1f17e589f4a8",
+    "/Users/wansookim/Downloads/sigma_sentence_only_alignv2_results_only.zip": "68d906b780df1faef1a50e5d4205735ff4668e291e8117d13f6d58f180dd4ffa",
+    "/Users/wansookim/Downloads/sigma_sentence_only_seed42_results_only.zip": "eb5ddd199076fefb4141e6da6b1455051c0c04737180d66e361262dc9d56b9e5"
+  },
+  "limitations": [
+    "One paired seed per held-out fold; no across-seed uncertainty estimate.",
+    "Held-out fold MSE also selects the best epoch; this is not an independent final test set.",
+    "Historical runs differ in alignment and GPU hardware; cross-version deltas are descriptive."
+  ],
+  "new_raw_config_differences_from_historical_raw": {
+    "cuda_device": [
+      "NVIDIA GeForce RTX 4090",
+      "NVIDIA GeForce RTX 3090"
+    ],
+    "effective_output_dir": [
+      "/workspace/decoder_VA_gaze_concat/results/paper7_sentence_only_qwen_full_gaze_TRT_raw_bf16_gc_b16_seed42_20260915_151345",
+      "/workspace/decoder_VA_gaze_concat/results/paper7_sentence_only_qwen_full_gaze_TRT_raw_alignv2_bf16_gc_b16_seed42_20260929_152101"
+    ],
+    "gaze_alignment": [
+      null,
+      {
+        "anchor": "first_overlapping_non_whitespace_token",
+        "collision_reduction": {
+          "FFD": "mean",
+          "GPT": "mean",
+          "TRT": "sum",
+          "fixProp": "mean",
+          "nFix": "sum"
+        },
+        "token_spans": "verified_tokenizer_offsets",
+        "unmatched_policy": "error",
+        "version": 2,
+        "word_spans": "decoded_text_exact"
+      }
+    ],
+    "run_name": [
+      "paper7_sentence_only_qwen_full_gaze_TRT_raw_bf16_gc_b16_seed42_20260915_151345",
+      "paper7_sentence_only_qwen_full_gaze_TRT_raw_alignv2_bf16_gc_b16_seed42_20260929_152101"
+    ]
+  },
+  "new_rows_labels_folds_match": true,
+  "new_runs": {
+    "left": {
+      "config": {
+        "architecture_manifest_version": 7,
+        "attn_implementation": null,
+        "cuda_device": "NVIDIA GeForce RTX 3090",
+        "cuda_runtime": "13.0",
+        "data_dir": "data/paper7_seed42",
+        "dataset_counts_after_filter": {
+          "EmoTales sentences": 1395,
+          "Emobank": 10062,
+          "fb": 2895
+        },
+        "dry_run": false,
+        "dtype": "bfloat16",
+        "effective_output_dir": "/workspace/decoder_VA_gaze_concat/results/paper7_sentence_only_qwen_full_gaze_TRT_fixed_left_l2_r0p5_alignv2_bf16_gc_b16_seed42_20260929_203941",
+        "epochs": 10.0,
+        "et_cache_size": 70000,
+        "et_filename": "et_predictor2_seed123.safetensors",
+        "et_model_id": "skboy/et_prediction_2",
+        "et_revision": "5785e77309d9fce8b88e908a9db100c1a0a63456",
+        "eval_batch_size": 16,
+        "exclude_dataset": [],
+        "excluded_dataset_names": [
+          "GlasgowNorms",
+          "IEMOCAP sentences",
+          "nrc-vad",
+          "word ratings ENG"
+        ],
+        "features_used": [
+          0,
+          0,
+          0,
+          1,
+          0
+        ],
+        "finetuning_mode": "full",
+        "fold_protocol": "two-fold out-of-fold; train the opposite fold and predict held-out",
+        "fold_sha256": {
+          "full_dataset_fold1.csv": "86c882ca8b895f1008863a0dad909a1dd02c2c5e9007af2a4c3dc864e2d988b5",
+          "full_dataset_fold2.csv": "47ad2496e7c20ddb214684a748086c4d54b983b1655c3e8fe53ce4cbbb7e899a"
+        },
+        "gaze_alignment": {
+          "anchor": "first_overlapping_non_whitespace_token",
+          "collision_reduction": {
+            "FFD": "mean",
+            "GPT": "mean",
+            "TRT": "sum",
+            "fixProp": "mean",
+            "nFix": "sum"
+          },
+          "token_spans": "verified_tokenizer_offsets",
+          "unmatched_policy": "error",
+          "version": 2,
+          "word_spans": "decoded_text_exact"
+        },
+        "gaze_concat_order": "eye_start, compact_selected_gaze, eye_end, text",
+        "gaze_feature_indices": [
+          3
+        ],
+        "gaze_features": [
+          "TRT"
+        ],
+        "gaze_fusion": "prefix-concat",
+        "gaze_redistribution": {
+          "compute_dtype": "float32",
+          "feature": "TRT",
+          "init_sigma_left": 2.0,
+          "init_sigma_right": 0.5,
+          "mask_policy": "valid_gaze_sources_and_targets",
+          "method": "fixed-gaussian",
+          "min_sigma": 1e-06,
+          "normalization": "per_source_unit_mass",
+          "position_space": "aligned_qwen_tokens",
+          "trainable": false
+        },
+        "gpu_memory_measurement": {
+          "filename": "gpu_memory.json",
+          "scope": "per-fold current and peak CUDA allocated/reserved memory"
+        },
+        "gradient_accumulation_steps": 1,
+        "gradient_checkpointing": true,
+        "group_by_length": true,
+        "held_out_folds": [
+          1,
+          2
+        ],
+        "learning_rate": 6e-06,
+        "list_datasets": false,
+        "logging_steps": 200,
+        "lora_alpha": null,
+        "lora_dropout": null,
+        "lora_rank": null,
+        "loss": "mse",
+        "max_length": 200,
+        "max_steps": -1,
+        "model": "qwen3.5-0.8b",
+        "model_id": "Qwen/Qwen3.5-0.8B-Base",
+        "model_revision": "dc7cdfe2ee4154fa7e30f5b51ca41bfa40174e68",
+        "no_iemocap": false,
+        "no_ieomcap": false,
+        "output_activation": "hard_sigmoid",
+        "output_dim": 2,
+        "paired_ablation_seed_policy": {
+          "formula": "base_seed + held_out_fold - 1",
+          "paper_protocol_requirement": false,
+          "purpose": "pair baseline and gaze initialization within each held-out fold"
+        },
+        "peft_version": "0.20.0",
+        "pooling_position": "last_valid_text_token_after_gaze_prefix",
+        "precision": "bf16",
+        "python_version": "3.11.16",
+        "redistribution_learning_rate": null,
+        "redistribution_min_sigma": 1e-06,
+        "redistribution_sigma_left": 2.0,
+        "redistribution_sigma_right": 0.5,
+        "redistribution_weight_decay": null,
+        "report_to": [],
+        "results_root": "/workspace/decoder_VA_gaze_concat/results",
+        "resume_from_checkpoint": null,
+        "run_name": "paper7_sentence_only_qwen_full_gaze_TRT_fixed_left_l2_r0p5_alignv2_bf16_gc_b16_seed42_20260929_203941",
+        "save_total_limit": 1,
+        "seed": 42,
+        "sentence_only": true,
+        "sigma_diagnostics_batch_size": 2,
+        "sigma_diagnostics_steps": 50,
+        "torch_version": "2.12.1+cu130",
+        "train_batch_size": 16,
+        "transformers_version": "5.16.1",
+        "use_cpu": false,
+        "warmup_ratio": 0.1,
+        "weight_decay": 0.01
+      },
+      "datasets": {
+        "EmoTales sentences": {
+          "ccc_arousal": 0.8164283565457973,
+          "ccc_mean": 0.7707434803087212,
+          "ccc_valence": 0.7250586040716452,
+          "mae_arousal": 0.0611822091790724,
+          "mae_mean": 0.057338350216814694,
+          "mae_valence": 0.05349449125455699,
+          "mse_arousal": 0.008225249411605816,
+          "mse_mean": 0.006975683212289769,
+          "mse_valence": 0.005726117012973723,
+          "n_examples": 1395,
+          "pearson_corr_arousal": 0.8272617057956707,
+          "pearson_corr_mean": 0.7851177830582963,
+          "pearson_corr_valence": 0.7429738603209217,
+          "rmse_arousal": 0.09069316077635521,
+          "rmse_valence": 0.07567111082159243
+        },
+        "Emobank": {
+          "ccc_arousal": 0.8192908736016732,
+          "ccc_mean": 0.7879899878523798,
+          "ccc_valence": 0.7566891021030865,
+          "mae_arousal": 0.05982133356476311,
+          "mae_mean": 0.05476651599534823,
+          "mae_valence": 0.04971169842593335,
+          "mse_arousal": 0.007691326074008846,
+          "mse_mean": 0.006330196321153981,
+          "mse_valence": 0.0049690665682991155,
+          "n_examples": 10062,
+          "pearson_corr_arousal": 0.8290764009723994,
+          "pearson_corr_mean": 0.799524974996842,
+          "pearson_corr_valence": 0.7699735490212847,
+          "rmse_arousal": 0.08770020566685603,
+          "rmse_valence": 0.0704916063677025
+        },
+        "fb": {
+          "ccc_arousal": 0.8134465350542416,
+          "ccc_mean": 0.7859443862998985,
+          "ccc_valence": 0.7584422375455554,
+          "mae_arousal": 0.061742690125792345,
+          "mae_mean": 0.0558969910981999,
+          "mae_valence": 0.05005129207060745,
+          "mse_arousal": 0.008134508318712375,
+          "mse_mean": 0.006572491351801396,
+          "mse_valence": 0.005010474384890417,
+          "n_examples": 2895,
+          "pearson_corr_arousal": 0.8231198653316633,
+          "pearson_corr_mean": 0.7967412946067554,
+          "pearson_corr_valence": 0.7703627238818475,
+          "rmse_arousal": 0.09019150912759125,
+          "rmse_valence": 0.07078470445576797
+        }
+      },
+      "folds": {
+        "1": {
+          "all_recorded_sigma_updates_zero": true,
+          "completed_epoch": 10.0,
+          "completed_step": 4490,
+          "initial_probe_cases": {
+            "left_05_right_2": [
+              [
+                0.5546875,
+                0.54296875
+              ],
+              [
+                0.37890625,
+                0.58984375
+              ]
+            ],
+            "left_2_right_05": [
+              [
+                0.4921875,
+                0.48046875
+              ],
+              [
+                0.4375,
+                0.5859375
+              ]
+            ],
+            "raw": [
+              [
+                0.578125,
+                0.6171875
+              ],
+              [
+                0.40234375,
+                0.59375
+              ]
+            ],
+            "symmetric_1": [
+              [
+                0.59765625,
+                0.578125
+              ],
+              [
+                0.39453125,
+                0.57421875
+              ]
+            ]
+          },
+          "metrics": {
+            "ccc_arousal": 0.8139348860778932,
+            "ccc_mean": 0.7857325232403074,
+            "ccc_valence": 0.7575301604027216,
+            "mae_arousal": 0.06082373010312639,
+            "mae_mean": 0.05530084091897418,
+            "mae_valence": 0.04977795173482197,
+            "mse_arousal": 0.008040486481575524,
+            "mse_mean": 0.006545010816136897,
+            "mse_valence": 0.005049535150698271,
+            "n_examples": 7175,
+            "pearson_corr_arousal": 0.8247090639913923,
+            "pearson_corr_mean": 0.7989703298000355,
+            "pearson_corr_valence": 0.7732315956086787,
+            "rmse_arousal": 0.08966875978609007,
+            "rmse_valence": 0.07106008127421662
+          },
+          "selected_epoch": 5.0,
+          "selected_sigma": [
+            2.0000009536743164,
+            0.5000010132789612
+          ],
+          "selected_step": 2245
+        },
+        "2": {
+          "all_recorded_sigma_updates_zero": true,
+          "completed_epoch": 10.0,
+          "completed_step": 4490,
+          "initial_probe_cases": {
+            "left_05_right_2": [
+              [
+                0.546875,
+                0.44140625
+              ],
+              [
+                0.6328125,
+                0.47265625
+              ]
+            ],
+            "left_2_right_05": [
+              [
+                0.59765625,
+                0.43359375
+              ],
+              [
+                0.68359375,
+                0.451171875
+              ]
+            ],
+            "raw": [
+              [
+                0.5546875,
+                0.44140625
+              ],
+              [
+                0.6953125,
+                0.4453125
+              ]
+            ],
+            "symmetric_1": [
+              [
+                0.55859375,
+                0.435546875
+              ],
+              [
+                0.69921875,
+                0.455078125
+              ]
+            ]
+          },
+          "metrics": {
+            "ccc_arousal": 0.8217464571985686,
+            "ccc_mean": 0.7860879239714093,
+            "ccc_valence": 0.7504293907442499,
+            "mae_arousal": 0.05985875220254834,
+            "mae_mean": 0.0551882315916538,
+            "mae_valence": 0.050517710980759266,
+            "mse_arousal": 0.007624809385987888,
+            "mse_mean": 0.006338640563226751,
+            "mse_valence": 0.005052471740465615,
+            "n_examples": 7177,
+            "pearson_corr_arousal": 0.8332294828789069,
+            "pearson_corr_mean": 0.7977477631311112,
+            "pearson_corr_valence": 0.7622660433833154,
+            "rmse_arousal": 0.0873201545233853,
+            "rmse_valence": 0.07108074099547369
+          },
+          "selected_epoch": 6.0,
+          "selected_sigma": [
+            2.0000009536743164,
+            0.5000010132789612
+          ],
+          "selected_step": 2694
+        }
+      },
+      "metrics": {
+        "ccc_arousal": 0.8178072561973825,
+        "ccc_mean": 0.7859073807298746,
+        "ccc_valence": 0.7540075052623667,
+        "mae_arousal": 0.06034117391636157,
+        "mae_mean": 0.055244528409067656,
+        "mae_valence": 0.05014788290177375,
+        "mse_arousal": 0.007832618970773374,
+        "mse_mean": 0.006441811310483601,
+        "mse_valence": 0.005051003650193827,
+        "n_examples": 14352.0,
+        "pearson_corr_arousal": 0.8276601722359125,
+        "pearson_corr_mean": 0.7975466271077214,
+        "pearson_corr_valence": 0.7674330819795302,
+        "rmse_arousal": 0.08850208455609039,
+        "rmse_valence": 0.07107041332505269
+      },
+      "oof_recomputation_max_abs_error": 1.1102230246251565e-16,
+      "run_name": "paper7_sentence_only_qwen_full_gaze_TRT_fixed_left_l2_r0p5_alignv2_bf16_gc_b16_seed42_20260929_203941",
+      "verified_manifest_files": 22
+    },
+    "raw": {
+      "config": {
+        "architecture_manifest_version": 7,
+        "attn_implementation": null,
+        "cuda_device": "NVIDIA GeForce RTX 3090",
+        "cuda_runtime": "13.0",
+        "data_dir": "data/paper7_seed42",
+        "dataset_counts_after_filter": {
+          "EmoTales sentences": 1395,
+          "Emobank": 10062,
+          "fb": 2895
+        },
+        "dry_run": false,
+        "dtype": "bfloat16",
+        "effective_output_dir": "/workspace/decoder_VA_gaze_concat/results/paper7_sentence_only_qwen_full_gaze_TRT_raw_alignv2_bf16_gc_b16_seed42_20260929_152101",
+        "epochs": 10.0,
+        "et_cache_size": 70000,
+        "et_filename": "et_predictor2_seed123.safetensors",
+        "et_model_id": "skboy/et_prediction_2",
+        "et_revision": "5785e77309d9fce8b88e908a9db100c1a0a63456",
+        "eval_batch_size": 16,
+        "exclude_dataset": [],
+        "excluded_dataset_names": [
+          "GlasgowNorms",
+          "IEMOCAP sentences",
+          "nrc-vad",
+          "word ratings ENG"
+        ],
+        "features_used": [
+          0,
+          0,
+          0,
+          1,
+          0
+        ],
+        "finetuning_mode": "full",
+        "fold_protocol": "two-fold out-of-fold; train the opposite fold and predict held-out",
+        "fold_sha256": {
+          "full_dataset_fold1.csv": "86c882ca8b895f1008863a0dad909a1dd02c2c5e9007af2a4c3dc864e2d988b5",
+          "full_dataset_fold2.csv": "47ad2496e7c20ddb214684a748086c4d54b983b1655c3e8fe53ce4cbbb7e899a"
+        },
+        "gaze_alignment": {
+          "anchor": "first_overlapping_non_whitespace_token",
+          "collision_reduction": {
+            "FFD": "mean",
+            "GPT": "mean",
+            "TRT": "sum",
+            "fixProp": "mean",
+            "nFix": "sum"
+          },
+          "token_spans": "verified_tokenizer_offsets",
+          "unmatched_policy": "error",
+          "version": 2,
+          "word_spans": "decoded_text_exact"
+        },
+        "gaze_concat_order": "eye_start, compact_selected_gaze, eye_end, text",
+        "gaze_feature_indices": [
+          3
+        ],
+        "gaze_features": [
+          "TRT"
+        ],
+        "gaze_fusion": "prefix-concat",
+        "gaze_redistribution": {
+          "method": "none"
+        },
+        "gpu_memory_measurement": {
+          "filename": "gpu_memory.json",
+          "scope": "per-fold current and peak CUDA allocated/reserved memory"
+        },
+        "gradient_accumulation_steps": 1,
+        "gradient_checkpointing": true,
+        "group_by_length": true,
+        "held_out_folds": [
+          1,
+          2
+        ],
+        "learning_rate": 6e-06,
+        "list_datasets": false,
+        "logging_steps": 200,
+        "lora_alpha": null,
+        "lora_dropout": null,
+        "lora_rank": null,
+        "loss": "mse",
+        "max_length": 200,
+        "max_steps": -1,
+        "model": "qwen3.5-0.8b",
+        "model_id": "Qwen/Qwen3.5-0.8B-Base",
+        "model_revision": "dc7cdfe2ee4154fa7e30f5b51ca41bfa40174e68",
+        "no_iemocap": false,
+        "no_ieomcap": false,
+        "output_activation": "hard_sigmoid",
+        "output_dim": 2,
+        "paired_ablation_seed_policy": {
+          "formula": "base_seed + held_out_fold - 1",
+          "paper_protocol_requirement": false,
+          "purpose": "pair baseline and gaze initialization within each held-out fold"
+        },
+        "peft_version": "0.20.0",
+        "pooling_position": "last_valid_text_token_after_gaze_prefix",
+        "precision": "bf16",
+        "python_version": "3.11.16",
+        "redistribution_learning_rate": null,
+        "redistribution_min_sigma": 1e-06,
+        "redistribution_sigma_left": 1.0,
+        "redistribution_sigma_right": 1.0,
+        "redistribution_weight_decay": null,
+        "report_to": [],
+        "results_root": "/workspace/decoder_VA_gaze_concat/results",
+        "resume_from_checkpoint": null,
+        "run_name": "paper7_sentence_only_qwen_full_gaze_TRT_raw_alignv2_bf16_gc_b16_seed42_20260929_152101",
+        "save_total_limit": 1,
+        "seed": 42,
+        "sentence_only": true,
+        "sigma_diagnostics_batch_size": 2,
+        "sigma_diagnostics_steps": 50,
+        "torch_version": "2.12.1+cu130",
+        "train_batch_size": 16,
+        "transformers_version": "5.16.1",
+        "use_cpu": false,
+        "warmup_ratio": 0.1,
+        "weight_decay": 0.01
+      },
+      "datasets": {
+        "EmoTales sentences": {
+          "ccc_arousal": 0.8072553941456232,
+          "ccc_mean": 0.7618780230477338,
+          "ccc_valence": 0.7165006519498444,
+          "mae_arousal": 0.06344672268703846,
+          "mae_mean": 0.058821096157781964,
+          "mae_valence": 0.054195469628525464,
+          "mse_arousal": 0.00865234700172568,
+          "mse_mean": 0.007296406648316324,
+          "mse_valence": 0.005940466294906969,
+          "n_examples": 1395,
+          "pearson_corr_arousal": 0.818000131245837,
+          "pearson_corr_mean": 0.7755109295743371,
+          "pearson_corr_valence": 0.7330217279028372,
+          "rmse_arousal": 0.09301799289237368,
+          "rmse_valence": 0.0770744204967314
+        },
+        "Emobank": {
+          "ccc_arousal": 0.81061036636475,
+          "ccc_mean": 0.782622720353521,
+          "ccc_valence": 0.754635074342292,
+          "mae_arousal": 0.06118643221163449,
+          "mae_mean": 0.055921488907650974,
+          "mae_valence": 0.050656545603667454,
+          "mse_arousal": 0.008032178779575095,
+          "mse_mean": 0.006559787494505422,
+          "mse_valence": 0.005087396209435749,
+          "n_examples": 10062,
+          "pearson_corr_arousal": 0.8207069156652246,
+          "pearson_corr_mean": 0.7930574624685031,
+          "pearson_corr_valence": 0.7654080092717815,
+          "rmse_arousal": 0.08962242341944952,
+          "rmse_valence": 0.0713259855132458
+        },
+        "fb": {
+          "ccc_arousal": 0.8095136523106032,
+          "ccc_mean": 0.7829872125877777,
+          "ccc_valence": 0.7564607728649521,
+          "mae_arousal": 0.06297266003329931,
+          "mae_mean": 0.0569632594944951,
+          "mae_valence": 0.0509538589556909,
+          "mse_arousal": 0.0082486304129647,
+          "mse_mean": 0.006706611870345125,
+          "mse_valence": 0.005164593327725549,
+          "n_examples": 2895,
+          "pearson_corr_arousal": 0.8200151746867307,
+          "pearson_corr_mean": 0.7925514479705904,
+          "pearson_corr_valence": 0.76508772125445,
+          "rmse_arousal": 0.09082197098150149,
+          "rmse_valence": 0.0718651050769812
+        }
+      },
+      "folds": {
+        "1": {
+          "all_recorded_sigma_updates_zero": true,
+          "completed_epoch": 10.0,
+          "completed_step": 4490,
+          "initial_probe_cases": {
+            "left_05_right_2": [
+              [
+                0.5546875,
+                0.54296875
+              ],
+              [
+                0.37890625,
+                0.58984375
+              ]
+            ],
+            "left_2_right_05": [
+              [
+                0.4921875,
+                0.48046875
+              ],
+              [
+                0.4375,
+                0.5859375
+              ]
+            ],
+            "raw": [
+              [
+                0.578125,
+                0.6171875
+              ],
+              [
+                0.40234375,
+                0.59375
+              ]
+            ],
+            "symmetric_1": [
+              [
+                0.59765625,
+                0.578125
+              ],
+              [
+                0.39453125,
+                0.57421875
+              ]
+            ]
+          },
+          "metrics": {
+            "ccc_arousal": 0.8117312151331263,
+            "ccc_mean": 0.7857565668040813,
+            "ccc_valence": 0.7597819184750364,
+            "mae_arousal": 0.061249331341284075,
+            "mae_mean": 0.0559326448639407,
+            "mae_valence": 0.05061595838659732,
+            "mse_arousal": 0.008200066470344113,
+            "mse_mean": 0.006668325576591489,
+            "mse_valence": 0.005136584682838866,
+            "n_examples": 7175,
+            "pearson_corr_arousal": 0.8191789033884901,
+            "pearson_corr_mean": 0.7950181804647984,
+            "pearson_corr_valence": 0.7708574575411068,
+            "rmse_arousal": 0.09055421840170734,
+            "rmse_valence": 0.07166997057930793
+          },
+          "selected_epoch": 6.0,
+          "selected_sigma": null,
+          "selected_step": 2694
+        },
+        "2": {
+          "all_recorded_sigma_updates_zero": true,
+          "completed_epoch": 10.0,
+          "completed_step": 4490,
+          "initial_probe_cases": {
+            "left_05_right_2": [
+              [
+                0.546875,
+                0.44140625
+              ],
+              [
+                0.6328125,
+                0.47265625
+              ]
+            ],
+            "left_2_right_05": [
+              [
+                0.59765625,
+                0.43359375
+              ],
+              [
+                0.68359375,
+                0.451171875
+              ]
+            ],
+            "raw": [
+              [
+                0.5546875,
+                0.44140625
+              ],
+              [
+                0.6953125,
+                0.4453125
+              ]
+            ],
+            "symmetric_1": [
+              [
+                0.55859375,
+                0.435546875
+              ],
+              [
+                0.69921875,
+                0.455078125
+              ]
+            ]
+          },
+          "metrics": {
+            "ccc_arousal": 0.8083113490199908,
+            "ccc_mean": 0.7754278382854793,
+            "ccc_valence": 0.742544327550968,
+            "mae_arousal": 0.062283399398714384,
+            "mae_mean": 0.05689415631415337,
+            "mae_valence": 0.05150491322959235,
+            "mse_arousal": 0.008072191036408768,
+            "mse_mean": 0.006653681816458135,
+            "mse_valence": 0.005235172596507502,
+            "n_examples": 7177,
+            "pearson_corr_arousal": 0.8219359034812966,
+            "pearson_corr_mean": 0.7876892018055076,
+            "pearson_corr_valence": 0.7534425001297186,
+            "rmse_arousal": 0.08984537292709496,
+            "rmse_valence": 0.07235449257998774
+          },
+          "selected_epoch": 6.0,
+          "selected_sigma": null,
+          "selected_step": 2694
+        }
+      },
+      "metrics": {
+        "ccc_arousal": 0.8100488808494043,
+        "ccc_mean": 0.7807054033622892,
+        "ccc_valence": 0.7513619258751741,
+        "mae_arousal": 0.06176643742044916,
+        "mae_mean": 0.056413467583992,
+        "mae_valence": 0.05106049774753484,
+        "mse_arousal": 0.00813611984343818,
+        "mse_mean": 0.006661002676195928,
+        "mse_valence": 0.005185885508953678,
+        "n_examples": 14352.0,
+        "pearson_corr_arousal": 0.8202884516897893,
+        "pearson_corr_mean": 0.79123053937766,
+        "pearson_corr_valence": 0.7621726270655308,
+        "rmse_arousal": 0.09020044259003489,
+        "rmse_valence": 0.07201309262178425
+      },
+      "oof_recomputation_max_abs_error": 2.220446049250313e-16,
+      "run_name": "paper7_sentence_only_qwen_full_gaze_TRT_raw_alignv2_bf16_gc_b16_seed42_20260929_152101",
+      "verified_manifest_files": 22
+    },
+    "right": {
+      "config": {
+        "architecture_manifest_version": 7,
+        "attn_implementation": null,
+        "cuda_device": "NVIDIA GeForce RTX 3090",
+        "cuda_runtime": "13.0",
+        "data_dir": "data/paper7_seed42",
+        "dataset_counts_after_filter": {
+          "EmoTales sentences": 1395,
+          "Emobank": 10062,
+          "fb": 2895
+        },
+        "dry_run": false,
+        "dtype": "bfloat16",
+        "effective_output_dir": "/workspace/decoder_VA_gaze_concat/results/paper7_sentence_only_qwen_full_gaze_TRT_fixed_right_l0p5_r2_alignv2_bf16_gc_b16_seed42_20260929_180122",
+        "epochs": 10.0,
+        "et_cache_size": 70000,
+        "et_filename": "et_predictor2_seed123.safetensors",
+        "et_model_id": "skboy/et_prediction_2",
+        "et_revision": "5785e77309d9fce8b88e908a9db100c1a0a63456",
+        "eval_batch_size": 16,
+        "exclude_dataset": [],
+        "excluded_dataset_names": [
+          "GlasgowNorms",
+          "IEMOCAP sentences",
+          "nrc-vad",
+          "word ratings ENG"
+        ],
+        "features_used": [
+          0,
+          0,
+          0,
+          1,
+          0
+        ],
+        "finetuning_mode": "full",
+        "fold_protocol": "two-fold out-of-fold; train the opposite fold and predict held-out",
+        "fold_sha256": {
+          "full_dataset_fold1.csv": "86c882ca8b895f1008863a0dad909a1dd02c2c5e9007af2a4c3dc864e2d988b5",
+          "full_dataset_fold2.csv": "47ad2496e7c20ddb214684a748086c4d54b983b1655c3e8fe53ce4cbbb7e899a"
+        },
+        "gaze_alignment": {
+          "anchor": "first_overlapping_non_whitespace_token",
+          "collision_reduction": {
+            "FFD": "mean",
+            "GPT": "mean",
+            "TRT": "sum",
+            "fixProp": "mean",
+            "nFix": "sum"
+          },
+          "token_spans": "verified_tokenizer_offsets",
+          "unmatched_policy": "error",
+          "version": 2,
+          "word_spans": "decoded_text_exact"
+        },
+        "gaze_concat_order": "eye_start, compact_selected_gaze, eye_end, text",
+        "gaze_feature_indices": [
+          3
+        ],
+        "gaze_features": [
+          "TRT"
+        ],
+        "gaze_fusion": "prefix-concat",
+        "gaze_redistribution": {
+          "compute_dtype": "float32",
+          "feature": "TRT",
+          "init_sigma_left": 0.5,
+          "init_sigma_right": 2.0,
+          "mask_policy": "valid_gaze_sources_and_targets",
+          "method": "fixed-gaussian",
+          "min_sigma": 1e-06,
+          "normalization": "per_source_unit_mass",
+          "position_space": "aligned_qwen_tokens",
+          "trainable": false
+        },
+        "gpu_memory_measurement": {
+          "filename": "gpu_memory.json",
+          "scope": "per-fold current and peak CUDA allocated/reserved memory"
+        },
+        "gradient_accumulation_steps": 1,
+        "gradient_checkpointing": true,
+        "group_by_length": true,
+        "held_out_folds": [
+          1,
+          2
+        ],
+        "learning_rate": 6e-06,
+        "list_datasets": false,
+        "logging_steps": 200,
+        "lora_alpha": null,
+        "lora_dropout": null,
+        "lora_rank": null,
+        "loss": "mse",
+        "max_length": 200,
+        "max_steps": -1,
+        "model": "qwen3.5-0.8b",
+        "model_id": "Qwen/Qwen3.5-0.8B-Base",
+        "model_revision": "dc7cdfe2ee4154fa7e30f5b51ca41bfa40174e68",
+        "no_iemocap": false,
+        "no_ieomcap": false,
+        "output_activation": "hard_sigmoid",
+        "output_dim": 2,
+        "paired_ablation_seed_policy": {
+          "formula": "base_seed + held_out_fold - 1",
+          "paper_protocol_requirement": false,
+          "purpose": "pair baseline and gaze initialization within each held-out fold"
+        },
+        "peft_version": "0.20.0",
+        "pooling_position": "last_valid_text_token_after_gaze_prefix",
+        "precision": "bf16",
+        "python_version": "3.11.16",
+        "redistribution_learning_rate": null,
+        "redistribution_min_sigma": 1e-06,
+        "redistribution_sigma_left": 0.5,
+        "redistribution_sigma_right": 2.0,
+        "redistribution_weight_decay": null,
+        "report_to": [],
+        "results_root": "/workspace/decoder_VA_gaze_concat/results",
+        "resume_from_checkpoint": null,
+        "run_name": "paper7_sentence_only_qwen_full_gaze_TRT_fixed_right_l0p5_r2_alignv2_bf16_gc_b16_seed42_20260929_180122",
+        "save_total_limit": 1,
+        "seed": 42,
+        "sentence_only": true,
+        "sigma_diagnostics_batch_size": 2,
+        "sigma_diagnostics_steps": 50,
+        "torch_version": "2.12.1+cu130",
+        "train_batch_size": 16,
+        "transformers_version": "5.16.1",
+        "use_cpu": false,
+        "warmup_ratio": 0.1,
+        "weight_decay": 0.01
+      },
+      "datasets": {
+        "EmoTales sentences": {
+          "ccc_arousal": 0.8041905987351484,
+          "ccc_mean": 0.7618426131981523,
+          "ccc_valence": 0.7194946276611561,
+          "mae_arousal": 0.06396809357308572,
+          "mae_mean": 0.05916472282060372,
+          "mae_valence": 0.05436135206812172,
+          "mse_arousal": 0.008764247095105916,
+          "mse_mean": 0.007305128644757651,
+          "mse_valence": 0.0058460101944093875,
+          "n_examples": 1395,
+          "pearson_corr_arousal": 0.8156267003442583,
+          "pearson_corr_mean": 0.7765204065938855,
+          "pearson_corr_valence": 0.7374141128435128,
+          "rmse_arousal": 0.09361755762198624,
+          "rmse_valence": 0.07645920608016661
+        },
+        "Emobank": {
+          "ccc_arousal": 0.8132212612914326,
+          "ccc_mean": 0.7844687488304178,
+          "ccc_valence": 0.7557162363694032,
+          "mae_arousal": 0.06069448403199597,
+          "mae_mean": 0.05549736887078101,
+          "mae_valence": 0.05030025370956605,
+          "mse_arousal": 0.00789616542800168,
+          "mse_mean": 0.006469680249466765,
+          "mse_valence": 0.00504319507093185,
+          "n_examples": 10062,
+          "pearson_corr_arousal": 0.8239625614039344,
+          "pearson_corr_mean": 0.7956064580506146,
+          "pearson_corr_valence": 0.7672503546972946,
+          "rmse_arousal": 0.0888603704021184,
+          "rmse_valence": 0.07101545656356685
+        },
+        "fb": {
+          "ccc_arousal": 0.81488588476862,
+          "ccc_mean": 0.7832621888995552,
+          "ccc_valence": 0.7516384930304906,
+          "mae_arousal": 0.0622285337825925,
+          "mae_mean": 0.05651235873642054,
+          "mae_valence": 0.05079618369024858,
+          "mse_arousal": 0.008030390965079409,
+          "mse_mean": 0.006618918345428248,
+          "mse_valence": 0.005207445725777087,
+          "n_examples": 2895,
+          "pearson_corr_arousal": 0.825318095987125,
+          "pearson_corr_mean": 0.7935839426091097,
+          "pearson_corr_valence": 0.7618497892310944,
+          "rmse_arousal": 0.08961244871712529,
+          "rmse_valence": 0.07216263386114095
+        }
+      },
+      "folds": {
+        "1": {
+          "all_recorded_sigma_updates_zero": true,
+          "completed_epoch": 10.0,
+          "completed_step": 4490,
+          "initial_probe_cases": {
+            "left_05_right_2": [
+              [
+                0.5546875,
+                0.54296875
+              ],
+              [
+                0.37890625,
+                0.58984375
+              ]
+            ],
+            "left_2_right_05": [
+              [
+                0.4921875,
+                0.48046875
+              ],
+              [
+                0.4375,
+                0.5859375
+              ]
+            ],
+            "raw": [
+              [
+                0.578125,
+                0.6171875
+              ],
+              [
+                0.40234375,
+                0.59375
+              ]
+            ],
+            "symmetric_1": [
+              [
+                0.59765625,
+                0.578125
+              ],
+              [
+                0.39453125,
+                0.57421875
+              ]
+            ]
+          },
+          "metrics": {
+            "ccc_arousal": 0.8073861593861111,
+            "ccc_mean": 0.7826981416815244,
+            "ccc_valence": 0.7580101239769376,
+            "mae_arousal": 0.061508673061373344,
+            "mae_mean": 0.05590728514571431,
+            "mae_valence": 0.050305897230055276,
+            "mse_arousal": 0.008247144715174352,
+            "mse_mean": 0.006695729667685675,
+            "mse_valence": 0.005144314620196999,
+            "n_examples": 7175,
+            "pearson_corr_arousal": 0.8172774521589118,
+            "pearson_corr_mean": 0.7936915806479938,
+            "pearson_corr_valence": 0.770105709137076,
+            "rmse_arousal": 0.09081379143706286,
+            "rmse_valence": 0.07172387761545662
+          },
+          "selected_epoch": 6.0,
+          "selected_sigma": [
+            0.5000010132789612,
+            2.0000009536743164
+          ],
+          "selected_step": 2694
+        },
+        "2": {
+          "all_recorded_sigma_updates_zero": true,
+          "completed_epoch": 10.0,
+          "completed_step": 4490,
+          "initial_probe_cases": {
+            "left_05_right_2": [
+              [
+                0.546875,
+                0.44140625
+              ],
+              [
+                0.6328125,
+                0.47265625
+              ]
+            ],
+            "left_2_right_05": [
+              [
+                0.59765625,
+                0.43359375
+              ],
+              [
+                0.68359375,
+                0.451171875
+              ]
+            ],
+            "raw": [
+              [
+                0.5546875,
+                0.44140625
+              ],
+              [
+                0.6953125,
+                0.4453125
+              ]
+            ],
+            "symmetric_1": [
+              [
+                0.55859375,
+                0.435546875
+              ],
+              [
+                0.69921875,
+                0.455078125
+              ]
+            ]
+          },
+          "metrics": {
+            "ccc_arousal": 0.8179236469386227,
+            "ccc_mean": 0.7812555804914476,
+            "ccc_valence": 0.7445875140442726,
+            "mae_arousal": 0.06113560888249263,
+            "mae_mean": 0.05620981211285746,
+            "mae_valence": 0.05128401534322229,
+            "mse_arousal": 0.007768156576111825,
+            "mse_mean": 0.006466279138071837,
+            "mse_valence": 0.005164401700031848,
+            "n_examples": 7177,
+            "pearson_corr_arousal": 0.8295643535543754,
+            "pearson_corr_mean": 0.793680077306611,
+            "pearson_corr_valence": 0.7577958010588468,
+            "rmse_arousal": 0.08813714640327212,
+            "rmse_valence": 0.07186377181885076
+          },
+          "selected_epoch": 6.0,
+          "selected_sigma": [
+            0.5000010132789612,
+            2.0000009536743164
+          ],
+          "selected_step": 2694
+        }
+      },
+      "metrics": {
+        "ccc_arousal": 0.8126459018904999,
+        "ccc_mean": 0.7820360711384213,
+        "ccc_valence": 0.7514262403863428,
+        "mae_arousal": 0.06132211497805207,
+        "mae_mean": 0.056058569708366646,
+        "mae_valence": 0.05079502443868123,
+        "mse_arousal": 0.008007617271330167,
+        "mse_mean": 0.006580988415523013,
+        "mse_valence": 0.00515435955971586,
+        "n_examples": 14352.0,
+        "pearson_corr_arousal": 0.8233879111838804,
+        "pearson_corr_mean": 0.7933171377121578,
+        "pearson_corr_valence": 0.7632463642404352,
+        "rmse_arousal": 0.08948529080988767,
+        "rmse_valence": 0.07179386853844735
+      },
+      "oof_recomputation_max_abs_error": 3.3306690738754696e-16,
+      "run_name": "paper7_sentence_only_qwen_full_gaze_TRT_fixed_right_l0p5_r2_alignv2_bf16_gc_b16_seed42_20260929_180122",
+      "verified_manifest_files": 22
+    }
+  },
+  "new_training_config_differences_from_raw": {
+    "left": {
+      "effective_output_dir": [
+        "/workspace/decoder_VA_gaze_concat/results/paper7_sentence_only_qwen_full_gaze_TRT_raw_alignv2_bf16_gc_b16_seed42_20260929_152101",
+        "/workspace/decoder_VA_gaze_concat/results/paper7_sentence_only_qwen_full_gaze_TRT_fixed_left_l2_r0p5_alignv2_bf16_gc_b16_seed42_20260929_203941"
+      ],
+      "gaze_redistribution": [
+        {
+          "method": "none"
+        },
+        {
+          "compute_dtype": "float32",
+          "feature": "TRT",
+          "init_sigma_left": 2.0,
+          "init_sigma_right": 0.5,
+          "mask_policy": "valid_gaze_sources_and_targets",
+          "method": "fixed-gaussian",
+          "min_sigma": 1e-06,
+          "normalization": "per_source_unit_mass",
+          "position_space": "aligned_qwen_tokens",
+          "trainable": false
+        }
+      ],
+      "redistribution_sigma_left": [
+        1.0,
+        2.0
+      ],
+      "redistribution_sigma_right": [
+        1.0,
+        0.5
+      ],
+      "run_name": [
+        "paper7_sentence_only_qwen_full_gaze_TRT_raw_alignv2_bf16_gc_b16_seed42_20260929_152101",
+        "paper7_sentence_only_qwen_full_gaze_TRT_fixed_left_l2_r0p5_alignv2_bf16_gc_b16_seed42_20260929_203941"
+      ]
+    },
+    "raw": {},
+    "right": {
+      "effective_output_dir": [
+        "/workspace/decoder_VA_gaze_concat/results/paper7_sentence_only_qwen_full_gaze_TRT_raw_alignv2_bf16_gc_b16_seed42_20260929_152101",
+        "/workspace/decoder_VA_gaze_concat/results/paper7_sentence_only_qwen_full_gaze_TRT_fixed_right_l0p5_r2_alignv2_bf16_gc_b16_seed42_20260929_180122"
+      ],
+      "gaze_redistribution": [
+        {
+          "method": "none"
+        },
+        {
+          "compute_dtype": "float32",
+          "feature": "TRT",
+          "init_sigma_left": 0.5,
+          "init_sigma_right": 2.0,
+          "mask_policy": "valid_gaze_sources_and_targets",
+          "method": "fixed-gaussian",
+          "min_sigma": 1e-06,
+          "normalization": "per_source_unit_mass",
+          "position_space": "aligned_qwen_tokens",
+          "trainable": false
+        }
+      ],
+      "redistribution_sigma_left": [
+        1.0,
+        0.5
+      ],
+      "redistribution_sigma_right": [
+        1.0,
+        2.0
+      ],
+      "run_name": [
+        "paper7_sentence_only_qwen_full_gaze_TRT_raw_alignv2_bf16_gc_b16_seed42_20260929_152101",
+        "paper7_sentence_only_qwen_full_gaze_TRT_fixed_right_l0p5_r2_alignv2_bf16_gc_b16_seed42_20260929_180122"
+      ]
+    }
+  }
+}

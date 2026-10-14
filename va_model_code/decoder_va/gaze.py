@@ -4,7 +4,6 @@ from __future__ import annotations
 
 from collections import OrderedDict
 from contextlib import nullcontext
-import unicodedata
 from typing import Sequence
 
 import torch
@@ -148,43 +147,10 @@ class _ET2RegressionModel(nn.Module):
         return self.decoder(hidden)
 
 
-def _is_cjk(character: str) -> bool:
-    """Return whether a character belongs to the supported CJK/Hangul ranges."""
-
-    code = ord(character)
-    return (
-        0x3400 <= code <= 0x4DBF
-        or 0x4E00 <= code <= 0x9FFF
-        or 0xF900 <= code <= 0xFAFF
-        or 0x3040 <= code <= 0x30FF
-        or 0x1100 <= code <= 0x11FF
-        or 0x3130 <= code <= 0x318F
-        or 0xAC00 <= code <= 0xD7AF
-    )
-
-
 def segment_text_for_et2(text: str) -> list[str]:
-    """Split text on whitespace and isolate CJK, punctuation, and symbols."""
+    """Use the pinned ET2 predictor's whitespace-pretokenized input convention."""
 
-    segments: list[str] = []
-    buffer: list[str] = []
-
-    def flush_buffer() -> None:
-        if buffer:
-            segments.append("".join(buffer))
-            buffer.clear()
-
-    for character in str(text or ""):
-        category = unicodedata.category(character)
-        if character.isspace():
-            flush_buffer()
-        elif _is_cjk(character) or category.startswith(("P", "S")):
-            flush_buffer()
-            segments.append(character)
-        else:
-            buffer.append(character)
-    flush_buffer()
-    return segments
+    return str(text or "").strip().split()
 
 
 class ET2GazeProvider:
@@ -436,7 +402,7 @@ class ET2GazeProvider:
         target_rows: Sequence[Sequence[int]],
         execution_device: torch.device,
     ) -> list[tuple[torch.Tensor, torch.Tensor]]:
-        """Batch uncached texts through ET2 and return selected CPU-aligned rows."""
+        """Align finite first-subword predictions, clamped as in pinned ET2 inference."""
 
         decoded_rows = self._decode_target_rows(target_rows)
         segmented_rows = [segment_text_for_et2(text) for text in decoded_rows]
@@ -529,8 +495,12 @@ class ET2GazeProvider:
                     list(self.feature_indices),
                 ]
                 if not bool(torch.isfinite(feature).all().item()):
-                    continue
-                word_features[word_index] = feature
+                    raise RuntimeError(
+                        "ET2 returned a nonfinite selected first-subword prediction "
+                        f"for row {result_index}, word {word_index}, "
+                        f"token {token_index}; later subwords cannot replace it."
+                    )
+                word_features[word_index] = feature.clamp_min(0)
                 word_feature_mask[word_index] = True
 
             results[result_index] = self._map_predictions_to_target(

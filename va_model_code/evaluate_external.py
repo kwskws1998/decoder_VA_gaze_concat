@@ -90,7 +90,7 @@ def _add_common_arguments(parser: argparse.ArgumentParser) -> None:
         choices=PRECISION_CHOICES,
         default="checkpoint",
         help=(
-            "Use the checkpoint-recorded training dtype and matching CUDA autocast. "
+            "Use the checkpoint-recorded compute dtype and matching CUDA autocast. "
             "Precision overrides are deliberately unavailable in the primary "
             "external-generalization evaluator."
         ),
@@ -626,7 +626,7 @@ def _preflight_member(
         "float16": 2e-3,
         "float32": 1e-5,
     }
-    recorded_precision = str(member.run_manifest["dtype"])
+    recorded_precision = str(member.run_manifest.get("compute_dtype", member.run_manifest["dtype"]))
     tolerance = max(tolerances[precision_name], tolerances[recorded_precision])
     if max_abs_error > tolerance:
         raise RuntimeError(
@@ -750,7 +750,7 @@ def run(args: argparse.Namespace) -> Path | None:
             f"External evaluation output already exists; refusing to overwrite: {output_dir}"
         )
     batch_size = args.batch_size or int(members[0].run_manifest["eval_batch_size"])
-    recorded_precision = str(members[0].run_manifest["dtype"])
+    recorded_precision = str(members[0].run_manifest.get("compute_dtype", members[0].run_manifest["dtype"]))
     runtime_compatibility = _runtime_compatibility(members[0].run_manifest)
     print(
         f"Validated {benchmark.name} {benchmark.split}: {len(benchmark.frame):,} rows; "

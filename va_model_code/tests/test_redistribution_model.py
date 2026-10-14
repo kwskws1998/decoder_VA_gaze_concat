@@ -222,7 +222,7 @@ def test_v7_checkpoint_roundtrip_restores_learned_sigmas_and_predictions(tmp_pat
         model.gaze_redistributor.kernel.log_sigma_left.fill_(-0.45)
         model.gaze_redistributor.kernel.log_sigma_right.fill_(0.85)
     _, manifest = _save(model, tmp_path)
-    assert manifest["schema_version"] == ARCHITECTURE_MANIFEST_VERSION == 7
+    assert manifest["schema_version"] == ARCHITECTURE_MANIFEST_VERSION == 8
     assert manifest["gaze_redistribution"] == manifest["reconstruction"]["gaze_redistribution"]
     assert manifest["gaze_redistribution"]["init_sigma_left"] == 1.0
     assert manifest["gaze_redistribution_trainable_parameters"] == 2
@@ -317,7 +317,7 @@ def test_historical_gaze_checkpoint_requires_original_alignment(
 def test_historical_text_only_checkpoint_does_not_require_gaze_alignment(
     tmp_path, fake_checkpoint_factory, version
 ):
-    """The gaze-only correction leaves text-only reconstruction unchanged."""
+    """FP32 head semantics also require new text-only checkpoints."""
 
     model, tokenizer = fake_checkpoint_factory(enabled=False, mode="lora", gaze_fusion="none")
     path, manifest = _save(model, tmp_path)
@@ -327,11 +327,9 @@ def test_historical_text_only_checkpoint_does_not_require_gaze_alignment(
     del manifest["gaze_alignment"]
     del manifest["reconstruction"]["gaze_alignment"]
     path.write_text(json.dumps(manifest), encoding="utf-8")
-    restored, _ = load_saved_decoder_va_model(tmp_path, tokenizer=tokenizer, dtype=torch.float32)
-    assert restored.gaze_alignment is None
-    assert restored.config.gaze_alignment is None
-    for name, expected in model.state_dict().items():
-        assert torch.equal(restored.state_dict()[name], expected)
+    with pytest.raises(ValueError, match="Historical precision"):
+        load_saved_decoder_va_model(tmp_path, tokenizer=tokenizer, dtype=torch.float32)
+
 
 
 @pytest.mark.parametrize("owner", ["architecture", "reconstruction"])
@@ -352,7 +350,7 @@ def test_text_only_checkpoint_rejects_active_alignment_metadata(
 
 @pytest.mark.parametrize("version,mode", [(5, "lora"), (6, "lora"), (6, "full")])
 @pytest.mark.parametrize("fusion", ["none", "prefix-concat"])
-def test_legacy_without_metadata_restores_none(tmp_path, fake_checkpoint_factory, version, mode, fusion):
+def test_legacy_without_metadata_requires_original_code(tmp_path, fake_checkpoint_factory, version, mode, fusion):
     model, tokenizer = fake_checkpoint_factory(enabled=False, mode=mode, gaze_fusion=fusion)
     path, manifest = _save(model, tmp_path)
     manifest["schema_version"] = version
@@ -363,11 +361,9 @@ def test_legacy_without_metadata_restores_none(tmp_path, fake_checkpoint_factory
         del manifest["finetuning_mode"]
         del manifest["reconstruction"]["finetuning_mode"]
     path.write_text(json.dumps(manifest), encoding="utf-8")
-    restored, _ = load_saved_decoder_va_model(tmp_path, tokenizer=tokenizer, dtype=torch.float32)
-    assert restored.gaze_redistribution == {"method": "none"}
-    assert restored.gaze_redistributor is None
-    for name, expected in model.state_dict().items():
-        assert torch.equal(restored.state_dict()[name], expected)
+    with pytest.raises(ValueError, match="Historical precision"):
+        load_saved_decoder_va_model(tmp_path, tokenizer=tokenizer, dtype=torch.float32)
+
 
 
 @pytest.mark.parametrize("version", [5, 6])
@@ -380,7 +376,7 @@ def test_legacy_cannot_enable_redistribution(tmp_path, fake_checkpoint_factory, 
     target["gaze_redistribution"] = redistribution_contract("asym-gaussian")
     path.write_text(json.dumps(manifest), encoding="utf-8")
     _deny_backbone_load(monkeypatch)
-    with pytest.raises(ValueError, match="Legacy manifests cannot enable"):
+    with pytest.raises(ValueError, match="Historical precision"):
         load_saved_decoder_va_model(tmp_path, tokenizer=tokenizer, dtype=torch.float32)
 
 
@@ -527,3 +523,32 @@ def test_cpu_bf16_autocast_preserves_fp32_sigma_gradients():
         assert parameter.grad.dtype == torch.float32
         assert torch.isfinite(parameter.grad).all()
         assert parameter.grad.abs() > 0
+
+
+@pytest.mark.parametrize("owner", ["architecture", "reconstruction"])
+@pytest.mark.parametrize("change", ["missing", "head_dtype", "version"])
+def test_saved_precision_contract_is_strict(tmp_path, fake_checkpoint_factory, monkeypatch, owner, change):
+    model, tokenizer = fake_checkpoint_factory(enabled=False)
+    path, manifest = _save(model, tmp_path)
+    target = manifest if owner == "architecture" else manifest["reconstruction"]
+    if change == "missing":
+        del target["precision_contract"]
+    elif change == "head_dtype":
+        target["precision_contract"]["regression_head_compute_dtype"] = "bfloat16"
+    else:
+        target["precision_contract"]["version"] = 99
+    path.write_text(json.dumps(manifest), encoding="utf-8")
+    _deny_backbone_load(monkeypatch)
+    with pytest.raises(ValueError, match="precision_contract"):
+        load_saved_decoder_va_model(tmp_path, tokenizer=tokenizer)
+
+
+def test_saved_full_model_rejects_low_precision_training_weights(tmp_path, fake_checkpoint_factory):
+    model, tokenizer = fake_checkpoint_factory(enabled=False, mode="full")
+    _save(model, tmp_path)
+    state = dict(model.state_dict())
+    name = next(name for name, parameter in model.named_parameters() if parameter.requires_grad)
+    state[name] = state[name].bfloat16()
+    save_file(state, tmp_path / SAFE_WEIGHTS_FILENAME)
+    with pytest.raises(ValueError, match="must be FP32"):
+        load_saved_decoder_va_model(tmp_path, tokenizer=tokenizer)

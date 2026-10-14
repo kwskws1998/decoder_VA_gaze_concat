@@ -1,0 +1,173 @@
+{
+  "scope": "Selected-model intervention on the first two training examples per fold, not held-out evaluation",
+  "runs": {
+    "right_l1_r4": {
+      "1": {
+        "indices": [
+          0,
+          1
+        ],
+        "raw_intervention": {
+          "prediction": {
+            "relative_l2": 0.007735072169452906,
+            "rms": 0.004026470240205526
+          },
+          "projection": {
+            "relative_l2": 0.11797382682561874,
+            "rms": 0.11797600239515305
+          },
+          "trt": {
+            "relative_l2": 0.4681226313114166,
+            "rms": 2.5019795894622803
+          }
+        }
+      },
+      "2": {
+        "indices": [
+          0,
+          1
+        ],
+        "raw_intervention": {
+          "prediction": {
+            "relative_l2": 0.00590020976960659,
+            "rms": 0.0029296875
+          },
+          "projection": {
+            "relative_l2": 0.08873648941516876,
+            "rms": 0.08874035626649857
+          },
+          "trt": {
+            "relative_l2": 0.44805631041526794,
+            "rms": 3.4400811195373535
+          }
+        }
+      }
+    },
+    "left_l4_r1": {
+      "1": {
+        "indices": [
+          0,
+          1
+        ],
+        "raw_intervention": {
+          "prediction": {
+            "relative_l2": 0.006117323413491249,
+            "rms": 0.003088161814957857
+          },
+          "projection": {
+            "relative_l2": 0.13969826698303223,
+            "rms": 0.13970442116260529
+          },
+          "trt": {
+            "relative_l2": 0.575668215751648,
+            "rms": 3.0047073364257812
+          }
+        }
+      },
+      "2": {
+        "indices": [
+          0,
+          1
+        ],
+        "raw_intervention": {
+          "prediction": {
+            "relative_l2": 0.003780373837798834,
+            "rms": 0.001953125
+          },
+          "projection": {
+            "relative_l2": 0.17436876893043518,
+            "rms": 0.17438708245754242
+          },
+          "trt": {
+            "relative_l2": 0.4595162570476532,
+            "rms": 3.5610036849975586
+          }
+        }
+      }
+    },
+    "right_l0p25_r1": {
+      "1": {
+        "indices": [
+          0,
+          1
+        ],
+        "raw_intervention": {
+          "prediction": {
+            "relative_l2": 0.0027124087791889906,
+            "rms": 0.0013810679083690047
+          },
+          "projection": {
+            "relative_l2": 0.09136050939559937,
+            "rms": 0.09136243164539337
+          },
+          "trt": {
+            "relative_l2": 0.255309134721756,
+            "rms": 1.438848614692688
+          }
+        }
+      },
+      "2": {
+        "indices": [
+          0,
+          1
+        ],
+        "raw_intervention": {
+          "prediction": {
+            "relative_l2": 0.005346485413610935,
+            "rms": 0.0027621358167380095
+          },
+          "projection": {
+            "relative_l2": 0.09040828794240952,
+            "rms": 0.09041252732276917
+          },
+          "trt": {
+            "relative_l2": 0.22826431691646576,
+            "rms": 1.7851530313491821
+          }
+        }
+      }
+    },
+    "left_l1_r0p25": {
+      "1": {
+        "indices": [
+          0,
+          1
+        ],
+        "raw_intervention": {
+          "prediction": {
+            "relative_l2": 0.00696185976266861,
+            "rms": 0.0035210461355745792
+          },
+          "projection": {
+            "relative_l2": 0.10721912980079651,
+            "rms": 0.1072196438908577
+          },
+          "trt": {
+            "relative_l2": 0.3383357524871826,
+            "rms": 1.7781695127487183
+          }
+        }
+      },
+      "2": {
+        "indices": [
+          0,
+          1
+        ],
+        "raw_intervention": {
+          "prediction": {
+            "relative_l2": 0.0019250285113230348,
+            "rms": 0.0009765625
+          },
+          "projection": {
+            "relative_l2": 0.13308942317962646,
+            "rms": 0.1330990493297577
+          },
+          "trt": {
+            "relative_l2": 0.30075880885124207,
+            "rms": 2.1830825805664062
+          }
+        }
+      }
+    }
+  }
+}

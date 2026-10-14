@@ -105,7 +105,16 @@ def choose_torch_index(driver_cuda):
 
 
 def check_gpu(python, *, gpu=None):
-    """Validate actual CUDA forward/backward execution in the selected interpreter."""
+    """Validate CUDA execution and preserve child diagnostics on probe failure."""
 
-    result = run([python, "-c", GPU_PROBE_CODE], environment=child_environment(gpu), capture=True)
+    try:
+        result = run([python, "-c", GPU_PROBE_CODE], environment=child_environment(gpu), capture=True)
+    except subprocess.CalledProcessError as exc:
+        details = [f"CUDA forward/backward check failed (exit status {exc.returncode})."]
+        if exc.stdout:
+            details.append("GPU probe stdout:\n" + exc.stdout.strip())
+        if exc.stderr:
+            details.append("GPU probe stderr:\n" + exc.stderr.strip())
+        details.append("Check nvidia-smi and GPU visibility before starting training.")
+        raise RuntimeError("\n".join(details)) from exc
     return json.loads(result.stdout.strip().splitlines()[-1])

@@ -47,7 +47,15 @@ GAZE_PREFIX_ORDER = "eye_start, compact_selected_gaze, eye_end, text"
 GAZE_PREFIX_POOLING = "last_valid_text_token_after_gaze_prefix"
 OUTPUT_ACTIVATION = "hard_sigmoid"
 ARCHITECTURE_MANIFEST_FILENAME = "decoder_va_architecture.json"
-ARCHITECTURE_MANIFEST_VERSION = 7
+ARCHITECTURE_MANIFEST_VERSION = 8
+PRE_PRECISION_MANIFEST_VERSION = 7
+PRECISION_CONTRACT = {
+    "version": 1,
+    "trainable_parameter_dtype": "float32",
+    "regression_head_compute_dtype": "float32",
+    "output_dtype": "float32",
+    "mixed_precision": "autocast",
+}
 PRE_REDISTRIBUTION_MANIFEST_VERSION = 6
 LEGACY_LORA_MANIFEST_VERSION = 5
 SAFE_WEIGHTS_FILENAME = "model.safetensors"
@@ -95,6 +103,63 @@ def _normalize_finetuning_mode(value: str) -> str:
             f"Unknown fine-tuning mode {value!r}; choose one of {FINETUNING_MODES}."
         )
     return normalized
+
+
+def backbone_parameter_dtype(dtype: torch.dtype | str, finetuning_mode: str) -> torch.dtype:
+    """Keep all full-tuning parameters in FP32 and allow lower precision frozen bases."""
+
+    mode = _normalize_finetuning_mode(finetuning_mode)
+    normalized = str(dtype).replace("torch.", "").lower()
+    supported = {
+        "auto": torch.float32,
+        "float32": torch.float32,
+        "float16": torch.float16,
+        "bfloat16": torch.bfloat16,
+    }
+    if normalized not in supported:
+        raise ValueError(f"Unsupported backbone dtype {dtype!r}; use float32, float16, bfloat16 or auto.")
+    return torch.float32 if mode == "full" else supported[normalized]
+
+
+def _promote_trainable_parameters(module: nn.Module) -> None:
+    """Preserve small optimizer updates by storing every trainable weight in FP32."""
+
+    for parameter in module.parameters():
+        if parameter.requires_grad and parameter.is_floating_point():
+            parameter.data = parameter.data.float()
+            if parameter.grad is not None:
+                parameter.grad.data = parameter.grad.data.float()
+
+
+def validate_saved_trainable_precision(model: nn.Module, weights_path: str | Path) -> None:
+    """Check on-disk parameter precision before final-model or Trainer checkpoint loading."""
+
+    from safetensors import safe_open
+
+    path = Path(weights_path)
+    if path.is_symlink() or not path.is_file():
+        raise ValueError(f"Precision-safe loading requires a regular model.safetensors file: {path}.")
+    with safe_open(path, framework="pt", device="cpu") as saved_weights:
+        available = set(saved_weights.keys())
+        for name, parameter in model.named_parameters():
+            if parameter.requires_grad and name in available:
+                if saved_weights.get_slice(name).get_dtype() != "F32":
+                    raise ValueError(f"Saved trainable parameter {name!r} must be FP32.")
+
+
+def validate_precision_contract(value: Any, *, context: str) -> dict[str, Any]:
+    """Reject saved semantics that predate FP32 weights and FP32 regression output."""
+
+    if (
+        not isinstance(value, dict)
+        or type(value.get("version")) is not int
+        or value != PRECISION_CONTRACT
+    ):
+        raise ValueError(
+            f"{context}: missing or incompatible precision_contract. "
+            "Start a new run; evaluate historical weights with their original code."
+        )
+    return copy.deepcopy(PRECISION_CONTRACT)
 
 
 def validate_gaze_alignment_contract(
@@ -199,7 +264,7 @@ class DecoderVARegressor(nn.Module):
             nn.LayerNorm(self.hidden_size),
             nn.Dropout(self.classifier_dropout),
             nn.Linear(self.hidden_size, self.output_dim),
-        )
+        ).float()
         if self.gaze_fusion == "prefix-concat":
             provider_feature_indices = getattr(
                 self.gaze_provider,
@@ -249,6 +314,7 @@ class DecoderVARegressor(nn.Module):
         self.config.va_output_activation = OUTPUT_ACTIVATION
         if hasattr(backbone_config, "use_cache"):
             backbone_config.use_cache = False
+        _promote_trainable_parameters(self)
 
     def get_input_embeddings(self):
         """Expose decoder token embeddings to Trainer and the fusion path."""
@@ -406,9 +472,11 @@ class DecoderVARegressor(nn.Module):
         hidden = outputs.last_hidden_state
         row_indices = torch.arange(hidden.shape[0], device=hidden.device)
         pooled = hidden[row_indices, pooling_positions]
-        head_dtype = next(self.regression_head.parameters()).dtype
-        raw_logits = self.regression_head(pooled.to(dtype=head_dtype))
-        logits = F.hardsigmoid(raw_logits)
+        if any(parameter.dtype != torch.float32 for parameter in self.regression_head.parameters()):
+            raise ValueError("The regression head must remain FP32; use autocast for mixed precision.")
+        with torch.autocast(device_type=pooled.device.type, enabled=False):
+            raw_logits = self.regression_head(pooled.float())
+            logits = F.hardsigmoid(raw_logits)
         return SequenceClassifierOutput(logits=logits)
 
     def trainable_parameter_summary(self) -> dict[str, int | float]:
@@ -463,6 +531,7 @@ class DecoderVARegressor(nn.Module):
         )
         payload = {
             "schema_version": ARCHITECTURE_MANIFEST_VERSION,
+            "precision_contract": copy.deepcopy(PRECISION_CONTRACT),
             "decoder_model_id": self._reconstruction_config["decoder_model_id"],
             "decoder_model_type": getattr(self.config, "model_type", None),
             "decoder_commit": self._reconstruction_config["decoder_revision"],
@@ -577,10 +646,11 @@ def load_qwen_backbone(
     backbone = _load_qwen_text_backbone(
         model_id,
         revision=revision,
-        dtype=dtype,
+        dtype=backbone_parameter_dtype(dtype, normalized_mode),
         attn_implementation=attn_implementation,
     )
     if normalized_mode == "full":
+        _promote_trainable_parameters(backbone)
         return backbone
 
     lora_config = LoraConfig(
@@ -591,7 +661,9 @@ def load_qwen_backbone(
         target_modules="all-linear",
         task_type=TaskType.FEATURE_EXTRACTION,
     )
-    return get_peft_model(backbone, lora_config)
+    adapted_backbone = get_peft_model(backbone, lora_config)
+    _promote_trainable_parameters(adapted_backbone)
+    return adapted_backbone
 
 
 def load_qwen_backbone_with_lora(
@@ -670,7 +742,7 @@ def build_qwen_va_model(
     backbone = load_qwen_backbone(
         model_id,
         revision=model_revision,
-        dtype=dtype,
+        dtype=backbone_parameter_dtype(dtype, normalized_finetuning_mode),
         finetuning_mode=normalized_finetuning_mode,
         lora_rank=lora_rank,
         lora_alpha=lora_alpha,
@@ -698,6 +770,8 @@ def build_qwen_va_model(
         gaze_projection_dropout=gaze_projection_dropout,
         classifier_dropout=classifier_dropout,
     )
+    _promote_trainable_parameters(model)
+    model.config.precision_contract = copy.deepcopy(PRECISION_CONTRACT)
     model.config.finetuning_mode = normalized_finetuning_mode
     model.finetuning_mode = normalized_finetuning_mode
     uses_lora = normalized_finetuning_mode == "lora"
@@ -728,7 +802,10 @@ def build_qwen_va_model(
         ],
         "classifier_dropout": float(classifier_dropout),
         "attn_implementation": attn_implementation,
-        "backbone_dtype_at_construction": str(dtype).replace("torch.", ""),
+        "backbone_dtype_at_construction": str(
+            backbone_parameter_dtype(dtype, normalized_finetuning_mode)
+        ).replace("torch.", ""),
+        "precision_contract": copy.deepcopy(PRECISION_CONTRACT),
     }
     return model
 
@@ -753,15 +830,13 @@ def load_saved_decoder_va_model(
     with open(manifest_path, "r", encoding="utf-8") as input_file:
         manifest = json.load(input_file)
     manifest_version = manifest.get("schema_version")
-    if manifest_version not in {
-        LEGACY_LORA_MANIFEST_VERSION,
-        PRE_REDISTRIBUTION_MANIFEST_VERSION,
-        ARCHITECTURE_MANIFEST_VERSION,
-    }:
+    if type(manifest_version) is not int or manifest_version != ARCHITECTURE_MANIFEST_VERSION:
         raise ValueError(
             "Unsupported decoder VA architecture manifest version: "
-            f"{manifest_version!r}"
+            f"{manifest_version!r}. Historical precision and gaze_alignment semantics "
+            "require the original code; start a new training run with version 8."
         )
+    validate_precision_contract(manifest.get("precision_contract"), context="Saved architecture")
     state_contract = manifest.get("state_dict")
     if not isinstance(state_contract, dict):
         raise ValueError("Architecture manifest is missing the state_dict contract.")
@@ -775,6 +850,7 @@ def load_saved_decoder_va_model(
     reconstruction = manifest.get("reconstruction")
     if not isinstance(reconstruction, dict):
         raise ValueError("Architecture manifest is missing reconstruction metadata.")
+    validate_precision_contract(reconstruction.get("precision_contract"), context="Saved reconstruction")
     required = {
         "decoder_model_id",
         "decoder_revision",
@@ -798,32 +874,25 @@ def load_saved_decoder_va_model(
         "gaze_projection_dropout",
         "classifier_dropout",
         "attn_implementation",
+        "backbone_dtype_at_construction",
     }
-    if manifest_version == LEGACY_LORA_MANIFEST_VERSION:
-        required.remove("finetuning_mode")
     missing = sorted(required.difference(reconstruction))
     if missing:
         raise ValueError(
             "Architecture manifest is missing reconstruction field(s): "
             + ", ".join(missing)
         )
-    saved_finetuning_mode = (
-        "lora"
-        if manifest_version == LEGACY_LORA_MANIFEST_VERSION
-        else _normalize_finetuning_mode(reconstruction["finetuning_mode"])
-    )
-    if manifest_version == LEGACY_LORA_MANIFEST_VERSION:
-        declared_legacy_mode = manifest.get(
-            "finetuning_mode",
-            reconstruction.get("finetuning_mode", "lora"),
-        )
-        if declared_legacy_mode != "lora":
-            raise ValueError("Version-5 manifests can only describe LoRA models.")
-    elif manifest.get("finetuning_mode") != saved_finetuning_mode:
+    saved_finetuning_mode = _normalize_finetuning_mode(reconstruction["finetuning_mode"])
+    if manifest.get("finetuning_mode") != saved_finetuning_mode:
         raise ValueError(
             "Architecture manifest fine-tuning mode disagrees with "
             "reconstruction metadata."
         )
+    saved_backbone_dtype = reconstruction["backbone_dtype_at_construction"]
+    if saved_backbone_dtype not in {"float32", "float16", "bfloat16"}:
+        raise ValueError("Saved backbone_dtype_at_construction must be an explicit floating-point dtype.")
+    if saved_finetuning_mode == "full" and saved_backbone_dtype != "float32":
+        raise ValueError("Full fine-tuning backbone_dtype_at_construction must be float32.")
 
     saved_fusion = reconstruction["gaze_fusion"]
     if saved_fusion not in GAZE_FUSIONS:
@@ -852,15 +921,13 @@ def load_saved_decoder_va_model(
         saved_feature_indices = ()
     redistribution_configs = []
     for owner, metadata in (("architecture", manifest), ("reconstruction", reconstruction)):
-        if manifest_version == ARCHITECTURE_MANIFEST_VERSION and "gaze_redistribution" not in metadata:
+        if "gaze_redistribution" not in metadata:
             raise ValueError(f"Missing gaze_redistribution in {owner} metadata.")
         configuration = validate_redistribution_contract(
             metadata.get("gaze_redistribution", {"method": "none"}),
             gaze_fusion=saved_fusion,
             feature_indices=saved_feature_indices,
         )
-        if manifest_version != ARCHITECTURE_MANIFEST_VERSION and configuration["method"] != "none":
-            raise ValueError("Legacy manifests cannot enable gaze redistribution.")
         redistribution_configs.append(configuration)
     if redistribution_configs[0] != redistribution_configs[1]:
         raise ValueError("Architecture gaze_redistribution disagrees with reconstruction metadata.")
@@ -974,6 +1041,8 @@ def load_saved_decoder_va_model(
         )
     tokenizer.padding_side = "right"
 
+    if dtype == "auto":
+        dtype = reconstruction["backbone_dtype_at_construction"]
     effective_cache_size = (
         int(reconstruction["et_cache_size"])
         if et_cache_size is None
@@ -1005,6 +1074,7 @@ def load_saved_decoder_va_model(
 
     from safetensors.torch import load_model
 
+    validate_saved_trainable_precision(model, weights_path)
     load_model(model, weights_path, strict=True, device="cpu")
     model.eval()
     return model, tokenizer

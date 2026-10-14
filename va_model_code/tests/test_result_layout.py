@@ -11,6 +11,11 @@ import shutil
 import zipfile
 
 import pytest
+import pandas as pd
+
+from va_model_code.decoder_va.alignment import GAZE_ALIGNMENT_CONTRACT
+from va_model_code.decoder_va.filters import TRAIN_EVAL_TEXT_OVERLAP_CONTRACT, exclude_eval_text_overlaps
+from va_model_code.decoder_va.model import PRECISION_CONTRACT
 
 from va_model_code.decoder_va.redistribution import redistribution_contract
 from va_model_code.decoder_va.paths import (
@@ -126,6 +131,20 @@ def _write_completed_run(
             if gaze_redistribution is None
             else gaze_redistribution
         )
+    current_metadata = {}
+    if schema_version >= 8:
+        current_metadata = {
+            "gaze_alignment": GAZE_ALIGNMENT_CONTRACT if gaze_features else None,
+            "precision_contract": PRECISION_CONTRACT,
+        }
+        parameters.update({
+            **current_metadata,
+            "dtype": "float32",
+            "backbone_parameter_dtype": "float32",
+            "trainable_parameter_dtype": "float32",
+            "compute_dtype": "bfloat16",
+            "training_text_overlap_contract": TRAIN_EVAL_TEXT_OVERLAP_CONTRACT,
+        })
     redistribution_metadata = (
         {"gaze_redistribution": parameters["gaze_redistribution"]}
         if "gaze_redistribution" in parameters
@@ -185,6 +204,12 @@ def _write_completed_run(
             "training_rows": 2,
             "evaluation_rows": 2,
         }
+        if schema_version >= 8:
+            _, overlap = exclude_eval_text_overlaps(
+                pd.DataFrame({"text": ["c", "d"] if fold == 1 else ["a", "b"]}),
+                pd.DataFrame({"text": ["a", "b"] if fold == 1 else ["c", "d"]}),
+            )
+            fold_manifest["training_text_overlap"] = overlap
         (fold_dir / "run_manifest.json").write_text(
             json.dumps(fold_manifest),
             encoding="utf-8",
@@ -208,6 +233,7 @@ def _write_completed_run(
                 {
                     "schema_version": schema_version,
                     **redistribution_metadata,
+                    **current_metadata,
                     "decoder_model_id": parameters["model_id"],
                     "decoder_commit": parameters["model_revision"],
                     "finetuning_mode": parameters["finetuning_mode"],
@@ -233,6 +259,7 @@ def _write_completed_run(
                     "output_names": ["valence", "arousal"],
                     "reconstruction": {
                         **redistribution_metadata,
+                        **current_metadata,
                         "decoder_model_id": parameters["model_id"],
                         "decoder_revision": parameters["model_revision"],
                         "finetuning_mode": parameters["finetuning_mode"],
@@ -929,7 +956,7 @@ def test_results_only_package_rejects_false_sentence_only_provenance(
         package_results(run_dir, results_root=tmp_path)
 
 
-@pytest.mark.parametrize("version,method", [(6, None), (6, "none"), (7, "none"), (7, "fixed-gaussian"), (7, "asym-gaussian")])
+@pytest.mark.parametrize("version,method", [(6, None), (6, "none"), (7, "none"), (7, "fixed-gaussian"), (7, "asym-gaussian"), (8, "none"), (8, "fixed-gaussian"), (8, "asym-gaussian")])
 def test_package_records_distinct_redistribution_condition(tmp_path, version, method):
     """Keep legacy archive names while distinguishing the learned redistribution arm."""
 
@@ -1057,4 +1084,87 @@ def test_package_rejects_malformed_redistribution(tmp_path, field, value):
     )
 
     with pytest.raises(ValueError, match="redistribution|sigma"):
+        package_results(run_dir, results_root=tmp_path)
+
+
+@pytest.mark.parametrize("target", ("root", "fold", "architecture", "reconstruction"))
+@pytest.mark.parametrize("field", ("precision_contract", "gaze_alignment"))
+def test_package_schema8_rejects_missing_current_contract(tmp_path, target, field):
+    """Reject incomplete current metadata without losing historical packaging support."""
+
+    run_dir = tmp_path / "current_run"
+    _write_completed_run(run_dir, gaze_fusion="prefix-concat", schema_version=8)
+    relative = {
+        "root": "training_parameters.json",
+        "fold": "heldout_fold1/run_manifest.json",
+        "architecture": "heldout_fold1/final_model/decoder_va_architecture.json",
+        "reconstruction": "heldout_fold1/final_model/decoder_va_architecture.json",
+    }[target]
+    path = run_dir / relative
+    payload = json.loads(path.read_text())
+    container = payload["reconstruction"] if target == "reconstruction" else payload
+    del container[field]
+    path.write_text(json.dumps(payload))
+    with pytest.raises(ValueError, match=field):
+        package_results(run_dir, results_root=tmp_path)
+
+
+@pytest.mark.parametrize("field,value", (
+    ("compute_dtype", "auto"),
+    ("backbone_parameter_dtype", "bfloat16"),
+    ("trainable_parameter_dtype", "bfloat16"),
+    ("dtype", "bfloat16"),
+))
+def test_package_schema8_rejects_invalid_precision_identity(tmp_path, field, value):
+    """Keep compute precision separate from storage instead of trusting ambiguous dtype."""
+
+    run_dir = tmp_path / "current_run"
+    _write_completed_run(run_dir, schema_version=8)
+    _rewrite_parameter_contract(run_dir, field, value)
+    with pytest.raises(ValueError, match="dtype"):
+        package_results(run_dir, results_root=tmp_path)
+
+
+def test_package_schema8_verifies_overlap_counts_from_actual_oof_texts(tmp_path):
+    """Package reduced training counts only when held-out texts justify exclusion."""
+
+    run_dir = tmp_path / "current_run"
+    _write_completed_run(run_dir, schema_version=8)
+    for relative in ("oof_predictions.tsv", "heldout_fold2/predictions.tsv"):
+        path = run_dir / relative
+        path.write_text(path.read_text().replace("2\t2\tc\t", "2\t2\t A \t"))
+    frames = {
+        1: pd.DataFrame({"text": ["a", "b"]}),
+        2: pd.DataFrame({"text": [" A ", "d"]}),
+    }
+    for fold in (1, 2):
+        path = run_dir / f"heldout_fold{fold}/run_manifest.json"
+        payload = json.loads(path.read_text())
+        _, payload["training_text_overlap"] = exclude_eval_text_overlaps(
+            frames[3 - fold], frames[fold]
+        )
+        payload["training_rows"] = 1
+        path.write_text(json.dumps(payload))
+    archive = package_results(run_dir, results_root=tmp_path)
+    assert archive.is_file()
+    path = run_dir / "heldout_fold1/run_manifest.json"
+    payload = json.loads(path.read_text())
+    payload["training_text_overlap"]["shared_normalized_texts"] = 0
+    path.write_text(json.dumps(payload))
+    with pytest.raises(ValueError, match="training_text_overlap does not match OOF"):
+        package_results(run_dir, results_root=tmp_path, overwrite=True)
+
+
+@pytest.mark.parametrize("field", ("precision_contract", "training_text_overlap"))
+def test_package_schema8_rejects_boolean_contract_version(tmp_path, field):
+    """Do not accept JSON true as integer version one through dict equality."""
+
+    run_dir = tmp_path / "current_run"
+    _write_completed_run(run_dir, schema_version=8)
+    path = run_dir / "heldout_fold1/run_manifest.json"
+    payload = json.loads(path.read_text())
+    contract = payload[field]["contract"] if field == "training_text_overlap" else payload[field]
+    contract["version"] = True
+    path.write_text(json.dumps(payload))
+    with pytest.raises(ValueError, match=field):
         package_results(run_dir, results_root=tmp_path)

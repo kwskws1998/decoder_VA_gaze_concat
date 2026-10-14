@@ -38,10 +38,10 @@ The implementation:
 - exposes an explicit `--finetuning-mode {lora,full}` contract;
 - defaults to rank-16 all-linear LoRA for backward-compatible, lower-memory
   runs;
-- makes every Qwen text-backbone parameter trainable in `full` mode;
+- makes every Qwen text-backbone parameter trainable and stores it in FP32 in `full` mode;
 - trains the gaze projector, boundary embeddings, and VA head fully;
 - keeps ET2 frozen in both fine-tuning modes;
-- uses BF16 on supported NVIDIA GPUs;
+- uses BF16 autocast on supported NVIDIA GPUs while keeping trainable parameters in FP32;
 - enables gradient checkpointing;
 - defaults to batch size 4 with four-step gradient accumulation.
 
@@ -77,28 +77,35 @@ linear head. This implementation:
 
 ### Occurrence-preserving alignment
 
-Alignment version 2 uses the decoded valid Qwen text as the shared coordinate
-system. ET segments must cover that text in order, skipping only whitespace.
+Alignment version 3 uses the decoded valid Qwen text as the shared coordinate
+system. ET2 receives `text.strip().split()` whitespace words, matching the pinned predictor's published inference preprocessing. Punctuation stays attached to its word.
+ET segments must cover that text in order, skipping only whitespace.
 The fast Qwen tokenizer supplies character offsets, and re-encoding the decoded
 text must reproduce the original lexical token IDs exactly. Alignment never
 searches ahead for a later matching word or punctuation mark. Unsupported
 tokenizers, incomplete text coverage, or a failed token-ID round trip raise an
 error instead of silently assigning gaze to another occurrence.
 
+Only the first active ET2 subword supplies each word's prediction. Selected
+channels must be finite; NaN or infinity raises immediately without substituting
+a later subword or caching a partial result. Negative predictions are clipped to
+zero before alignment, matching the pinned predictor's inference code.
 Each valid ET prediction contributes at the first Qwen token overlapping a
-non-whitespace character of its segment. A merged Qwen token such as `!!!` can
-receive several ET segments. These collisions sum `nFix` and `TRT` and take the
+non-whitespace character of its segment. The generic remapper supports multiple
+segments sharing one Qwen token. These collisions sum `nFix` and `TRT` and take the
 arithmetic mean of `FFD`, `GPT`, and `fixProp`, using only valid, finite ET
-predictions. Signed ET outputs remain signed. A token with a valid contribution
+predictions. The generic remapper itself conserves signed input values; ET2
+production inputs have already been clipped to nonnegative values. A token with a valid contribution
 stays in the gaze mask even when its resulting TRT is zero.
 
 The full policy is recorded as `gaze_alignment` in the model config, saved
 architecture and reconstruction metadata, and run manifests. Reload and resume
-require the exact version-2 contract for every gaze condition, including raw TRT.
+require the exact version-3 contract for every gaze condition, including raw TRT.
 Old gaze checkpoints lack this contract and cannot be evaluated or resumed with
 the corrected alignment; historical evaluation requires their original code.
 Start new matched raw and redistribution runs to compare the corrected pipeline.
-Text-only checkpoint compatibility is unchanged.
+Schema 8 also records the corrected numerical precision contract, so older
+text-only checkpoints likewise require their original code for evaluation.
 
 Each sample is packed before batch padding:
 
@@ -129,6 +136,20 @@ Both outputs are constrained to `[0, 1]` with the original VA paper's hard
 sigmoid output activation. Training requires an explicit choice
 of `mse`, `ccc`, or the legacy-compatible 50:50 `mse+ccc`; no uncertainty or
 log-variance head is used. The commands below use MSE as the simplest baseline.
+
+## Training text overlap
+
+For each held-out fold, training excludes rows whose text also appears in the
+evaluation fold after Unicode NFKC normalization, case folding, and whitespace
+collapse. Labels and dataset names do not affect this text comparison. Evaluation
+rows, order, and labels remain unchanged; the same evaluation fold still selects
+the best checkpoint and supplies the reported predictions. No extra split is made.
+Original fold files are never rewritten. An empty training set raises an error.
+
+Run manifests record `training_text_overlap_contract`; each fold additionally
+records its `training_text_overlap` counts and actual `training_rows`. The root
+`dataset_counts_after_filter` remains the full filtered corpus used for OOF
+reporting. Two-fold result packaging recomputes exclusions from the OOF texts.
 
 ## Gaze redistribution
 
@@ -202,14 +223,14 @@ explicitly wires the requested option and the original sparse gaze mask into
 the model; it does not assume that an unobserved historical run used the
 inspected mask-aware code.
 
-Schema-7 run and architecture manifests record the canonical
+Current run and architecture manifests record the canonical
 `gaze_redistribution` configuration; `model.safetensors` stores the two learned
 width parameters alongside the existing model weights. Initialization values
 in JSON are not the learned final widths. New default run names and archive
-condition names distinguish raw gaze from redistribution. A schema-7 checkpoint
-must record this setting explicitly. Legacy schema-5/6 metadata can imply disabled
-redistribution, but historical gaze weights are rejected when they lack the
-current `gaze_alignment` contract. Resume requires the same configuration and
+condition names distinguish raw gaze from redistribution. Schema-8 checkpoints
+record this setting explicitly. Schema-6/7 results remain packageable as historical
+results; their weights cannot be resumed or loaded under the corrected precision
+and preprocessing contracts. Resume requires the same configuration and
 cannot add or remove redistribution. Enabled resume supports ordinary single-file Trainer
 `model.safetensors` checkpoints, not adapter-only, pickle, sharded, or symlinked
 weight layouts. Before replacing any fold manifest, it safely inspects the two
@@ -543,7 +564,15 @@ python train_model.py qwen3.5-0.8b mse \
 ```
 
 Explicit precision is selected with `--precision {auto,bf16,fp16,fp32}`. The
-default `auto` uses BF16 on a BF16-capable CUDA GPU. An FP32 gaze run must pass
+default `auto` uses BF16 autocast on a BF16-capable CUDA GPU. Full fine-tuning
+always stores the trainable backbone in FP32; LoRA may keep its frozen base in
+BF16/FP16 but stores trainable adapters in FP32. The regression head and hard
+sigmoid run in FP32 outside autocast. `compute_dtype` records the compute mode;
+`dtype` and `backbone_parameter_dtype` record backbone storage, and
+`trainable_parameter_dtype` records FP32. External evaluation reuses
+`compute_dtype` for autocast. This increases full-tuning memory relative to the
+historical BF16-parameter implementation; recheck GPU memory with a short smoke
+run on the actual machine. An FP32 gaze run must pass
 `--precision fp32`; this loads Qwen, the trainable gaze projector, and the VA
 head in FP32, disables Trainer BF16/FP16 autocast, and explicitly disables TF32.
 ET2 inference and its raw features are already FP32.
@@ -765,16 +794,14 @@ checking. The pinned Qwen checkpoint must be available locally or from Hugging
 Face during reconstruction; ET2 weights remain external and are fetched lazily
 only when gaze inference starts.
 
-The current architecture manifest uses schema version 7. Schema versions 5 and 6
-remain accepted only when all applicable contracts match; historical text-only
-models are unaffected by the alignment correction. Historical gaze models without
-the current `gaze_alignment` contract are rejected regardless of schema version.
-Version 5 is the legacy LoRA-only form and is narrowly migrated to
-`finetuning_mode=lora`; versions 4 and earlier remain incompatible.
-`--resume-from-checkpoint` requires a checkpoint under the selected held-out fold
-and a matching run manifest.
-Version-5 run manifests without a mode can resume only as LoRA. A LoRA
-checkpoint can never resume as full fine-tuning, or vice versa.
+The current architecture manifest uses schema version 8. It requires the exact
+`precision_contract` and, for gaze models, version-3 `gaze_alignment` contract.
+Earlier models require their original code for historical evaluation; converting
+old BF16 tensors to FP32 does not recover lost training updates. Start fresh
+matched raw/right/left runs. Existing schema-6/7 reports remain packageable.
+`--resume-from-checkpoint` requires a schema-8 checkpoint under the selected
+held-out fold and a matching run manifest, including the text-overlap exclusion
+audit. A LoRA checkpoint cannot resume as full fine-tuning, or vice versa.
 
 Legacy metric names and semantics are retained:
 

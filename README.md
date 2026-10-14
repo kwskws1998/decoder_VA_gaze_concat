@@ -123,12 +123,18 @@ overlapping visible Qwen token. When several ET2 segments share that token,
 `nFix` and `TRT` are summed; `FFD`, `GPT`, and `fixProp` are averaged. This
 applies to both raw gaze and redistributed gaze.
 
-New runs and saved models record the full version-2 `gaze_alignment` contract.
-Old gaze checkpoints without this contract are rejected on reload or resume;
-use their original code for historical evaluation and start new training runs
-for corrected comparisons. The raw control and every redistribution condition
-must use the same corrected alignment. Historical text-only checkpoints remain
-compatible when their other architecture and training contracts match.
+New runs use alignment version 3: ET2 receives whitespace words, retains the
+first subword prediction, clips negative predictions to zero, and fails on
+nonfinite selected predictions. Architecture schema 8 stores trainable weights
+in FP32 and computes the regression head in FP32; BF16/FP16 remains an autocast
+compute option. Before each fold trains, texts also present in that fold's
+evaluation data are excluded from training. Evaluation folds and best-checkpoint
+selection remain unchanged.
+
+Old checkpoints require their original code for historical evaluation and cannot
+be resumed by the corrected pipeline. Existing schema-6/7 result reports can
+still be packaged. Start fresh matched raw and redistribution runs to compare
+these changes; see [the implementation details](va_model_code/README.md).
 
 ## Result-path contract
 

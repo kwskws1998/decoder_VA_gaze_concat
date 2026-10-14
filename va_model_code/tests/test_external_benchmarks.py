@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import copy
 from pathlib import Path
 import shutil
 from types import SimpleNamespace
@@ -12,6 +13,8 @@ import pytest
 import torch
 
 from va_model_code.decoder_va.downloads import sha256_file
+from va_model_code.decoder_va.alignment import GAZE_ALIGNMENT_CONTRACT
+from va_model_code.decoder_va.filters import TRAIN_EVAL_TEXT_OVERLAP_CONTRACT, exclude_eval_text_overlaps
 from va_model_code.decoder_va.external_benchmarks import (
     EXTERNAL_EVALUATION_COMPLETION_MARKER,
     IDEST_FILE,
@@ -46,6 +49,7 @@ from va_model_code.decoder_va.evaluation import calculate_va_metrics
 from va_model_code.decoder_va.model import (
     ARCHITECTURE_MANIFEST_VERSION,
     ARCHITECTURE_MANIFEST_FILENAME,
+    PRECISION_CONTRACT,
     DEFAULT_CLASSIFIER_DROPOUT,
     DEFAULT_GAZE_PROJECTION_DIM,
     DEFAULT_GAZE_PROJECTION_DROPOUT,
@@ -278,7 +282,13 @@ def _run_contract_fields(root: Path) -> dict:
         "model": "qwen3.5-0.8b",
         "loss": "mse",
         "output_dim": 2,
-        "dtype": "bfloat16",
+        "dtype": "float32",
+        "compute_dtype": "bfloat16",
+        "backbone_parameter_dtype": "float32",
+        "trainable_parameter_dtype": "float32",
+        "precision_contract": copy.deepcopy(PRECISION_CONTRACT),
+        "gaze_alignment": copy.deepcopy(GAZE_ALIGNMENT_CONTRACT),
+        "training_text_overlap_contract": copy.deepcopy(TRAIN_EVAL_TEXT_OVERLAP_CONTRACT),
         "model_id": "Qwen/Qwen3.5-0.8B-Base",
         "model_revision": "a" * 40,
         "finetuning_mode": "full",
@@ -332,10 +342,20 @@ def _write_completed_run(
     mismatch: bool = False,
     schema_version: int = ARCHITECTURE_MANIFEST_VERSION,
     gaze_redistribution: dict | None = None,
+    finetuning_mode: str = "full",
+    overlapping_text: bool = False,
 ) -> None:
     root.mkdir(parents=True, exist_ok=True)
     parameters = _run_contract_fields(root)
     parameters["architecture_manifest_version"] = schema_version
+    parameters["finetuning_mode"] = finetuning_mode
+    if finetuning_mode == "lora":
+        parameters["dtype"] = "bfloat16"
+        parameters["backbone_parameter_dtype"] = "bfloat16"
+    if schema_version < 8:
+        for field in ("compute_dtype", "backbone_parameter_dtype", "trainable_parameter_dtype", "precision_contract", "gaze_alignment", "training_text_overlap_contract"):
+            parameters.pop(field)
+        parameters["dtype"] = "bfloat16"
     if schema_version == 6:
         parameters.pop("gaze_redistribution")
     if gaze_redistribution is not None:
@@ -344,6 +364,10 @@ def _write_completed_run(
         {"gaze_redistribution": parameters["gaze_redistribution"]}
         if "gaze_redistribution" in parameters
         else {}
+    )
+    current_metadata = (
+        {field: parameters[field] for field in ("precision_contract", "gaze_alignment")}
+        if schema_version == 8 else {}
     )
     (root / "training_parameters.json").write_text(
         json.dumps(parameters), encoding="utf-8"
@@ -366,6 +390,8 @@ def _write_completed_run(
                 "pred_arousal": [0.25, 0.75],
             }
         )
+        if overlapping_text:
+            prediction_frame.loc[0, "text"] = "Shared TEXT" if held_out == 1 else " shared text "
         prediction_frame.to_csv(fold / "predictions.tsv", sep="\t", index=False)
         (fold / "metrics.json").write_text(
             json.dumps(_saved_metrics(prediction_frame, prefix="test_")),
@@ -376,12 +402,22 @@ def _write_completed_run(
             "held_out_fold": held_out,
             "training_fold": 2 if held_out == 1 else 1,
             "fold_seed": 42 + held_out - 1,
-            "training_rows": 2,
+            "training_rows": 1 if overlapping_text else 2,
             "evaluation_rows": 2,
             "total_parameters": 100,
             "trainable_parameters": 100,
             "trainable_fraction": 1.0,
         }
+        if schema_version == 8:
+            manifest["training_text_overlap"] = {
+                "contract": copy.deepcopy(TRAIN_EVAL_TEXT_OVERLAP_CONTRACT),
+                "train_rows_before": 2,
+                "train_rows_after": 1 if overlapping_text else 2,
+                "excluded_train_rows": 1 if overlapping_text else 0,
+                "eval_rows": 2,
+                "overlapping_eval_rows": 1 if overlapping_text else 0,
+                "shared_normalized_texts": 1 if overlapping_text else 0,
+            }
         if mismatch and held_out == 2:
             manifest["max_length"] = 201
         (fold / "run_manifest.json").write_text(
@@ -390,6 +426,7 @@ def _write_completed_run(
         architecture = {
             "schema_version": schema_version,
             **redistribution_metadata,
+            **current_metadata,
             "decoder_model_id": parameters["model_id"],
             "decoder_commit": parameters["model_revision"],
             "finetuning_mode": parameters["finetuning_mode"],
@@ -411,6 +448,7 @@ def _write_completed_run(
             "output_names": ["valence", "arousal"],
             "reconstruction": {
                 **redistribution_metadata,
+                **current_metadata,
                 "decoder_model_id": parameters["model_id"],
                 "decoder_revision": parameters["model_revision"],
                 "finetuning_mode": parameters["finetuning_mode"],
@@ -427,8 +465,8 @@ def _write_completed_run(
                 "lora_rank": parameters["lora_rank"],
                 "lora_alpha": parameters["lora_alpha"],
                 "lora_dropout": parameters["lora_dropout"],
-                "lora_target_modules": None,
-                "lora_task_type": None,
+                "lora_target_modules": "all-linear" if finetuning_mode == "lora" else None,
+                "lora_task_type": "FEATURE_EXTRACTION" if finetuning_mode == "lora" else None,
                 "gaze_projection_dim": DEFAULT_GAZE_PROJECTION_DIM,
                 "gaze_projection_dropout": list(DEFAULT_GAZE_PROJECTION_DROPOUT),
                 "classifier_dropout": DEFAULT_CLASSIFIER_DROPOUT,
@@ -1381,6 +1419,8 @@ def test_write_external_evaluation_is_non_overwriting_and_manifest_says_no_train
         member["gaze_redistribution"] == saved_redistribution
         for member in manifest["members"]
     )
+    assert all(member["compute_dtype"] == "bfloat16" and member["dtype"] == "float32" for member in manifest["members"])
+    assert all(member["precision_contract"] == PRECISION_CONTRACT and member["gaze_alignment"] == GAZE_ALIGNMENT_CONTRACT for member in manifest["members"])
     assert "saved by the original completed training run" in manifest["checkpoint_origin"]
     assert "text" not in predictions
     completion = json.loads(
@@ -1585,3 +1625,123 @@ def test_discover_rejects_malformed_redistribution(tmp_path, field, value):
 
     with pytest.raises(ValueError, match="redistribution|sigma"):
         discover_completed_run(tmp_path)
+
+
+@pytest.mark.parametrize("finetuning_mode, storage", [("full", "float32"), ("lora", "bfloat16")])
+def test_current_run_records_compute_and_parameter_precision_separately(tmp_path, finetuning_mode, storage):
+    _write_completed_run(tmp_path, finetuning_mode=finetuning_mode)
+
+    members = discover_completed_run(tmp_path)
+
+    for member in members:
+        assert member.run_manifest["dtype"] == storage
+        assert member.run_manifest["backbone_parameter_dtype"] == storage
+        assert member.run_manifest["compute_dtype"] == "bfloat16"
+        assert member.run_manifest["trainable_parameter_dtype"] == "float32"
+        assert member.architecture_manifest["precision_contract"] == PRECISION_CONTRACT
+        assert member.architecture_manifest["gaze_alignment"] == GAZE_ALIGNMENT_CONTRACT
+
+
+def _edit_current_contract_metadata(root, target, field, value, *, remove=False):
+    """Alter one current-version provenance copy to exercise independent validation."""
+
+    if target == "root":
+        path = root / "training_parameters.json"
+    elif target.startswith("fold"):
+        path = root / f"heldout_{target}" / "run_manifest.json"
+    else:
+        path = root / "heldout_fold2" / "final_model" / ARCHITECTURE_MANIFEST_FILENAME
+    payload = json.loads(path.read_text())
+    container = payload["reconstruction"] if target == "reconstruction" else payload
+    if remove:
+        container.pop(field)
+    else:
+        container[field] = value
+    path.write_text(json.dumps(payload))
+
+
+@pytest.mark.parametrize("target", ["root", "fold1", "fold2", "architecture", "reconstruction"])
+@pytest.mark.parametrize("field", ["precision_contract", "gaze_alignment"])
+@pytest.mark.parametrize("remove", [False, True])
+def test_current_provenance_requires_precision_and_preprocessing_at_every_level(tmp_path, target, field, remove):
+    _write_completed_run(tmp_path)
+    _edit_current_contract_metadata(tmp_path, target, field, {"version": 0}, remove=remove)
+
+    with pytest.raises(ValueError, match=field):
+        discover_completed_run(tmp_path)
+
+
+@pytest.mark.parametrize(
+    "field, value",
+    [("compute_dtype", "auto"), ("backbone_parameter_dtype", "bfloat16"),
+     ("trainable_parameter_dtype", "bfloat16"), ("training_text_overlap_contract", {"version": 0})],
+)
+def test_current_root_rejects_invalid_precision_or_overlap_identity(tmp_path, field, value):
+    _write_completed_run(tmp_path)
+    _edit_current_contract_metadata(tmp_path, "root", field, value)
+
+    with pytest.raises(ValueError, match=field):
+        discover_completed_run(tmp_path)
+
+
+def test_current_full_finetuning_cannot_claim_low_precision_storage(tmp_path):
+    _write_completed_run(tmp_path)
+    _edit_current_contract_metadata(tmp_path, "root", "dtype", "bfloat16")
+    _edit_current_contract_metadata(tmp_path, "root", "backbone_parameter_dtype", "bfloat16")
+
+    with pytest.raises(ValueError, match="Full finetuning requires float32"):
+        discover_completed_run(tmp_path)
+
+
+def test_current_discovery_accepts_overlap_exclusion_with_unchanged_eval_rows(tmp_path):
+    _write_completed_run(tmp_path, overlapping_text=True)
+
+    members = discover_completed_run(tmp_path)
+
+    assert all(member.run_manifest["training_rows"] == 1 for member in members)
+    assert all(member.run_manifest["evaluation_rows"] == 2 for member in members)
+
+
+def test_current_discovery_recomputes_overlap_from_internal_prediction_texts(tmp_path):
+    _write_completed_run(tmp_path, overlapping_text=True)
+    for fold in (1, 2):
+        path = tmp_path / f"heldout_fold{fold}" / "run_manifest.json"
+        manifest = json.loads(path.read_text())
+        manifest["training_rows"] = 2
+        manifest["training_text_overlap"].update(
+            train_rows_after=2, excluded_train_rows=0, overlapping_eval_rows=0, shared_normalized_texts=0,
+        )
+        path.write_text(json.dumps(manifest))
+
+    with pytest.raises(ValueError, match="training_text_overlap disagrees"):
+        discover_completed_run(tmp_path)
+
+
+def test_external_overlap_uses_effective_training_text_after_exclusion(tmp_path):
+    benchmark = _small_benchmark()
+    folds = [pd.DataFrame({
+        "index": [fold * 2, fold * 2 + 1],
+        "text": [" Same TEXT ", f"unique training {fold}"],
+        "dataset_of_origin": ["keep", "keep"],
+        "valence": [0.5, 0.5], "arousal": [0.5, 0.5],
+    }) for fold in (1, 2)]
+    for filename, frame in zip(FOLD_FILENAMES, folds):
+        frame.to_csv(tmp_path / filename, sep="\t", index=False)
+    hashes = {filename: sha256_file(tmp_path / filename) for filename in FOLD_FILENAMES}
+    members = []
+    for heldout in (1, 2):
+        training = 3 - heldout
+        _, audit = exclude_eval_text_overlaps(folds[training - 1], folds[heldout - 1])
+        members.append(SimpleNamespace(
+            name=f"heldout_fold{heldout}", training_fold=training, held_out_fold=heldout,
+            run_manifest={"architecture_manifest_version": 8, "fold_sha256": hashes,
+                "training_rows": 1, "excluded_dataset_names": [],
+                "training_text_overlap_contract": TRAIN_EVAL_TEXT_OVERLAP_CONTRACT,
+                "training_text_overlap": audit},
+        ))
+
+    audited, report, _ = audit_finetuning_text_overlap(benchmark, members, tmp_path)
+
+    assert audited["overlap_with_any_finetuning_text"].tolist() == [False, False, False]
+    assert report["overlapping_external_rows_union"] == 0
+    assert all(member["training_rows"] == 1 for member in report["members"].values())

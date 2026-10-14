@@ -10,6 +10,7 @@ import pandas as pd
 import pytest
 import torch
 from torch import nn
+from torch.nn import functional as F
 from torch.utils.data import Dataset
 from safetensors.torch import save_file
 from transformers import TrainingArguments, default_data_collator
@@ -530,7 +531,7 @@ def test_qwen_loader_full_mode_returns_fully_trainable_raw_backbone(monkeypatch)
     assert calls["model_id"] == "Qwen/fake"
     assert calls["load_kwargs"]["revision"] == "fixed-commit"
     assert calls["load_kwargs"]["trust_remote_code"] is False
-    assert calls["load_kwargs"]["dtype"] is torch.bfloat16
+    assert calls["load_kwargs"]["dtype"] is torch.float32
     assert fake_backbone.config.use_cache is False
     assert all(parameter.requires_grad for parameter in result.parameters())
 
@@ -806,7 +807,8 @@ def test_saved_full_model_round_trip_and_mode_contract(tmp_path, monkeypatch):
         )
 
 
-def test_legacy_v5_lora_model_still_reloads(tmp_path, monkeypatch):
+@pytest.mark.parametrize("legacy_version", [5, 6, 7])
+def test_historical_models_require_original_precision_code(tmp_path, monkeypatch, legacy_version):
     loader_modes = []
 
     def fake_loader(*args, **kwargs):
@@ -831,21 +833,15 @@ def test_legacy_v5_lora_model_still_reloads(tmp_path, monkeypatch):
     source.save_architecture_manifest(tmp_path)
     manifest_path = tmp_path / ARCHITECTURE_MANIFEST_FILENAME
     manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
-    manifest["schema_version"] = 5
+    manifest["schema_version"] = legacy_version
     manifest.pop("finetuning_mode")
     manifest["reconstruction"].pop("finetuning_mode")
     manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
 
-    loaded, _ = load_saved_decoder_va_model(
-        tmp_path,
-        tokenizer=tokenizer,
-        dtype=torch.float32,
-    )
+    with pytest.raises(ValueError, match="Historical precision"):
+        load_saved_decoder_va_model(tmp_path, tokenizer=tokenizer, dtype=torch.float32)
+    assert loader_modes == ["lora"]
 
-    assert loader_modes == ["lora", "lora"]
-    assert loaded.finetuning_mode == "lora"
-    for name, expected in source.state_dict().items():
-        assert torch.equal(loaded.state_dict()[name], expected)
 
 
 def test_blank_text_uses_one_active_eos_token():
@@ -928,3 +924,115 @@ def test_trainer_runs_one_step_and_predicts_two_outputs(tmp_path):
     assert np.isfinite(result.training_loss)
     assert predictions.predictions.shape == (2, 2)
     assert predictions.label_ids.shape == (2, 2)
+
+
+def test_regression_head_computes_fp32_inside_bf16_autocast():
+    """Small output differences survive autocast because the entire head stays FP32."""
+
+    model = DecoderVARegressor(FakeCausalBackbone(), gaze_fusion="none", classifier_dropout=0)
+    model.eval()
+    final_linear = model.regression_head[-1]
+    with torch.no_grad():
+        final_linear.weight.zero_()
+        final_linear.bias.copy_(torch.tensor([-0.001, 0.001]))
+    recorded_dtypes = []
+    handle = final_linear.register_forward_hook(lambda module, args, output: recorded_dtypes.append(output.dtype))
+    with torch.autocast("cpu", dtype=torch.bfloat16):
+        output = model(input_ids=torch.tensor([[1, 2, 3]]), attention_mask=torch.ones(1, 3, dtype=torch.long))
+    handle.remove()
+    assert recorded_dtypes == [torch.float32]
+    assert output.logits.dtype == torch.float32
+    torch.testing.assert_close(output.logits, F.hardsigmoid(torch.tensor([[-0.001, 0.001]])), rtol=0, atol=0)
+    assert output.logits[0, 0] < 0.5 < output.logits[0, 1]
+    output.logits.sum().backward()
+    torch.testing.assert_close(final_linear.bias.grad, torch.full((2,), 1 / 6))
+
+
+def test_regression_head_rejects_manual_bf16_cast():
+    """Manual model-wide casting cannot silently violate the FP32 regression contract."""
+
+    model = DecoderVARegressor(FakeCausalBackbone(), gaze_fusion="none").bfloat16()
+    with pytest.raises(ValueError, match="head must remain FP32"):
+        model(input_ids=torch.tensor([[1, 2, 3]]), attention_mask=torch.ones(1, 3, dtype=torch.long))
+
+
+@pytest.mark.parametrize("requested_dtype", [torch.bfloat16, torch.float16, torch.float32])
+def test_full_tuning_accumulates_small_adamw_updates(monkeypatch, requested_dtype):
+    """The actual loader preserves 6e-6 updates that disappear with BF16 parameter storage."""
+
+    calls = []
+
+    def fake_text_backbone(*args, dtype, **kwargs):
+        calls.append(dtype)
+        backbone = FakeCausalBackbone().to(dtype=dtype)
+        with torch.no_grad():
+            for parameter in backbone.parameters():
+                parameter.fill_(0.02)
+        return backbone
+
+    monkeypatch.setattr(model_module, "_load_qwen_text_backbone", fake_text_backbone)
+    backbone = load_qwen_backbone("offline/fake", dtype=requested_dtype, finetuning_mode="full")
+    assert calls == [torch.float32]
+    assert all(parameter.dtype == torch.float32 for parameter in backbone.parameters())
+    parameter = next(backbone.parameters())
+    before = parameter.detach().clone()
+    optimizer = torch.optim.AdamW(backbone.parameters(), lr=6e-6, weight_decay=0)
+    for _ in range(100):
+        optimizer.zero_grad(set_to_none=True)
+        parameter.grad = torch.ones_like(parameter)
+        optimizer.step()
+    assert torch.all(parameter < before)
+    torch.testing.assert_close(before - parameter, torch.full_like(parameter, 0.0006), atol=1e-7, rtol=0)
+
+
+@pytest.mark.parametrize("dtype", [torch.float64, "int8", "invalid"])
+def test_backbone_loader_rejects_unsupported_parameter_dtype(dtype):
+    with pytest.raises(ValueError, match="Unsupported backbone dtype"):
+        model_module.backbone_parameter_dtype(dtype, "full")
+
+
+def test_native_qwen_full_tuning_bf16_autocast_keeps_small_updates(monkeypatch):
+    """The real hybrid Qwen backbone updates FP32 weights under BF16 autocast."""
+
+    from va_model_code.tests.test_alignment_training_integration import tiny_native_qwen_backbone
+
+    monkeypatch.setattr(
+        model_module, "_load_qwen_text_backbone",
+        lambda *args, dtype, **kwargs: tiny_native_qwen_backbone(dtype),
+    )
+    torch.manual_seed(42)
+    model = build_qwen_va_model(
+        SimpleNamespace(padding_side="right"), model_id="offline/tiny-qwen",
+        gaze_fusion="none", finetuning_mode="full", dtype=torch.bfloat16,
+        classifier_dropout=0,
+    )
+    model.gradient_checkpointing_enable({"use_reentrant": False})
+    model.train()
+    initial = {name: parameter.detach().clone() for name, parameter in model.backbone.named_parameters()}
+    optimizer = torch.optim.AdamW(model.parameters(), lr=6e-6, weight_decay=0)
+    nonzero_gradients = {}
+    for step in range(3):
+        optimizer.zero_grad(set_to_none=True)
+        with torch.autocast("cpu", dtype=torch.bfloat16):
+            logits = model(
+                input_ids=torch.tensor([[1, 2, 3, 4], [1, 8, 4, 6]]),
+                attention_mask=torch.ones(2, 4, dtype=torch.long),
+            ).logits
+            loss = F.mse_loss(logits, torch.tensor([[0.2, 0.8], [0.7, 0.3]]))
+        assert logits.dtype == torch.float32
+        loss.backward()
+        if step == 0:
+            nonzero_gradients = {
+                name: parameter.grad.detach().ne(0)
+                for name, parameter in model.backbone.named_parameters()
+                if parameter.grad is not None
+            }
+        optimizer.step()
+    nonzero_count = sum(mask.sum().item() for mask in nonzero_gradients.values())
+    changed_count = sum(
+        ((parameter.detach() != initial[name]) & nonzero_gradients[name]).sum().item()
+        for name, parameter in model.backbone.named_parameters() if name in nonzero_gradients
+    )
+    assert nonzero_count > 0
+    assert changed_count / nonzero_count > 0.95
+    assert all(parameter.dtype == torch.float32 for parameter in model.parameters() if parameter.requires_grad)

@@ -8,7 +8,7 @@ import torch
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 from va_model_code.decoder_va.alignment import align_words_to_tokens
-from va_model_code.decoder_va.gaze import ET2GazeProvider, segment_text_for_et2
+from va_model_code.decoder_va.gaze import ET2GazeProvider
 
 
 class PinnedTokenizationFixture:
@@ -44,7 +44,7 @@ def test_unmatched_merged_punctuation_does_not_steal_later_occurrence():
     """Require later words to retain gaze after punctuation tokenization differs."""
 
     tokenizer = PinnedTokenizationFixture()
-    words = segment_text_for_et2('I love this!!! I hate that!')
+    words = ['I', 'love', 'this', '!', '!', '!', 'I', 'hate', 'that', '!']
     alignment = align_words_to_tokens(words, range(8), [1] * 8, tokenizer)
     assert alignment.word_to_token_indices[3] != (7,)
     assert alignment.word_to_token_indices[6:9] == ((4,), (5,), (6,))
@@ -54,7 +54,7 @@ def test_provider_preserves_the_identity_of_the_final_punctuation_feature():
     """Trace distinguishable synthetic ET features through the actual provider mapping."""
 
     tokenizer = PinnedTokenizationFixture()
-    words = segment_text_for_et2('I love this!!! I hate that!')
+    words = ['I', 'love', 'this', '!', '!', '!', 'I', 'hate', 'that', '!']
     provider = ET2GazeProvider(tokenizer=tokenizer)
     features, mask = provider._map_predictions_to_target(
         words, torch.arange(1, 11, dtype=torch.float32).unsqueeze(-1),

@@ -1,0 +1,14 @@
+[
+  {
+    "source_inner_zip": "right_l0p25_r1_results_only.zip",
+    "historical_architecture_version": 7,
+    "repackaged": true,
+    "bytes": 1538569
+  },
+  {
+    "source_inner_zip": "left_l1_r0p25_results_only.zip",
+    "historical_architecture_version": 7,
+    "repackaged": true,
+    "bytes": 1538680
+  }
+]

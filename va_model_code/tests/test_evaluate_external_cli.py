@@ -20,7 +20,8 @@ if str(VA_MODEL_CODE) not in sys.path:
 
 evaluate_external = importlib.import_module("evaluate_external")
 from decoder_va.external_benchmarks import ExternalBenchmarkData
-from decoder_va.model import ARCHITECTURE_MANIFEST_VERSION
+from decoder_va.model import ARCHITECTURE_MANIFEST_VERSION, PRECISION_CONTRACT
+from decoder_va.filters import TRAIN_EVAL_TEXT_OVERLAP_CONTRACT
 
 
 class OrderedTokenizer:
@@ -366,7 +367,9 @@ def test_validate_args_rejects_programmatic_precision_override() -> None:
         )
 
 
+@pytest.mark.parametrize("fp32_storage", [False, True])
 def test_bf16_dry_run_returns_before_device_or_dtype_checks(
+    fp32_storage,
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
@@ -392,6 +395,8 @@ def test_bf16_dry_run_returns_before_device_or_dtype_checks(
             "max_length": 200,
         },
     )
+    if fp32_storage:
+        member.run_manifest.update(dtype="float32", compute_dtype="bfloat16")
     monkeypatch.setattr(
         evaluate_external,
         "discover_completed_run",
@@ -532,7 +537,9 @@ def test_preflight_rejects_persisted_id_order_before_inference(
         )
 
 
+@pytest.mark.parametrize("fp32_storage", [False, True])
 def test_preflight_uses_recorded_dtype_tolerance_and_rejects_excess_error(
+    fp32_storage,
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -542,6 +549,8 @@ def test_preflight_uses_recorded_dtype_tolerance_and_rejects_excess_error(
         tmp_path,
         persisted_ids=["a", "b", "c"],
     )
+    if fp32_storage:
+        member.run_manifest.update(dtype="float32", compute_dtype="bfloat16")
     reference = np.array(
         [[0.10, 0.40], [0.20, 0.50], [0.30, 0.60]],
         dtype=np.float64,
@@ -634,6 +643,12 @@ def test_full_cpu_run_predicts_both_members_and_atomically_writes_results(
         "gaze_feature_indices": [],
         "data_dir": None,
         "dtype": "float32",
+        "compute_dtype": "float32",
+        "backbone_parameter_dtype": "float32",
+        "trainable_parameter_dtype": "float32",
+        "precision_contract": dict(PRECISION_CONTRACT),
+        "gaze_alignment": None,
+        "training_text_overlap_contract": dict(TRAIN_EVAL_TEXT_OVERLAP_CONTRACT),
         "eval_batch_size": 2,
         "max_length": 12,
         "dataset_counts_after_filter": {"Emobank": 4},
@@ -771,6 +786,12 @@ def test_full_semeval_run_audits_truncation_and_reports_official_score(
         "gaze_feature_indices": [],
         "data_dir": None,
         "dtype": "float32",
+        "compute_dtype": "float32",
+        "backbone_parameter_dtype": "float32",
+        "trainable_parameter_dtype": "float32",
+        "precision_contract": dict(PRECISION_CONTRACT),
+        "gaze_alignment": None,
+        "training_text_overlap_contract": dict(TRAIN_EVAL_TEXT_OVERLAP_CONTRACT),
         "eval_batch_size": 2,
         "max_length": 12,
         "dataset_counts_after_filter": {"Emobank": 4},
@@ -889,6 +910,12 @@ def test_full_idest_length_sensitivity_uses_override_and_marks_nonprimary(
         "gaze_feature_indices": [],
         "data_dir": None,
         "dtype": "float32",
+        "compute_dtype": "float32",
+        "backbone_parameter_dtype": "float32",
+        "trainable_parameter_dtype": "float32",
+        "precision_contract": dict(PRECISION_CONTRACT),
+        "gaze_alignment": None,
+        "training_text_overlap_contract": dict(TRAIN_EVAL_TEXT_OVERLAP_CONTRACT),
         "eval_batch_size": 2,
         "max_length": 200,
         "dataset_counts_after_filter": {"Emobank": 4},

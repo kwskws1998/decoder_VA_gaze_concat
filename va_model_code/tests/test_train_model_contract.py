@@ -26,7 +26,23 @@ def _expected_resume_manifest() -> dict[str, object]:
         "model": "qwen3.5-0.8b",
         "loss": "mse",
         "output_dim": 2,
+        "training_rows": 5,
+        "evaluation_rows": 5,
+        "training_text_overlap_contract": copy.deepcopy(train_model_module.TRAIN_EVAL_TEXT_OVERLAP_CONTRACT),
+        "training_text_overlap": {
+            "contract": copy.deepcopy(train_model_module.TRAIN_EVAL_TEXT_OVERLAP_CONTRACT),
+            "train_rows_before": 5,
+            "train_rows_after": 5,
+            "excluded_train_rows": 0,
+            "eval_rows": 5,
+            "overlapping_eval_rows": 0,
+            "shared_normalized_texts": 0,
+        },
         "dtype": "float32",
+        "compute_dtype": "float32",
+        "backbone_parameter_dtype": "float32",
+        "trainable_parameter_dtype": "float32",
+        "precision_contract": copy.deepcopy(train_model_module.PRECISION_CONTRACT),
         "model_id": "Qwen/fake",
         "model_revision": "decoder-commit",
         "finetuning_mode": "lora",
@@ -525,7 +541,7 @@ def test_training_records_and_passes_canonical_redistribution(tmp_path, monkeypa
     expected = train_model_module.redistribution_contract(method)
     assert build_contracts == [expected, expected]
     root_manifest = json.loads((run_root / "training_parameters.json").read_text())
-    assert root_manifest["architecture_manifest_version"] == 7
+    assert root_manifest["architecture_manifest_version"] == train_model_module.ARCHITECTURE_MANIFEST_VERSION
     assert root_manifest["gaze_redistribution"] == expected
     assert root_manifest["gaze_alignment"] == train_model_module.GAZE_ALIGNMENT_CONTRACT
     assert root_manifest["sentence_only"] is True
@@ -847,7 +863,7 @@ def test_resume_contract_accepts_matching_prefix_checkpoint(tmp_path):
     train_model_module._validate_resume_contract(args, fold_output, expected)
 
 
-def test_resume_contract_accepts_legacy_v5_lora_checkpoint(tmp_path):
+def test_resume_contract_rejects_legacy_v5_lora_checkpoint(tmp_path):
     fold_output = tmp_path / "run" / "heldout_fold1"
     checkpoint = fold_output / "checkpoints" / "checkpoint-10"
     checkpoint.mkdir(parents=True)
@@ -861,7 +877,8 @@ def test_resume_contract_accepts_legacy_v5_lora_checkpoint(tmp_path):
     )
     args = SimpleNamespace(resume_from_checkpoint=str(checkpoint))
 
-    train_model_module._validate_resume_contract(args, fold_output, expected)
+    with pytest.raises(ValueError, match="historical precision"):
+        train_model_module._validate_resume_contract(args, fold_output, expected)
 
 
 def _check_resume_pair(tmp_path, recorded, expected, checkpoint_tensors=None):
@@ -881,7 +898,7 @@ def _check_resume_pair(tmp_path, recorded, expected, checkpoint_tensors=None):
 
 
 def _current_resume_manifest(method="none"):
-    """Build an explicit schema-7 contract for compatibility regression tests."""
+    """Build an explicit current contract for compatibility regression tests."""
 
     manifest = _expected_resume_manifest()
     manifest["architecture_manifest_version"] = train_model_module.ARCHITECTURE_MANIFEST_VERSION
@@ -895,12 +912,13 @@ def _current_resume_manifest(method="none"):
 
 
 @pytest.mark.parametrize("legacy_version", (5, 6))
-def test_resume_legacy_checkpoints_only_upgrade_with_redistribution_disabled(tmp_path, legacy_version):
+def test_resume_legacy_checkpoints_rejected_even_with_redistribution_disabled(tmp_path, legacy_version):
     recorded = _expected_resume_manifest()
     recorded["architecture_manifest_version"] = legacy_version
     if legacy_version == 5:
         recorded.pop("finetuning_mode")
-    _check_resume_pair(tmp_path, recorded, _current_resume_manifest())
+    with pytest.raises(ValueError, match="historical precision"):
+        _check_resume_pair(tmp_path, recorded, _current_resume_manifest())
 
 
 @pytest.mark.parametrize("method", ("none", "asym-gaussian"))
@@ -917,14 +935,14 @@ def test_resume_legacy_cannot_reset_into_redistribution(tmp_path, legacy_version
     recorded["architecture_manifest_version"] = legacy_version
     if legacy_version == 5:
         recorded.pop("finetuning_mode")
-    with pytest.raises(ValueError, match="gaze_redistribution"):
+    with pytest.raises(ValueError, match="historical precision"):
         _check_resume_pair(tmp_path, recorded, _current_resume_manifest("asym-gaussian"))
 
 
 def test_resume_rejects_enabled_contract_falsely_tagged_as_legacy(tmp_path):
     recorded = _current_resume_manifest("asym-gaussian")
     recorded["architecture_manifest_version"] = 6
-    with pytest.raises(ValueError, match="Legacy resume manifests"):
+    with pytest.raises(ValueError, match="historical precision"):
         _check_resume_pair(tmp_path, recorded, _current_resume_manifest("asym-gaussian"))
 
 
@@ -980,8 +998,8 @@ def test_resume_rejects_changed_alignment_policy(tmp_path, owner, change):
 
 
 @pytest.mark.parametrize("version", (5, 6, 7))
-def test_resume_preserves_historical_text_only_compatibility(tmp_path, version):
-    """Text-only weights do not depend on the gaze alignment correction."""
+def test_resume_rejects_historical_text_only_precision(tmp_path, version):
+    """Text-only weights still depend on the changed precision and output semantics."""
 
     expected = _current_resume_manifest()
     expected.update(
@@ -1000,7 +1018,8 @@ def test_resume_preserves_historical_text_only_compatibility(tmp_path, version):
         recorded.pop("gaze_redistribution")
     if version == 5:
         recorded.pop("finetuning_mode")
-    _check_resume_pair(tmp_path, recorded, expected)
+    with pytest.raises(ValueError, match="historical precision"):
+        _check_resume_pair(tmp_path, recorded, expected)
 
 
 @pytest.mark.parametrize(
@@ -1203,7 +1222,7 @@ def test_resume_contract_rejects_old_postfix_manifest(tmp_path):
     )
     args = SimpleNamespace(resume_from_checkpoint=str(checkpoint))
 
-    with pytest.raises(ValueError, match="refusing to reinterpret"):
+    with pytest.raises(ValueError, match="contract mismatch"):
         train_model_module._validate_resume_contract(
             args,
             fold_output,
@@ -1229,7 +1248,7 @@ def test_resume_contract_rejects_old_four_output_manifest(tmp_path):
     )
     args = SimpleNamespace(resume_from_checkpoint=str(checkpoint))
 
-    with pytest.raises(ValueError, match="refusing to reinterpret"):
+    with pytest.raises(ValueError, match="contract mismatch"):
         train_model_module._validate_resume_contract(
             args,
             fold_output,
@@ -1249,3 +1268,24 @@ def test_resume_contract_rejects_checkpoint_from_another_fold(tmp_path):
             fold_output,
             _expected_resume_manifest(),
         )
+
+
+@pytest.mark.parametrize("field", ["compute_dtype", "backbone_parameter_dtype", "trainable_parameter_dtype"])
+def test_resume_rejects_changed_precision_metadata(tmp_path, field):
+    recorded = _current_resume_manifest()
+    expected = _current_resume_manifest()
+    recorded[field] = "bfloat16"
+    with pytest.raises(ValueError, match=field):
+        _check_resume_pair(tmp_path, recorded, expected)
+
+
+@pytest.mark.parametrize("change", ["missing", "output_dtype", "version"])
+def test_resume_rejects_changed_precision_contract(tmp_path, change):
+    recorded = _current_resume_manifest()
+    expected = _current_resume_manifest()
+    if change == "missing":
+        recorded.pop("precision_contract")
+    else:
+        recorded["precision_contract"][change] = 99 if change == "version" else "bfloat16"
+    with pytest.raises(ValueError, match="precision_contract"):
+        _check_resume_pair(tmp_path, recorded, expected)

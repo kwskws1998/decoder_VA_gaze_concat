@@ -74,6 +74,31 @@ python va_model_code/train_model.py --dry-run \
   --gaze-features TRT
 ```
 
+## Optional TRT relation experiment
+
+`--gaze-relation trt-relative-rotation` keeps the frozen ET2 raw gaze prefix and
+adds learned TRT-relative rotations to mapped text-pair attention scores in
+Qwen3.5 full-attention layers. It is disabled by default and requires eager
+attention. Use `--attn-implementation eager` for the raw comparison too.
+
+```text
+python va_model_code/train_model.py qwen3.5-0.8b mse --data-dir va_model_code/data/paper7_seed42 --sentence-only --no-iemocap --gaze-features TRT --gaze-relation trt-relative-rotation --gaze-relation-learning-rate 1e-3 --attn-implementation eager --max-steps 20 --held-out-folds 1
+```
+
+This is a training smoke run; it does not establish effectiveness. A CPU-only
+synthetic mechanism diagnostic is available without model downloads:
+
+```text
+python va_model_code/run_gaze_relation_diagnostic.py --help
+```
+
+See the [method, contracts, and limitations](va_model_code/README.md#trt-relative-attention-experiment).
+The same training CLI supports `--gaze-relation-input shuffled` with
+`--gaze-relation-shuffle-seed 42` for a deterministic relation-only control;
+the actual TRT prefix is retained. Compare raw/eager, aligned rotation, and
+shuffled rotation with otherwise identical settings. Learned per-layer/head
+alpha values are exported to each fold's `gaze_relation_parameters.json`.
+
 ## Optional gaze redistribution
 
 For the matched raw/fixed/learned sigma diagnosis suite, environment setup,
@@ -125,15 +150,16 @@ applies to both raw gaze and redistributed gaze.
 
 New runs use alignment version 3: ET2 receives whitespace words, retains the
 first subword prediction, clips negative predictions to zero, and fails on
-nonfinite selected predictions. Architecture schema 8 stores trainable weights
-in FP32 and computes the regression head in FP32; BF16/FP16 remains an autocast
+nonfinite selected predictions. Architecture schemas 8 and 9 store trainable weights
+in FP32 and compute the regression head in FP32; BF16/FP16 remains an autocast
 compute option. Before each fold trains, texts also present in that fold's
 evaluation data are excluded from training. Evaluation folds and best-checkpoint
 selection remain unchanged.
 
-Old checkpoints require their original code for historical evaluation and cannot
-be resumed by the corrected pipeline. Existing schema-6/7 result reports can
-still be packaged. Start fresh matched raw and redistribution runs to compare
+Schema-8 checkpoints remain loadable for evaluation; older checkpoints require
+their original code. New training and resume use schema 9 with explicit relation
+metadata. Existing schema-6/7/8 result reports can still be packaged.
+Start fresh matched runs to compare
 these changes; see [the implementation details](va_model_code/README.md).
 
 ## Result-path contract

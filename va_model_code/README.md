@@ -794,12 +794,14 @@ checking. The pinned Qwen checkpoint must be available locally or from Hugging
 Face during reconstruction; ET2 weights remain external and are fetched lazily
 only when gaze inference starts.
 
-The current architecture manifest uses schema version 8. It requires the exact
+The current architecture manifest uses schema version 9. It requires the exact
 `precision_contract` and, for gaze models, version-3 `gaze_alignment` contract.
-Earlier models require their original code for historical evaluation; converting
+It also records an explicit `gaze_relation` contract, including when disabled.
+Schema-8 models without a relation remain loadable for evaluation. Earlier
+models require their original code for historical evaluation; converting
 old BF16 tensors to FP32 does not recover lost training updates. Start fresh
-matched raw/right/left runs. Existing schema-6/7 reports remain packageable.
-`--resume-from-checkpoint` requires a schema-8 checkpoint under the selected
+matched runs. Existing schema-6/7/8 reports remain packageable.
+`--resume-from-checkpoint` requires a schema-9 checkpoint under the selected
 held-out fold and a matching run manifest, including the text-overlap exclusion
 audit. A LoRA checkpoint cannot resume as full fine-tuning, or vice versa.
 
@@ -811,6 +813,136 @@ Legacy metric names and semantics are retained:
 CCC and mean metrics are also reported. Per-dataset reporting is generated only
 for datasets still present after filtering, so exclusions cannot trigger
 hard-coded source lookup failures.
+
+## TRT-relative attention experiment
+
+### Hypothesis and interpretation
+
+The hypothesis is that directly conditioning text-pair attention on differences
+in predicted TRT can help the VA model learn useful contextual interactions
+with fewer examples than relying on the gaze prefix alone. The prefix and this
+branch use the same frozen ET2 predictions; the branch provides a different
+route for using those predictions, not new measurements of human gaze.
+
+For mapped tokens, the extra phase depends on `TRT_j - TRT_i`. Q/K still supply
+the content of the interaction, and a learned coefficient can increase or
+decrease its score. This does not assume that high TRT means emotional
+importance, that equal TRT means semantic similarity, or that the rotation
+models left-to-right reading. Equal TRT gives exactly zero direct correction.
+Effectiveness remains untested on real VA data.
+
+### Operator and numerical behavior
+
+Enable with `--gaze-relation trt-relative-rotation`. The existing frozen ET2
+provider and raw TRT gaze-prefix embeddings are retained. Only Qwen3.5
+full-attention layers receive a new per-query-head scalar `alpha`, initialized
+to zero. Linear-attention layers remain native. Defaults remain unchanged.
+
+After Qwen's native RoPE, the extra logit correction is:
+
+```text
+phase_i[h] = alpha[h] * raw_TRT_i / scale
+delta_ij[h] = mapped_text_i * mapped_text_j
+              * ((R(phase_i) q_i)^T (R(phase_j) k_j) - q_i^T k_j) / sqrt(head_dim)
+logits = native_logits + delta + native_causal_and_padding_mask
+```
+
+The implementation evaluates this equivalent expression in FP32, avoiding
+subtraction of two nearly equal attention matrices for small angles:
+
+```text
+angle_ij[h] = alpha[h] * (TRT_j - TRT_i) / scale
+J(k) = concat(-k_second_half, k_first_half)
+delta_ij[h] = (-2 * sin(angle_ij / 2)^2 * dot(q_i, k_j)
+              + sin(angle_ij) * dot(q_i, J(k_j))) / sqrt(head_dim)
+```
+
+It is an extra rotation after native RoPE. The new full-head rotation and
+Qwen's partial native RoPE need not commute; this is not a replacement of
+native position IDs with TRT. Alpha remains in the gradient graph even at
+zero, so a zero initial correction does not freeze learning.
+
+The rotation uses the same phase in every split-half plane and the original
+Qwen head dimension. Each full-attention layer has its own head coefficients.
+`--gaze-relation-scale` is a fixed positive divisor (default `1.0`) in ET2's
+output units; it is not estimated from labels or evaluation data. There is no
+claim that the ET2 output unit represents milliseconds.
+
+Only original text tokens selected by the provider's alignment mask participate.
+Their positions are shifted by each example's compact gaze-prefix length plus
+the two boundary tokens. Missing anchors, continuation subtokens without an
+anchor, prefix tokens, and padding are excluded; a valid TRT of zero remains an
+anchor. No Gaussian redistribution is allowed alongside this initial condition.
+Text-to-prefix logits receive no direct correction. Softmax normalization and
+changes propagated through earlier layers can still change their weights or
+later-layer logits.
+
+The correction and alpha storage use FP32. A separate alpha optimizer group
+uses `--gaze-relation-learning-rate` (default `1e-3`) with zero weight decay.
+Logs record alpha norm, maximum magnitude, mean, and current learning rate.
+The branch requires `--attn-implementation eager`, set automatically when
+enabled. Force eager in the raw comparison too. It uses extra quadratic score
+matrices and pairwise trigonometric computations and has not been benchmarked
+for production GPU memory or throughput.
+Native Qwen query gating, grouped keys/values, masks, and one shared softmax are
+preserved. Explicit per-forward gaze arguments support checkpoint recomputation;
+cached generation is unsupported for this regression-only branch.
+
+Train a fresh run to enable the method. Architecture/run/result manifests record
+the relation, scale, and optimizer policy; safe reload and resume reject absent,
+malformed, nonfinite, or incompatible alpha weights. Evaluation always preserves
+input row order, even when training groups batches by length. Prediction export
+also checks returned labels against the original metadata when labels exist.
+
+### Matched controls
+
+Keep data, fold use, initialization seed, precision, effective batch size,
+optimizer, training steps, checkpoint selection, and eager attention identical.
+The existing fold protocol and checkpoint selection are unchanged.
+
+| Arm | Options in addition to the common training settings | Purpose |
+| --- | --- | --- |
+| Raw TRT prefix | `--gaze-relation none --attn-implementation eager` | Current input-feature baseline |
+| Aligned TRT rotation | `--gaze-relation trt-relative-rotation --gaze-relation-input aligned --gaze-relation-learning-rate 1e-3 --attn-implementation eager` | Test direct TRT-conditioned interactions |
+| Shuffled TRT rotation | `--gaze-relation trt-relative-rotation --gaze-relation-input shuffled --gaze-relation-shuffle-seed 42 --gaze-relation-learning-rate 1e-3 --attn-implementation eager` | Same module and TRT distribution, changed word-to-TRT correspondence in the relation only |
+
+All three arms retain the genuine, aligned raw-TRT prefix. The shuffled arm
+permutes only the relation values among the original mapped text anchors.
+It preserves the exact within-example multiset, including valid zeros, and
+never includes padding, prefix positions, or unmapped subtokens. Its permutation
+is fixed by the experiment seed, active token IDs, and original anchor positions
+using `blake2b_rank_v1`; labels and TRT magnitudes are not part of the hash.
+Batch order, batch padding, global RNG state, train/eval mode, and checkpoint
+replay cannot change it. Zero/one-anchor examples and identical values cannot
+provide an informative shuffle; identity permutations are permitted.
+
+If omitted, `--gaze-relation-shuffle-seed` uses `--seed`, fixed across the two
+folds. The resolved seed and algorithm are stored in a version-2 relation
+contract. Existing version-1 aligned contracts remain loadable. Condition names
+distinguish aligned and shuffled runs and include the shuffle seed. Resuming
+with a different input mode or shuffle seed fails explicitly.
+
+The hypothesis gains support only if aligned TRT rotation improves on both
+the matched raw arm and the shuffled arm across repeated seeds. An improvement
+over raw alone could reflect the added module; no improvement over shuffled
+does not establish a benefit from correct word-to-TRT correspondence. These
+controls do not establish cognitive validity or separate TRT from correlated
+lexical properties such as word length; those need further controls.
+
+Each completed relation fold writes `gaze_relation_parameters.json` from the
+selected model used for final prediction, including every layer/head's alpha
+and `alpha / scale`. `package_results.py` includes this small file in the
+results-only ZIP when present. It contains no model weights or original text.
+Older runs without the report still package normally.
+
+The CPU diagnostic in `run_gaze_relation_diagnostic.py` uses tiny randomly
+initialized Qwen, synthetic tokens/TRT, and planted teacher targets. Its raw,
+relation, and shuffled-relation arms use the production input-control path and
+check mechanism learnability with paired
+initialization and a held-out synthetic set. This is neither pretrained ET2+Qwen
+VA evidence nor a novelty demonstration. A real comparison still requires
+matched pretrained runs, several seeds, and an independent development split
+for checkpoint selection before final testing.
 
 ## Frozen external generalization benchmarks
 

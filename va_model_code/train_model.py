@@ -55,7 +55,11 @@ from decoder_va.model import (
     validate_saved_trainable_precision,
     build_qwen_va_model,
     validate_gaze_alignment_contract,
+    validate_gaze_relation_setup,
+    validate_saved_gaze_relation,
 )
+from decoder_va.gaze_relation import GAZE_RELATION_INPUTS, GAZE_RELATION_METHODS, gaze_relation_contract
+from decoder_va.gaze_relation_reporting import write_gaze_relation_report
 from decoder_va.paths import (
     RESULTS_ROOT,
     default_run_name,
@@ -139,6 +143,23 @@ def _build_parser() -> argparse.ArgumentParser:
         ),
     )
     parser.add_argument("--redistribution-sigma-left", type=float, default=1.0)
+    parser.add_argument(
+        "--gaze-relation", choices=GAZE_RELATION_METHODS, default="none",
+        help="Optional raw-TRT rotation of mapped text-pair attention scores; requires eager attention.",
+    )
+    parser.add_argument("--gaze-relation-scale", type=float, default=1.0)
+    parser.add_argument(
+        "--gaze-relation-input", choices=GAZE_RELATION_INPUTS, default="aligned",
+        help="Use aligned TRT or deterministically shuffle only the relation input within each sentence; gaze prefix stays aligned.",
+    )
+    parser.add_argument(
+        "--gaze-relation-shuffle-seed", type=int, default=None,
+        help="Seed for shuffled relation input; defaults to --seed and is saved for identical training/evaluation behavior.",
+    )
+    parser.add_argument(
+        "--gaze-relation-learning-rate", type=float, default=None,
+        help="Per-head alpha learning rate; defaults to 1e-3 when enabled, with zero weight decay.",
+    )
     parser.add_argument("--redistribution-sigma-right", type=float, default=1.0)
     parser.add_argument("--redistribution-min-sigma", type=float, default=1e-6)
     parser.add_argument(
@@ -261,6 +282,19 @@ def _redistribution_config(args: argparse.Namespace) -> dict[str, object]:
     )
 
 
+def _gaze_relation_config(args: argparse.Namespace) -> dict[str, object]:
+    """Resolve relation input and its reproducible control into the saved contract."""
+
+    input_mode = args.gaze_relation_input
+    shuffle_seed = args.gaze_relation_shuffle_seed
+    if input_mode == "shuffled" and shuffle_seed is None:
+        shuffle_seed = args.seed
+    return gaze_relation_contract(
+        args.gaze_relation, scale=args.gaze_relation_scale,
+        input_mode=input_mode, shuffle_seed=shuffle_seed,
+    )
+
+
 def _validate_args(args: argparse.Namespace) -> None:
     """Fail before downloading models when a run configuration is invalid."""
 
@@ -293,6 +327,23 @@ def _validate_args(args: argparse.Namespace) -> None:
             raise ValueError("--redistribution-learning-rate must be finite and positive.")
         args.redistribution_weight_decay = REDISTRIBUTION_WEIGHT_DECAY
     _redistribution_config(args)
+    relation = validate_gaze_relation_setup(
+        _gaze_relation_config(args),
+        gaze_fusion=args.gaze_fusion, feature_indices=args.gaze_feature_indices,
+        gaze_redistribution=_redistribution_config(args),
+        attn_implementation=args.attn_implementation,
+    )
+    if relation["method"] == "none":
+        if args.gaze_relation_learning_rate is not None:
+            raise ValueError("--gaze-relation-learning-rate requires --gaze-relation trt-relative-rotation.")
+        args.gaze_relation_weight_decay = None
+    else:
+        args.attn_implementation = "eager"
+        if args.gaze_relation_learning_rate is None:
+            args.gaze_relation_learning_rate = 1e-3
+        if not math.isfinite(args.gaze_relation_learning_rate) or args.gaze_relation_learning_rate <= 0:
+            raise ValueError("--gaze-relation-learning-rate must be finite and positive.")
+        args.gaze_relation_weight_decay = 0.0
     if args.sigma_diagnostics_steps < 0 or args.sigma_diagnostics_batch_size <= 0:
         raise ValueError("Sigma diagnostics require nonnegative steps and positive batch size.")
     if args.sigma_diagnostics_steps and (
@@ -460,6 +511,7 @@ def _resolve_output_dir(args: argparse.Namespace) -> Path:
             gaze_fusion=args.gaze_fusion,
             gaze_features=args.gaze_features,
             gaze_redistribution=_redistribution_config(args),
+            gaze_relation=_gaze_relation_config(args),
             seed=args.seed,
             no_iemocap=args.no_iemocap or args.no_ieomcap,
             sentence_only=args.sentence_only,
@@ -612,6 +664,7 @@ def _validate_resume_contract(
         "gaze_fusion",
         "gaze_alignment",
         "gaze_redistribution",
+        "gaze_relation",
         "gaze_features",
         "gaze_feature_indices",
         "features_used",
@@ -669,6 +722,18 @@ def _validate_resume_contract(
             gaze_fusion=manifest["gaze_fusion"],
             feature_indices=manifest["gaze_feature_indices"],
         )
+        if "gaze_relation" not in manifest:
+            raise ValueError(f"Resume {label} manifest is missing gaze_relation.")
+        if not isinstance(manifest["gaze_relation"], dict):
+            raise ValueError(f"Resume {label} gaze_relation must be a mapping.")
+        manifest["gaze_relation"] = validate_gaze_relation_setup(
+            manifest["gaze_relation"], gaze_fusion=manifest["gaze_fusion"],
+            feature_indices=manifest["gaze_feature_indices"],
+            gaze_redistribution=manifest["gaze_redistribution"],
+            attn_implementation=manifest["attn_implementation"],
+        )
+        if manifest["gaze_relation"]["method"] != "none" and manifest["attn_implementation"] != "eager":
+            raise ValueError(f"Resume {label} gaze_relation requires explicit eager attention.")
         if "sentence_only" not in manifest:
             manifest["sentence_only"] = False
     if expected_manifest.get("finetuning_mode") == "lora":
@@ -678,6 +743,8 @@ def _validate_resume_contract(
             "redistribution_learning_rate",
             "redistribution_weight_decay",
         )
+    if expected_manifest["gaze_relation"]["method"] != "none":
+        contract_fields += ("gaze_relation_learning_rate", "gaze_relation_weight_decay")
     mismatches = []
     for field in contract_fields:
         expected_value = _json_ready(expected_manifest[field])
@@ -874,6 +941,7 @@ def run(args: argparse.Namespace) -> Path | None:
             f"learning rate: {args.learning_rate:g}"
         )
         print(f"Gaze redistribution: {_redistribution_config(args)}")
+        print(f"Gaze relation: {_gaze_relation_config(args)}")
         if args.gaze_redistribution == "asym-gaussian":
             print(
                 "Redistribution optimizer: "
@@ -932,6 +1000,7 @@ def run(args: argparse.Namespace) -> Path | None:
     run_manifest = {
         **vars(args),
         "gaze_redistribution": _redistribution_config(args),
+        "gaze_relation": _gaze_relation_config(args),
         "gaze_alignment": (
             _json_ready(GAZE_ALIGNMENT_CONTRACT)
             if args.gaze_fusion == "prefix-concat"
@@ -1042,6 +1111,7 @@ def run(args: argparse.Namespace) -> Path | None:
             finetuning_mode=args.finetuning_mode,
             gaze_fusion=args.gaze_fusion,
             gaze_redistribution=run_manifest["gaze_redistribution"],
+            gaze_relation=run_manifest["gaze_relation"],
             et_repo_id=args.et_model_id,
             et_revision=args.et_revision,
             et_filename=args.et_filename,
@@ -1057,6 +1127,7 @@ def run(args: argparse.Namespace) -> Path | None:
             validate_saved_trainable_precision(
                 model, Path(args.resume_from_checkpoint) / "model.safetensors"
             )
+            validate_saved_gaze_relation(model, Path(args.resume_from_checkpoint) / "model.safetensors")
         parameter_summary = model.trainable_parameter_summary()
         print(
             "Trainable parameters: "
@@ -1082,6 +1153,7 @@ def run(args: argparse.Namespace) -> Path | None:
             compute_metrics=trainer_compute_metrics,
             loss_name=loss_name,
             redistribution_learning_rate=args.redistribution_learning_rate,
+            gaze_relation_learning_rate=args.gaze_relation_learning_rate,
         )
         if args.sigma_diagnostics_steps:
             from decoder_va.sigma_diagnostics import attach_sigma_diagnostics
@@ -1092,6 +1164,8 @@ def run(args: argparse.Namespace) -> Path | None:
                 batch_size=args.sigma_diagnostics_batch_size,
             )
         trainer.train(resume_from_checkpoint=args.resume_from_checkpoint)
+        if run_manifest["gaze_relation"]["method"] != "none":
+            write_gaze_relation_report(model, fold_output)
         if args.sigma_diagnostics_steps:
             trainer.save_state()
         trainer.save_model(str(fold_output / "final_model"))

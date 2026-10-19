@@ -640,6 +640,7 @@ def test_full_cpu_run_predicts_both_members_and_atomically_writes_results(
     common_manifest = {
         "architecture_manifest_version": ARCHITECTURE_MANIFEST_VERSION,
         "gaze_redistribution": {"method": "none"},
+        "gaze_relation": {"version": 1, "method": "none"},
         "gaze_feature_indices": [],
         "data_dir": None,
         "dtype": "float32",
@@ -783,6 +784,7 @@ def test_full_semeval_run_audits_truncation_and_reports_official_score(
     common_manifest = {
         "architecture_manifest_version": ARCHITECTURE_MANIFEST_VERSION,
         "gaze_redistribution": {"method": "none"},
+        "gaze_relation": {"version": 1, "method": "none"},
         "gaze_feature_indices": [],
         "data_dir": None,
         "dtype": "float32",
@@ -907,6 +909,7 @@ def test_full_idest_length_sensitivity_uses_override_and_marks_nonprimary(
     common_manifest = {
         "architecture_manifest_version": ARCHITECTURE_MANIFEST_VERSION,
         "gaze_redistribution": {"method": "none"},
+        "gaze_relation": {"version": 1, "method": "none"},
         "gaze_feature_indices": [],
         "data_dir": None,
         "dtype": "float32",

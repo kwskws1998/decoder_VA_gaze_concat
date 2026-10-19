@@ -9,6 +9,7 @@ from typing import Mapping, Sequence
 
 from .gaze import et2_feature_indices_from_names
 from .redistribution import validate_redistribution_contract
+from .gaze_relation import gaze_relation_contract, validate_gaze_relation_contract
 
 
 ACTIVE_CODE_ROOT = Path(__file__).resolve().parents[1]
@@ -50,6 +51,7 @@ def condition_slug(
     no_iemocap: bool = False,
     sentence_only: bool = False,
     gaze_redistribution: Mapping[str, object] | None = None,
+    gaze_relation: Mapping[str, object] | None = None,
 ) -> str:
     """Build a condition-identifying slug from the actual training contract."""
 
@@ -80,6 +82,18 @@ def condition_slug(
     )
     if redistribution["method"] != "none":
         condition += f"_redistribution_{redistribution['method']}"
+    relation = validate_gaze_relation_contract(
+        gaze_relation_contract() if gaze_relation is None else gaze_relation
+    )
+    if relation["method"] != "none":
+        if gaze_fusion != "prefix-concat" or "TRT" not in gaze_features:
+            raise ValueError("A TRT relation condition requires a TRT gaze prefix.")
+        if redistribution["method"] != "none":
+            raise ValueError("A TRT relation condition requires raw, unredistributed TRT.")
+        scale_slug = repr(float(relation["scale"])).replace("+", "")
+        condition += f"_relation_{relation['method']}_scale{scale_slug}"
+        if relation.get("input_mode", "aligned") == "shuffled":
+            condition += f"_shuffled{relation['shuffle_seed']}"
     scope = "_sentence_only" if sentence_only else ""
     exclusion = "_no_iemocap" if no_iemocap else ""
     return f"{model_slug}_{mode_slug}_{condition}{scope}{exclusion}_seed{int(seed)}"
@@ -96,6 +110,7 @@ def default_run_name(
     sentence_only: bool = False,
     timestamp: datetime | None = None,
     gaze_redistribution: Mapping[str, object] | None = None,
+    gaze_relation: Mapping[str, object] | None = None,
 ) -> str:
     """Create a sortable, collision-resistant, condition-aware run name."""
 
@@ -110,6 +125,7 @@ def default_run_name(
         no_iemocap=no_iemocap,
         sentence_only=sentence_only,
         gaze_redistribution=gaze_redistribution,
+        gaze_relation=gaze_relation,
     )
     return f"{prefix}_{condition}"
 

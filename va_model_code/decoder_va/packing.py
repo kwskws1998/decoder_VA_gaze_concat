@@ -15,6 +15,8 @@ class PackedCausalInputs:
     attention_mask: torch.Tensor
     position_ids: torch.Tensor
     pooling_positions: torch.Tensor
+    text_gaze_values: torch.Tensor | None = None
+    text_gaze_mask: torch.Tensor | None = None
 
 
 def _binary_mask(name: str, value: torch.Tensor) -> torch.Tensor:
@@ -89,6 +91,7 @@ def pack_prefix_gaze(
     gaze_mask: torch.Tensor,
     eye_start: torch.Tensor,
     eye_end: torch.Tensor,
+    text_gaze_values: torch.Tensor | None = None,
 ) -> PackedCausalInputs:
     """Prefix compact mapped gaze before valid text and then right-pad the batch."""
 
@@ -101,6 +104,13 @@ def pack_prefix_gaze(
         eye_end,
     )
     hidden_size = text_embeddings.shape[2]
+    if text_gaze_values is not None:
+        if text_gaze_values.shape != gaze_mask.shape:
+            raise ValueError("text_gaze_values must match the original text/gaze mask shape.")
+        if text_gaze_values.device != text_embeddings.device:
+            raise ValueError("text_gaze_values must be on the text embedding device.")
+        if not bool(torch.isfinite(text_gaze_values[gaze_mask_bool]).all().item()):
+            raise ValueError("Mapped text gaze values must be finite.")
     eye_start_row = eye_start.to(
         device=text_embeddings.device,
         dtype=text_embeddings.dtype,
@@ -167,6 +177,21 @@ def pack_prefix_gaze(
             dim=0,
         )
 
+    packed_gaze_values = None
+    packed_gaze_mask = None
+    if text_gaze_values is not None:
+        packed_gaze_values = torch.zeros(
+            (text_embeddings.shape[0], padded_length),
+            device=text_embeddings.device, dtype=torch.float32,
+        )
+        packed_gaze_mask = torch.zeros_like(packed_gaze_values, dtype=torch.bool)
+        for row_index, valid_length in enumerate(valid_lengths.tolist()):
+            offset = int(gaze_mask_bool[row_index].sum().item()) + 2
+            selected = gaze_mask_bool[row_index, :valid_length]
+            packed_gaze_values[row_index, offset:offset + valid_length] = torch.where(
+                selected, text_gaze_values[row_index, :valid_length].float(), 0.0,
+            )
+            packed_gaze_mask[row_index, offset:offset + valid_length] = selected
     return PackedCausalInputs(
         inputs_embeds=torch.stack(embedding_rows, dim=0),
         attention_mask=torch.stack(attention_rows, dim=0),
@@ -176,4 +201,6 @@ def pack_prefix_gaze(
             dtype=torch.long,
             device=text_embeddings.device,
         ),
+        text_gaze_values=packed_gaze_values,
+        text_gaze_mask=packed_gaze_mask,
     )

@@ -46,6 +46,7 @@ from va_model_code.decoder_va.external_benchmarks import (
     _validate_zip_members,
 )
 from va_model_code.decoder_va.evaluation import calculate_va_metrics
+from va_model_code.decoder_va.gaze_relation import gaze_relation_contract
 from va_model_code.decoder_va.model import (
     ARCHITECTURE_MANIFEST_VERSION,
     ARCHITECTURE_MANIFEST_FILENAME,
@@ -294,6 +295,7 @@ def _run_contract_fields(root: Path) -> dict:
         "finetuning_mode": "full",
         "gaze_fusion": "prefix-concat",
         "gaze_redistribution": {"method": "none"},
+        "gaze_relation": {"version": 1, "method": "none"},
         "gaze_features": ["TRT"],
         "gaze_feature_indices": [3],
         "features_used": [0, 0, 0, 1, 0],
@@ -342,6 +344,7 @@ def _write_completed_run(
     mismatch: bool = False,
     schema_version: int = ARCHITECTURE_MANIFEST_VERSION,
     gaze_redistribution: dict | None = None,
+    gaze_relation: dict | None = None,
     finetuning_mode: str = "full",
     overlapping_text: bool = False,
 ) -> None:
@@ -349,6 +352,12 @@ def _write_completed_run(
     parameters = _run_contract_fields(root)
     parameters["architecture_manifest_version"] = schema_version
     parameters["finetuning_mode"] = finetuning_mode
+    if schema_version < 9:
+        parameters.pop("gaze_relation")
+    if gaze_relation is not None:
+        parameters["gaze_relation"] = gaze_relation
+        if gaze_relation.get("method") != "none":
+            parameters["attn_implementation"] = "eager"
     if finetuning_mode == "lora":
         parameters["dtype"] = "bfloat16"
         parameters["backbone_parameter_dtype"] = "bfloat16"
@@ -367,7 +376,11 @@ def _write_completed_run(
     )
     current_metadata = (
         {field: parameters[field] for field in ("precision_contract", "gaze_alignment")}
-        if schema_version == 8 else {}
+        if schema_version >= 8 else {}
+    )
+    relation_metadata = (
+        {"gaze_relation": parameters["gaze_relation"]}
+        if "gaze_relation" in parameters else {}
     )
     (root / "training_parameters.json").write_text(
         json.dumps(parameters), encoding="utf-8"
@@ -408,7 +421,7 @@ def _write_completed_run(
             "trainable_parameters": 100,
             "trainable_fraction": 1.0,
         }
-        if schema_version == 8:
+        if schema_version >= 8:
             manifest["training_text_overlap"] = {
                 "contract": copy.deepcopy(TRAIN_EVAL_TEXT_OVERLAP_CONTRACT),
                 "train_rows_before": 2,
@@ -426,6 +439,7 @@ def _write_completed_run(
         architecture = {
             "schema_version": schema_version,
             **redistribution_metadata,
+            **relation_metadata,
             **current_metadata,
             "decoder_model_id": parameters["model_id"],
             "decoder_commit": parameters["model_revision"],
@@ -448,6 +462,7 @@ def _write_completed_run(
             "output_names": ["valence", "arousal"],
             "reconstruction": {
                 **redistribution_metadata,
+                **relation_metadata,
                 **current_metadata,
                 "decoder_model_id": parameters["model_id"],
                 "decoder_revision": parameters["model_revision"],
@@ -1380,13 +1395,16 @@ def test_new_benchmark_source_rejection_allows_unrelated_training_data(
     reject_benchmark_training_sources((member,), benchmark_name)
 
 
-@pytest.mark.parametrize("redistribution_method", ["none", "asym-gaussian"])
+@pytest.mark.parametrize("redistribution_method,relation_method", [
+    ("none", "none"), ("asym-gaussian", "none"), ("none", "trt-relative-rotation"),
+])
 def test_write_external_evaluation_is_non_overwriting_and_manifest_says_no_training(
-    tmp_path, redistribution_method,
+    tmp_path, redistribution_method, relation_method,
 ):
     run_root = tmp_path / "run"
     saved_redistribution = redistribution_contract(redistribution_method)
-    _write_completed_run(run_root, gaze_redistribution=saved_redistribution)
+    saved_relation = gaze_relation_contract(relation_method)
+    _write_completed_run(run_root, gaze_redistribution=saved_redistribution, gaze_relation=saved_relation)
     members = discover_completed_run(run_root)
     benchmark = _small_benchmark()
     audited = benchmark.frame.copy()
@@ -1419,6 +1437,7 @@ def test_write_external_evaluation_is_non_overwriting_and_manifest_says_no_train
         member["gaze_redistribution"] == saved_redistribution
         for member in manifest["members"]
     )
+    assert all(member["gaze_relation"] == saved_relation for member in manifest["members"])
     assert all(member["compute_dtype"] == "bfloat16" and member["dtype"] == "float32" for member in manifest["members"])
     assert all(member["precision_contract"] == PRECISION_CONTRACT and member["gaze_alignment"] == GAZE_ALIGNMENT_CONTRACT for member in manifest["members"])
     assert "saved by the original completed training run" in manifest["checkpoint_origin"]
@@ -1541,7 +1560,7 @@ def test_atomic_publish_never_replaces_an_existing_empty_directory(tmp_path):
     assert list(target.iterdir()) == []
 
 
-@pytest.mark.parametrize("version,method", [(6, None), (7, "none"), (7, "asym-gaussian")])
+@pytest.mark.parametrize("version,method", [(6, None), (7, "none"), (7, "asym-gaussian"), (8, "none"), (8, "asym-gaussian")])
 def test_discover_completed_run_preserves_legacy_and_active_redistribution(
     tmp_path, version, method
 ):
@@ -1628,8 +1647,9 @@ def test_discover_rejects_malformed_redistribution(tmp_path, field, value):
 
 
 @pytest.mark.parametrize("finetuning_mode, storage", [("full", "float32"), ("lora", "bfloat16")])
-def test_current_run_records_compute_and_parameter_precision_separately(tmp_path, finetuning_mode, storage):
-    _write_completed_run(tmp_path, finetuning_mode=finetuning_mode)
+@pytest.mark.parametrize("schema_version", [8, ARCHITECTURE_MANIFEST_VERSION])
+def test_current_run_records_compute_and_parameter_precision_separately(tmp_path, finetuning_mode, storage, schema_version):
+    _write_completed_run(tmp_path, finetuning_mode=finetuning_mode, schema_version=schema_version)
 
     members = discover_completed_run(tmp_path)
 
@@ -1663,8 +1683,9 @@ def _edit_current_contract_metadata(root, target, field, value, *, remove=False)
 @pytest.mark.parametrize("target", ["root", "fold1", "fold2", "architecture", "reconstruction"])
 @pytest.mark.parametrize("field", ["precision_contract", "gaze_alignment"])
 @pytest.mark.parametrize("remove", [False, True])
-def test_current_provenance_requires_precision_and_preprocessing_at_every_level(tmp_path, target, field, remove):
-    _write_completed_run(tmp_path)
+@pytest.mark.parametrize("schema_version", [8, ARCHITECTURE_MANIFEST_VERSION])
+def test_current_provenance_requires_precision_and_preprocessing_at_every_level(tmp_path, target, field, remove, schema_version):
+    _write_completed_run(tmp_path, schema_version=schema_version)
     _edit_current_contract_metadata(tmp_path, target, field, {"version": 0}, remove=remove)
 
     with pytest.raises(ValueError, match=field):
@@ -1745,3 +1766,61 @@ def test_external_overlap_uses_effective_training_text_after_exclusion(tmp_path)
     assert audited["overlap_with_any_finetuning_text"].tolist() == [False, False, False]
     assert report["overlapping_external_rows_union"] == 0
     assert all(member["training_rows"] == 1 for member in report["members"].values())
+
+
+@pytest.mark.parametrize("method", ["none", "trt-relative-rotation"])
+def test_current_discovery_preserves_explicit_relation_identity(tmp_path, method):
+    """Both ensemble members retain the same explicit enabled or disabled relation."""
+
+    relation = gaze_relation_contract(method)
+    _write_completed_run(tmp_path, gaze_relation=relation)
+    members = discover_completed_run(tmp_path)
+    for member in members:
+        assert member.run_manifest["gaze_relation"] == relation
+        assert member.architecture_manifest["gaze_relation"] == relation
+        assert member.architecture_manifest["reconstruction"]["gaze_relation"] == relation
+
+
+@pytest.mark.parametrize("target", ["root", "fold1", "fold2", "architecture", "reconstruction"])
+@pytest.mark.parametrize("remove", [False, True])
+def test_current_relation_provenance_rejects_missing_or_mismatched_identity(tmp_path, target, remove):
+    """Never ensemble a rotated checkpoint with a provenance copy claiming raw attention."""
+
+    _write_completed_run(tmp_path, gaze_relation=gaze_relation_contract("trt-relative-rotation"))
+    _edit_current_contract_metadata(
+        tmp_path, target, "gaze_relation", gaze_relation_contract(), remove=remove,
+    )
+    with pytest.raises(ValueError, match="gaze_relation"):
+        discover_completed_run(tmp_path)
+
+
+@pytest.mark.parametrize("schema_version", [6, 7, 8])
+def test_legacy_schema_cannot_claim_active_gaze_relation(tmp_path, schema_version):
+    """Old manifests cannot opt into a mechanism their architecture did not contain."""
+
+    _write_completed_run(
+        tmp_path, schema_version=schema_version,
+        gaze_relation=gaze_relation_contract("trt-relative-rotation"),
+    )
+    with pytest.raises(ValueError, match=f"schema {schema_version} cannot enable gaze_relation"):
+        discover_completed_run(tmp_path)
+
+
+@pytest.mark.parametrize("value", [None, {}, {"version": 1, "method": "unknown"}])
+def test_current_relation_rejects_null_or_malformed_metadata(tmp_path, value):
+    """An explicit but invalid field must not silently become the disabled condition."""
+
+    _write_completed_run(tmp_path)
+    _edit_current_contract_metadata(tmp_path, "root", "gaze_relation", value)
+    with pytest.raises(ValueError, match="gaze_relation"):
+        discover_completed_run(tmp_path)
+
+
+@pytest.mark.parametrize("backend", [None, "sdpa"])
+def test_active_relation_requires_saved_eager_backend(tmp_path, backend):
+    """Saved runs must state the audited implementation rather than inherit a default."""
+
+    _write_completed_run(tmp_path, gaze_relation=gaze_relation_contract("trt-relative-rotation"))
+    _edit_current_contract_metadata(tmp_path, "root", "attn_implementation", backend)
+    with pytest.raises(ValueError, match="gaze_relation"):
+        discover_completed_run(tmp_path)

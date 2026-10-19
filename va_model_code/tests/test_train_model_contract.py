@@ -18,6 +18,73 @@ if str(VA_MODEL_ROOT) not in sys.path:
 train_model_module = import_module("train_model")
 
 
+def test_relation_cli_forces_eager_and_dedicated_zero_decay_rate():
+    """Keep the new branch explicit while retaining raw gaze as the default."""
+
+    parser = train_model_module._build_parser()
+    args = parser.parse_args([
+        "qwen3.5-0.8b", "mse", "--gaze-relation", "trt-relative-rotation",
+    ])
+    train_model_module._validate_args(args)
+    assert args.attn_implementation == "eager"
+    assert args.gaze_relation_learning_rate == 1e-3
+    assert args.gaze_relation_weight_decay == 0
+    assert args.gaze_redistribution == "none"
+
+
+@pytest.mark.parametrize("options", [
+    ["--gaze-fusion", "none"],
+    ["--gaze-features", "FFD"],
+    ["--gaze-redistribution", "asym-gaussian"],
+    ["--attn-implementation", "sdpa"],
+    ["--gaze-relation-scale", "0"],
+    ["--gaze-relation-learning-rate", "nan"],
+])
+def test_relation_cli_rejects_incompatible_settings(options):
+    """Reject invalid combinations before downloading pretrained assets."""
+
+    args = train_model_module._build_parser().parse_args([
+        "qwen3.5-0.8b", "mse", "--gaze-relation", "trt-relative-rotation", *options,
+    ])
+    with pytest.raises(ValueError):
+        train_model_module._validate_args(args)
+
+
+@pytest.mark.parametrize("field,value", [
+    ("gaze_relation", {"version": 1, "method": "none"}),
+    ("gaze_relation_learning_rate", 0.2),
+    ("gaze_relation_weight_decay", 0.01),
+])
+def test_relation_resume_rejects_changed_policy(tmp_path, field, value):
+    """Protect both the relation operator and its optimizer state on resume."""
+
+    expected = _expected_resume_manifest()
+    expected.update({
+        "gaze_relation": train_model_module.gaze_relation_contract("trt-relative-rotation"),
+        "gaze_relation_learning_rate": 1e-3,
+        "gaze_relation_weight_decay": 0.0,
+        "attn_implementation": "eager",
+    })
+    recorded = copy.deepcopy(expected)
+    recorded[field] = value
+    with pytest.raises(ValueError, match=field):
+        _check_resume_pair(tmp_path, recorded, expected)
+
+
+def test_relation_scale_names_are_portable_and_do_not_round_distinct_conditions():
+    """Avoid collisions and forbidden plus signs in scientific-notation condition names."""
+
+    from decoder_va.paths import condition_slug, validate_run_name
+
+    names = [condition_slug(
+        model="qwen", finetuning_mode="full", gaze_fusion="prefix-concat",
+        gaze_features=("TRT",), seed=42,
+        gaze_relation=train_model_module.gaze_relation_contract("trt-relative-rotation", scale=scale),
+    ) for scale in (1e6, 1e20, 1.000001, 1.000002)]
+    assert len(set(names)) == len(names)
+    assert all(validate_run_name(name) == name for name in names)
+
+
 def _expected_resume_manifest() -> dict[str, object]:
     """Build the architecture-sensitive subset recorded before Trainer resume."""
 
@@ -49,6 +116,7 @@ def _expected_resume_manifest() -> dict[str, object]:
         "gaze_fusion": "prefix-concat",
         "gaze_alignment": copy.deepcopy(train_model_module.GAZE_ALIGNMENT_CONTRACT),
         "gaze_redistribution": {"method": "none"},
+        "gaze_relation": {"version": 1, "method": "none"},
         "gaze_features": ["nFix", "TRT"],
         "gaze_feature_indices": [0, 3],
         "features_used": [1, 0, 0, 1, 0],

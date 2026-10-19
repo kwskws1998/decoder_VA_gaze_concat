@@ -1,4 +1,4 @@
-"""Create a Python environment and install the sigma experiment dependencies."""
+"""Create a Python environment and install the decoder VA experiment dependencies."""
 
 from __future__ import annotations
 
@@ -61,7 +61,7 @@ def main(argv=None):
     record = {"python": str(python), "torch_index": index, "driver": driver, "runtime": runtime}
     (PROJECT_ROOT / "environment_setup.json").write_text(json.dumps(record, indent=2) + "\n", encoding="utf-8")
     print(json.dumps(runtime, indent=2))
-    print("Environment ready. Run: python run_sigma_experiments.py --mode smoke")
+    print("Environment ready. Training entry point: python va_model_code/train_model.py --help")
 
 
 if __name__ == "__main__":

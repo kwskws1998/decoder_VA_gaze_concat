@@ -6,6 +6,7 @@ from datetime import datetime
 import hashlib
 import io
 import json
+import math
 from pathlib import Path
 import shutil
 import zipfile
@@ -16,6 +17,7 @@ import pandas as pd
 from va_model_code.decoder_va.alignment import GAZE_ALIGNMENT_CONTRACT
 from va_model_code.decoder_va.filters import TRAIN_EVAL_TEXT_OVERLAP_CONTRACT, exclude_eval_text_overlaps
 from va_model_code.decoder_va.model import PRECISION_CONTRACT
+from va_model_code.decoder_va.gaze_relation import gaze_relation_contract
 
 from va_model_code.decoder_va.redistribution import redistribution_contract
 from va_model_code.decoder_va.paths import (
@@ -64,6 +66,7 @@ def _write_completed_run(
     gaze_fusion: str = "none",
     schema_version: int = 6,
     gaze_redistribution: dict | None = None,
+    gaze_relation: dict | None = None,
     dataset_sources: tuple[str, str, str, str] = ("fake", "fake", "fake", "fake"),
 ) -> None:
     """Create the smallest complete two-fold artifact tree used by packaging tests."""
@@ -131,6 +134,14 @@ def _write_completed_run(
             if gaze_redistribution is None
             else gaze_redistribution
         )
+    relation_metadata = {}
+    if schema_version >= 9 or gaze_relation is not None:
+        relation_metadata = {
+            "gaze_relation": gaze_relation_contract() if gaze_relation is None else gaze_relation
+        }
+        parameters.update(relation_metadata)
+        if parameters["gaze_relation"]["method"] != "none":
+            parameters["attn_implementation"] = "eager"
     current_metadata = {}
     if schema_version >= 8:
         current_metadata = {
@@ -233,6 +244,7 @@ def _write_completed_run(
                 {
                     "schema_version": schema_version,
                     **redistribution_metadata,
+                    **relation_metadata,
                     **current_metadata,
                     "decoder_model_id": parameters["model_id"],
                     "decoder_commit": parameters["model_revision"],
@@ -259,6 +271,7 @@ def _write_completed_run(
                     "output_names": ["valence", "arousal"],
                     "reconstruction": {
                         **redistribution_metadata,
+                        **relation_metadata,
                         **current_metadata,
                         "decoder_model_id": parameters["model_id"],
                         "decoder_revision": parameters["model_revision"],
@@ -956,7 +969,7 @@ def test_results_only_package_rejects_false_sentence_only_provenance(
         package_results(run_dir, results_root=tmp_path)
 
 
-@pytest.mark.parametrize("version,method", [(6, None), (6, "none"), (7, "none"), (7, "fixed-gaussian"), (7, "asym-gaussian"), (8, "none"), (8, "fixed-gaussian"), (8, "asym-gaussian")])
+@pytest.mark.parametrize("version,method", [(6, None), (6, "none"), (7, "none"), (7, "fixed-gaussian"), (7, "asym-gaussian"), (8, "none"), (8, "fixed-gaussian"), (8, "asym-gaussian"), (9, "none"), (9, "fixed-gaussian"), (9, "asym-gaussian")])
 def test_package_records_distinct_redistribution_condition(tmp_path, version, method):
     """Keep legacy archive names while distinguishing the learned redistribution arm."""
 
@@ -1089,11 +1102,12 @@ def test_package_rejects_malformed_redistribution(tmp_path, field, value):
 
 @pytest.mark.parametrize("target", ("root", "fold", "architecture", "reconstruction"))
 @pytest.mark.parametrize("field", ("precision_contract", "gaze_alignment"))
-def test_package_schema8_rejects_missing_current_contract(tmp_path, target, field):
+@pytest.mark.parametrize("version", (8, 9))
+def test_package_schema8_rejects_missing_current_contract(tmp_path, target, field, version):
     """Reject incomplete current metadata without losing historical packaging support."""
 
     run_dir = tmp_path / "current_run"
-    _write_completed_run(run_dir, gaze_fusion="prefix-concat", schema_version=8)
+    _write_completed_run(run_dir, gaze_fusion="prefix-concat", schema_version=version)
     relative = {
         "root": "training_parameters.json",
         "fold": "heldout_fold1/run_manifest.json",
@@ -1115,21 +1129,23 @@ def test_package_schema8_rejects_missing_current_contract(tmp_path, target, fiel
     ("trainable_parameter_dtype", "bfloat16"),
     ("dtype", "bfloat16"),
 ))
-def test_package_schema8_rejects_invalid_precision_identity(tmp_path, field, value):
+@pytest.mark.parametrize("version", (8, 9))
+def test_package_schema8_rejects_invalid_precision_identity(tmp_path, field, value, version):
     """Keep compute precision separate from storage instead of trusting ambiguous dtype."""
 
     run_dir = tmp_path / "current_run"
-    _write_completed_run(run_dir, schema_version=8)
+    _write_completed_run(run_dir, schema_version=version)
     _rewrite_parameter_contract(run_dir, field, value)
     with pytest.raises(ValueError, match="dtype"):
         package_results(run_dir, results_root=tmp_path)
 
 
-def test_package_schema8_verifies_overlap_counts_from_actual_oof_texts(tmp_path):
+@pytest.mark.parametrize("version", (8, 9))
+def test_package_schema8_verifies_overlap_counts_from_actual_oof_texts(tmp_path, version):
     """Package reduced training counts only when held-out texts justify exclusion."""
 
     run_dir = tmp_path / "current_run"
-    _write_completed_run(run_dir, schema_version=8)
+    _write_completed_run(run_dir, schema_version=version)
     for relative in ("oof_predictions.tsv", "heldout_fold2/predictions.tsv"):
         path = run_dir / relative
         path.write_text(path.read_text().replace("2\t2\tc\t", "2\t2\t A \t"))
@@ -1156,15 +1172,248 @@ def test_package_schema8_verifies_overlap_counts_from_actual_oof_texts(tmp_path)
 
 
 @pytest.mark.parametrize("field", ("precision_contract", "training_text_overlap"))
-def test_package_schema8_rejects_boolean_contract_version(tmp_path, field):
+@pytest.mark.parametrize("version", (8, 9))
+def test_package_schema8_rejects_boolean_contract_version(tmp_path, field, version):
     """Do not accept JSON true as integer version one through dict equality."""
 
     run_dir = tmp_path / "current_run"
-    _write_completed_run(run_dir, schema_version=8)
+    _write_completed_run(run_dir, schema_version=version)
     path = run_dir / "heldout_fold1/run_manifest.json"
     payload = json.loads(path.read_text())
     contract = payload[field]["contract"] if field == "training_text_overlap" else payload[field]
     contract["version"] = True
     path.write_text(json.dumps(payload))
     with pytest.raises(ValueError, match=field):
+        package_results(run_dir, results_root=tmp_path)
+
+
+def _tamper_relation(run_dir, target, value, *, remove=False):
+    """Change exactly one persisted relation identity for cross-artifact audits."""
+
+    if target == "root":
+        path = run_dir / "training_parameters.json"
+    elif target.startswith("fold"):
+        path = run_dir / f"heldout_{target}" / "run_manifest.json"
+    else:
+        path = run_dir / "heldout_fold2" / "final_model" / "decoder_va_architecture.json"
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    container = payload["reconstruction"] if target == "reconstruction" else payload
+    if remove:
+        container.pop("gaze_relation")
+    else:
+        container["gaze_relation"] = value
+    path.write_text(json.dumps(payload), encoding="utf-8")
+
+
+@pytest.mark.parametrize("version,method", [(6, None), (7, None), (8, None), (8, "none"), (9, "none"), (9, "trt-relative-rotation")])
+def test_package_records_distinct_relation_condition(tmp_path, version, method):
+    """Preserve legacy names and explicitly identify the enabled relative-phase arm."""
+
+    run_dir = tmp_path / "relation_run"
+    relation = None if method is None else gaze_relation_contract(method)
+    _write_completed_run(
+        run_dir, gaze_fusion="prefix-concat", schema_version=version, gaze_relation=relation
+    )
+    archive_path = package_results(run_dir, results_root=tmp_path)
+    assert ("relation_trt-relative-rotation" in archive_path.name) == (method == "trt-relative-rotation")
+    with zipfile.ZipFile(archive_path) as archive:
+        manifest = json.loads(archive.read(f"{run_dir.name}/results_manifest.json"))
+    assert manifest["condition"]["gaze_relation"] == (gaze_relation_contract() if relation is None else relation)
+
+
+@pytest.mark.parametrize("target", ["root", "fold1", "fold2", "architecture", "reconstruction"])
+@pytest.mark.parametrize("method", ["none", "trt-relative-rotation"])
+def test_package_schema9_requires_explicit_relation_metadata(tmp_path, target, method):
+    """Reject missing disabled metadata as well as missing enabled metadata."""
+
+    run_dir = tmp_path / "relation_run"
+    _write_completed_run(
+        run_dir, gaze_fusion="prefix-concat", schema_version=9,
+        gaze_relation=gaze_relation_contract(method),
+    )
+    _tamper_relation(run_dir, target, None, remove=True)
+    with pytest.raises(ValueError, match="gaze_relation"):
+        package_results(run_dir, results_root=tmp_path)
+    assert not list(run_dir.glob("*.zip"))
+
+
+@pytest.mark.parametrize("target", ["root", "fold1", "fold2", "architecture", "reconstruction"])
+def test_package_rejects_relation_disagreement(tmp_path, target):
+    """Prevent relation-enabled results being published as the ordinary gaze arm."""
+
+    run_dir = tmp_path / "relation_run"
+    _write_completed_run(
+        run_dir, gaze_fusion="prefix-concat", schema_version=9,
+        gaze_relation=gaze_relation_contract("trt-relative-rotation"),
+    )
+    _tamper_relation(run_dir, target, gaze_relation_contract())
+    with pytest.raises(ValueError, match="gaze_relation"):
+        package_results(run_dir, results_root=tmp_path)
+
+
+@pytest.mark.parametrize("version", [6, 7, 8])
+@pytest.mark.parametrize("target", ["root", "fold1", "architecture", "reconstruction"])
+def test_package_legacy_schema_cannot_claim_enabled_relation(tmp_path, version, target):
+    """A legacy schema cannot acquire a learned phase branch through relabeling."""
+
+    run_dir = tmp_path / "legacy_run"
+    _write_completed_run(run_dir, gaze_fusion="prefix-concat", schema_version=version)
+    _tamper_relation(run_dir, target, gaze_relation_contract("trt-relative-rotation"))
+    with pytest.raises(ValueError, match=f"schema {version} cannot enable gaze_relation"):
+        package_results(run_dir, results_root=tmp_path)
+
+
+@pytest.mark.parametrize("field,value", [("version", True), ("scale", 0), ("scope", "all_tokens"), ("alpha_init", 1.0)])
+def test_package_rejects_invalid_relation_semantics(tmp_path, field, value):
+    """Consistent edits across all files still must satisfy the method contract."""
+
+    run_dir = tmp_path / "invalid_relation_run"
+    relation = gaze_relation_contract("trt-relative-rotation")
+    relation[field] = value
+    _write_completed_run(run_dir, gaze_fusion="prefix-concat", schema_version=9, gaze_relation=relation)
+    with pytest.raises(ValueError, match="relation|scale"):
+        package_results(run_dir, results_root=tmp_path)
+
+
+@pytest.mark.parametrize("attention", [None, "sdpa", "flash_attention_2"])
+def test_package_enabled_relation_requires_recorded_eager_attention(tmp_path, attention):
+    """Keep the implemented dense attention backend in persisted method identity."""
+
+    run_dir = tmp_path / "relation_run"
+    _write_completed_run(
+        run_dir, gaze_fusion="prefix-concat", schema_version=9,
+        gaze_relation=gaze_relation_contract("trt-relative-rotation"),
+    )
+    _rewrite_parameter_contract(run_dir, "attn_implementation", attention)
+    with pytest.raises(ValueError, match="eager"):
+        package_results(run_dir, results_root=tmp_path)
+
+
+def test_package_enabled_relation_rejects_redistributed_trt(tmp_path):
+    """The relative-phase experiment must preserve its raw gaze source."""
+
+    run_dir = tmp_path / "relation_run"
+    _write_completed_run(
+        run_dir, gaze_fusion="prefix-concat", schema_version=9,
+        gaze_relation=gaze_relation_contract("trt-relative-rotation"),
+        gaze_redistribution=redistribution_contract("asym-gaussian"),
+    )
+    with pytest.raises(ValueError, match="raw TRT"):
+        package_results(run_dir, results_root=tmp_path)
+
+
+def test_package_enabled_relation_rejects_text_only_configuration(tmp_path):
+    """A relation branch cannot be claimed when no TRT anchors were supplied."""
+
+    run_dir = tmp_path / "relation_run"
+    _write_completed_run(
+        run_dir, schema_version=9, gaze_relation=gaze_relation_contract("trt-relative-rotation")
+    )
+    with pytest.raises(ValueError, match="prefix-concat"):
+        package_results(run_dir, results_root=tmp_path)
+
+
+def _write_relation_parameter_reports(run_dir, relation):
+    """Create consistent coefficient snapshots with matching architecture metadata."""
+
+    metadata = [{"name": "layers.3.self_attn", "layer_index": 3, "num_heads": 2, "head_dim": 4}]
+    report = {
+        "schema_version": 1,
+        "enabled": True,
+        "contract": relation,
+        "input_units": "ET2 TRT prediction units; not assumed milliseconds",
+        "phase_coefficient_units": "radians per ET2 TRT prediction unit",
+        "installed_layers": metadata,
+        "layers": [{
+            "name": "backbone.layers.3.self_attn.gaze_relative_rotation",
+            "num_heads": 2,
+            "alpha": [0.25, -0.5],
+            "alpha_l2_norm": math.hypot(0.25, -0.5),
+            "alpha_max_abs": 0.5,
+            "scale": relation["scale"],
+            "phase_coefficient_per_trt_unit": [0.25 / relation["scale"], -0.5 / relation["scale"]],
+            "trainable_parameters": 2,
+        }],
+        "total_trainable_parameters": 2,
+    }
+    for fold in (1, 2):
+        fold_dir = run_dir / f"heldout_fold{fold}"
+        (fold_dir / "gaze_relation_parameters.json").write_text(json.dumps(report), encoding="utf-8")
+        path = fold_dir / "final_model" / "decoder_va_architecture.json"
+        architecture = json.loads(path.read_text(encoding="utf-8"))
+        architecture["gaze_relation_layers"] = metadata
+        path.write_text(json.dumps(architecture), encoding="utf-8")
+
+
+@pytest.mark.parametrize("shuffled", [False, True])
+def test_package_includes_optional_relation_report_and_preserves_condition(tmp_path, shuffled):
+    """Package coefficients verbatim while retaining the shuffled control identity."""
+
+    options = {"input_mode": "shuffled", "shuffle_seed": 42} if shuffled else {}
+    relation = gaze_relation_contract("trt-relative-rotation", scale=2.0, **options)
+    run_dir = tmp_path / "reported_relation"
+    _write_completed_run(run_dir, gaze_fusion="prefix-concat", schema_version=9, gaze_relation=relation)
+    _write_relation_parameter_reports(run_dir, relation)
+    archive_path = package_results(run_dir, results_root=tmp_path)
+    assert ("_shuffled42" in archive_path.name) == shuffled
+    with zipfile.ZipFile(archive_path) as archive:
+        manifest = json.loads(archive.read(f"{run_dir.name}/results_manifest.json"))
+        assert manifest["condition"]["gaze_relation"] == relation
+        for fold in (1, 2):
+            relative = f"heldout_fold{fold}/gaze_relation_parameters.json"
+            assert archive.read(f"{run_dir.name}/{relative}") == (run_dir / relative).read_bytes()
+
+
+@pytest.mark.parametrize("mismatch", [
+    "shuffle_seed", "enabled", "alpha_nan", "alpha_inf", "alpha_length",
+    "num_heads", "scale", "phase_coefficient", "norm", "max", "trainable_count", "architecture_layers",
+])
+def test_package_rejects_inconsistent_relation_parameter_report(tmp_path, mismatch):
+    """Prevent finite-looking summaries or changed control seeds from mislabeling a run."""
+
+    relation = gaze_relation_contract("trt-relative-rotation", scale=2.0, input_mode="shuffled", shuffle_seed=42)
+    run_dir = tmp_path / "invalid_report"
+    _write_completed_run(run_dir, gaze_fusion="prefix-concat", schema_version=9, gaze_relation=relation)
+    _write_relation_parameter_reports(run_dir, relation)
+    path = run_dir / "heldout_fold1/gaze_relation_parameters.json"
+    report = json.loads(path.read_text(encoding="utf-8"))
+    layer = report["layers"][0]
+    if mismatch == "shuffle_seed":
+        report["contract"]["shuffle_seed"] = 43
+    elif mismatch == "enabled":
+        report["enabled"] = False
+    elif mismatch in ("alpha_nan", "alpha_inf"):
+        layer["alpha"][0] = float("nan" if mismatch == "alpha_nan" else "inf")
+    elif mismatch == "alpha_length":
+        layer["alpha"].pop()
+    elif mismatch == "num_heads":
+        layer["num_heads"] = 3
+    elif mismatch == "scale":
+        layer["scale"] = 4.0
+    elif mismatch == "phase_coefficient":
+        layer["phase_coefficient_per_trt_unit"][0] = 9.0
+    elif mismatch == "norm":
+        layer["alpha_l2_norm"] = 0.0
+    elif mismatch == "max":
+        layer["alpha_max_abs"] = 0.0
+    elif mismatch == "trainable_count":
+        report["total_trainable_parameters"] = 4
+    else:
+        report["installed_layers"][0]["head_dim"] = 8
+    path.write_text(json.dumps(report), encoding="utf-8")
+    with pytest.raises(ValueError, match="gaze_relation_parameters"):
+        package_results(run_dir, results_root=tmp_path)
+    assert not list(run_dir.glob("*.zip"))
+
+
+def test_optional_relation_report_symlink_uses_existing_safe_snapshot_rejection(tmp_path):
+    """A new optional evidence file must obey the same symlink checks as required files."""
+
+    relation = gaze_relation_contract("trt-relative-rotation")
+    run_dir = tmp_path / "symlink_report"
+    _write_completed_run(run_dir, gaze_fusion="prefix-concat", schema_version=9, gaze_relation=relation)
+    outside = tmp_path / "outside_report.json"
+    outside.write_text("{}", encoding="utf-8")
+    (run_dir / "heldout_fold1/gaze_relation_parameters.json").symlink_to(outside)
+    with pytest.raises(ValueError, match="symbolic links"):
         package_results(run_dir, results_root=tmp_path)

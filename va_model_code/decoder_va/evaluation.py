@@ -145,6 +145,20 @@ def prediction_frame(
     missing = sorted(required.difference(metadata.columns))
     if missing:
         raise ValueError(f"Metadata is missing required columns: {missing}.")
+    present_label_columns = set(VA_NAMES).intersection(metadata.columns)
+    if present_label_columns and present_label_columns != set(VA_NAMES):
+        raise ValueError("Metadata must contain both valence and arousal when gold labels are present.")
+    if present_label_columns:
+        expected_labels = metadata.loc[:, list(VA_NAMES)].to_numpy(dtype=np.float64)
+        matching_rows = np.isclose(
+            expected_labels, label_array, rtol=1e-7, atol=1e-8
+        ).all(axis=1)
+        if not matching_rows.all():
+            positions = np.flatnonzero(~matching_rows)[:10].tolist()
+            raise ValueError(
+                "Prediction labels do not match evaluation metadata in row order; "
+                f"mismatched row positions: {positions}. Use sequential evaluation sampling."
+            )
 
     output = metadata.loc[:, ["index", "text", "dataset_of_origin"]].reset_index(drop=True)
     output.insert(1, "held_out_fold", int(fold))

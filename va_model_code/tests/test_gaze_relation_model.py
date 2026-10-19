@@ -60,10 +60,12 @@ def test_sparse_gaze_packing_marks_original_text_anchors_only():
     assert packed.text_gaze_mask.nonzero().tolist() == [[0, 5], [0, 7], [0, 9], [1, 4], [1, 6]]
     torch.testing.assert_close(packed.text_gaze_values[packed.text_gaze_mask], torch.tensor([0., 3., 2., 1., 4.]))
     assert torch.count_nonzero(packed.text_gaze_values[~packed.text_gaze_mask]) == 0
+    assert packed.text_gaze_indices.tolist() == [[5, 7, 9], [4, 6, 0]]
+    assert packed.text_gaze_anchor_mask.tolist() == [[True, True, True], [True, True, False]]
 
 
 @pytest.mark.parametrize("bf16", [False, True])
-def test_zero_relation_regressor_matches_raw_and_alpha_updates(bf16):
+def test_zero_relation_regressor_matches_raw_and_alpha_updates(bf16, monkeypatch):
     """Exercise real packing and the VA head with checkpoint replay and autocast."""
 
     torch.manual_seed(12)
@@ -75,6 +77,17 @@ def test_zero_relation_regressor_matches_raw_and_alpha_updates(bf16):
     model = DecoderVARegressor(backbone, gaze_provider=SparseGazeProvider(),
                                gaze_relation=gaze_relation_contract("trt-relative-rotation"), **options)
     model.gradient_checkpointing_enable({"use_reentrant": False})
+    rotation = model.backbone.layers[1].self_attn.gaze_relative_rotation
+    original_forward = rotation.forward
+    seen_layouts = []
+
+    def capture_layout(*args, **kwargs):
+        """Ensure real regression and checkpoint replay both use the compact implementation."""
+
+        seen_layouts.append((kwargs["anchor_indices"], kwargs["anchor_mask"]))
+        return original_forward(*args, **kwargs)
+
+    monkeypatch.setattr(rotation, "forward", capture_layout)
     with torch.autocast("cpu", dtype=torch.bfloat16, enabled=bf16):
         expected = raw_model(**batch()).logits
         actual = model(**batch()).logits
@@ -82,6 +95,10 @@ def test_zero_relation_regressor_matches_raw_and_alpha_updates(bf16):
     assert model.gaze_provider.calls == 1
     loss = (actual - torch.tensor([[0.2, 0.8], [0.6, 0.1]])).square().mean()
     loss.backward()
+    assert len(seen_layouts) >= 2
+    for indices, mask in seen_layouts:
+        assert indices.tolist() == [[5, 7, 9], [4, 6, 0]]
+        assert mask.tolist() == [[True, True, True], [True, True, False]]
     alpha = model.backbone.layers[1].self_attn.gaze_relative_rotation.alpha
     assert alpha.dtype == torch.float32 and alpha.grad is not None
     assert torch.isfinite(alpha.grad).all() and torch.count_nonzero(alpha.grad) > 0

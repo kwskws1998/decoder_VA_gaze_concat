@@ -180,8 +180,18 @@ responsibility for causal and other attention masks.
         text_gaze_mask: torch.Tensor,
         *,
         attention_scale: float | None = None,
+        anchor_indices: torch.Tensor | None = None,
+        anchor_mask: torch.Tensor | None = None,
     ) -> torch.Tensor:
-        """Evaluate stable relative-phase logits without bypassing the zero-alpha graph."""
+        """Evaluate stable logits on either all positions or a compact anchor layout.
+
+        Compact layouts contain each eligible position exactly once, with inactive
+        slots pointing to position zero. They may be reused across attention layers.
+        Gathering precedes FP32 conversion, and only anchor pairs participate in the
+        expensive matrix products. The compact correction is then scattered into
+        the original attention shape. All tensor-value checks share one aggregate
+        device-to-host synchronization on the successful path.
+        """
 
         if not isinstance(query, torch.Tensor) or not isinstance(key, torch.Tensor):
             raise ValueError("query and key must be floating-point tensors.")
@@ -211,35 +221,81 @@ responsibility for causal and other attention masks.
             raise ValueError("text_gaze_mask must be an explicit binary tensor.")
         if text_gaze_mask.shape != (batch_size, length) or text_gaze_mask.device != query.device:
             raise ValueError("text_gaze_mask must match query batch, length, and device.")
-        if text_gaze_mask.is_complex() or not bool(
-            ((text_gaze_mask == 0) | (text_gaze_mask == 1)).all()
-        ):
+        if text_gaze_mask.is_complex():
             raise ValueError("text_gaze_mask must contain only binary zero or one values.")
+        checks = []
+        if text_gaze_mask.dtype != torch.bool:
+            checks.append((
+                "text_gaze_mask must contain only binary zero or one values.",
+                ((text_gaze_mask == 0) | (text_gaze_mask == 1)).all(),
+            ))
         score_scale = (
             1.0 / math.sqrt(head_dim)
             if attention_scale is None
             else _positive_float(attention_scale, "attention_scale")
         )
         valid = text_gaze_mask.bool()
+        compact = anchor_indices is not None or anchor_mask is not None
+        indices = None
+        if compact:
+            if not isinstance(anchor_indices, torch.Tensor) or not isinstance(anchor_mask, torch.Tensor):
+                raise ValueError("anchor_indices and anchor_mask must both be tensors.")
+            if anchor_indices.dtype != torch.long or anchor_indices.ndim != 2:
+                raise ValueError("anchor_indices must have dtype int64 and shape [batch, anchors].")
+            if anchor_indices.shape[0] != batch_size or anchor_indices.device != query.device:
+                raise ValueError("anchor_indices must match query batch and device.")
+            if anchor_mask.shape != anchor_indices.shape or anchor_mask.device != query.device:
+                raise ValueError("anchor_mask must match anchor_indices shape and device.")
+            if anchor_mask.dtype != torch.bool:
+                raise ValueError("anchor_mask must be a boolean tensor.")
+            if length == 0 and anchor_indices.shape[1] != 0:
+                raise ValueError("A zero-length sequence requires zero anchor slots.")
+            checks.append((
+                "anchor_indices must be in range and inactive anchor slots must use position zero.",
+                (((anchor_indices >= 0) & (anchor_indices < length)) | ~anchor_mask).all()
+                & ((anchor_indices == 0) | anchor_mask).all(),
+            ))
+            indices = anchor_indices.clamp(min=0, max=max(length - 1, 0))
+            counts = torch.zeros_like(valid, dtype=torch.long)
+            counts.scatter_add_(1, indices, anchor_mask.long())
+            checks.append((
+                "anchor layout must contain every eligible text position exactly once.",
+                (counts == valid.long()).all(),
+            ))
+            query = query.gather(2, indices[:, None, :, None].expand(-1, heads, -1, head_dim))
+            key = key.gather(2, indices[:, None, :, None].expand(-1, key_heads, -1, head_dim))
+            trt_values = trt_values.gather(1, indices)
+            valid = anchor_mask
+        active_length = valid.shape[1]
         token_mask = valid[:, None, :, None]
         with torch.autocast(device_type=query.device.type, enabled=False):
             q = torch.where(token_mask, query.float(), 0.0)
             k = torch.where(token_mask, key.float(), 0.0)
             gaze = torch.where(valid, trt_values.float(), 0.0)
             alpha = self.alpha.float()
-            if not bool(torch.isfinite(q).all()) or not bool(torch.isfinite(k).all()):
-                raise ValueError("query and key must be finite FP32 values at eligible text anchors.")
-            if not bool(torch.isfinite(gaze).all()) or not bool(torch.isfinite(alpha).all()):
-                raise ValueError("eligible TRT values and alpha must be finite FP32 values.")
+            checks.extend((
+                ("query and key must be finite FP32 values at eligible text anchors.",
+                 torch.isfinite(q).all() & torch.isfinite(k).all()),
+                ("eligible TRT values and alpha must be finite FP32 values.",
+                 torch.isfinite(gaze).all() & torch.isfinite(alpha).all()),
+            ))
+            if compact and active_length <= 1:
+                zero = (
+                    q.reshape(-1)[:0].sum() + k.reshape(-1)[:0].sum()
+                    + gaze.reshape(-1)[:0].sum() + alpha[:0].sum()
+                )
+                _validate_rotation_checks(checks)
+                return zero.to(query.dtype).expand(batch_size, heads, length, length)
             k = k.repeat_interleave(heads // key_heads, dim=1)
             pair_mask = valid[:, None, :, None] & valid[:, None, None, :]
-            pair_mask = pair_mask & ~torch.eye(length, dtype=torch.bool, device=query.device)[None, None]
+            pair_mask = pair_mask & ~torch.eye(active_length, dtype=torch.bool, device=query.device)[None, None]
             relative_gaze = torch.where(
                 pair_mask, gaze[:, None, None, :] - gaze[:, None, :, None], 0.0,
             ) / self.scale
             phase = alpha[None, :, None, None] * relative_gaze
-            if not bool(torch.isfinite(phase).all()):
-                raise ValueError("TRT rotation phase must remain finite in FP32.")
+            checks.append((
+                "TRT rotation phase must remain finite in FP32.", torch.isfinite(phase).all(),
+            ))
             k_half = torch.cat((-k[..., head_dim // 2 :], k[..., : head_dim // 2]), dim=-1)
             original_scores = torch.matmul(q, k.transpose(-2, -1))
             cross_scores = torch.matmul(q, k_half.transpose(-2, -1))
@@ -249,6 +305,24 @@ responsibility for causal and other attention masks.
                 (cosine_minus_one * original_scores + phase.sin() * cross_scores) * score_scale,
                 0.0,
             )
-            if not bool(torch.isfinite(delta).all()):
-                raise ValueError("TRT attention correction must remain finite in FP32.")
-            return delta.to(query.dtype)
+            checks.append((
+                "TRT attention correction must remain finite in FP32.", torch.isfinite(delta).all(),
+            ))
+            _validate_rotation_checks(checks)
+            if indices is None:
+                return delta.to(query.dtype)
+            output = query.new_zeros(batch_size, heads, length * length)
+            pair_indices = (
+                indices[:, :, None] * length + indices[:, None, :]
+            ).reshape(batch_size, 1, active_length * active_length).expand(-1, heads, -1)
+            output.scatter_add_(2, pair_indices, delta.to(query.dtype).reshape(batch_size, heads, active_length * active_length))
+            return output.reshape(batch_size, heads, length, length)
+
+
+def _validate_rotation_checks(checks: list[tuple[str, torch.Tensor]]) -> None:
+    """Synchronize tensor checks once; report individual causes only on invalid input."""
+
+    flags = torch.stack([condition for _, condition in checks])
+    if not bool(flags.all()):
+        failures = [message for (message, _), passed in zip(checks, flags.tolist()) if not passed]
+        raise ValueError(" ".join(failures))

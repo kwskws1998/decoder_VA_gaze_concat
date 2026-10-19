@@ -12,7 +12,10 @@ from .gaze_relation import TRTRelativeRotation
 
 
 GAZE_RELATIVE_ATTENTION_BACKEND = "decoder_va_gaze_relative_eager"
-GAZE_RELATION_ARGUMENTS = frozenset(("gaze_relation_values", "gaze_relation_mask"))
+GAZE_RELATION_IMPLEMENTATION = "compact_anchors_v1"
+GAZE_RELATION_ARGUMENTS = frozenset(
+    ("gaze_relation_values", "gaze_relation_mask", "gaze_relation_indices", "gaze_relation_anchor_mask")
+)
 
 
 def _strip_linear_gaze_arguments(module, args, kwargs):
@@ -42,6 +45,8 @@ def gaze_relative_attention_forward(
     *,
     gaze_relation_values: torch.Tensor | None = None,
     gaze_relation_mask: torch.Tensor | None = None,
+    gaze_relation_indices: torch.Tensor | None = None,
+    gaze_relation_anchor_mask: torch.Tensor | None = None,
     **kwargs,
 ) -> tuple[torch.Tensor, torch.Tensor]:
     """Change mapped text-pair logits and retain native mask, normalization, and values."""
@@ -70,10 +75,12 @@ def gaze_relative_attention_forward(
     logits = torch.matmul(query, key_states.transpose(2, 3)) * scaling
     logits = logits + rotation(
         query,
-        key_states,
+        key,
         gaze_relation_values,
         gaze_relation_mask,
         attention_scale=scaling,
+        anchor_indices=gaze_relation_indices,
+        anchor_mask=gaze_relation_anchor_mask,
     )
     logits = logits + attention_mask
     weights = F.softmax(logits, dim=-1, dtype=torch.float32).to(query.dtype)

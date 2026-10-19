@@ -12,6 +12,7 @@ from transformers.models.qwen3_5.modeling_qwen3_5 import eager_attention_forward
 
 from va_model_code.decoder_va.gaze_attention import (
     GAZE_RELATIVE_ATTENTION_BACKEND,
+    GAZE_RELATION_ARGUMENTS,
     gaze_relative_attention_forward,
     install_gaze_relative_attention,
 )
@@ -48,22 +49,29 @@ def tiny_backbone(*, head_dim=8, partial_rotary_factor=1.0):
     return Qwen3_5TextModel(config)
 
 
-def native_inputs(offset=0):
+def native_inputs(offset=0, *, compact=True):
     """Provide different prefix lengths, sparse text anchors, and right padding."""
 
-    return {
+    inputs = {
         "input_ids": torch.tensor([[1, 2, 3, 4, 5, 6], [7, 8, 9, 10, 0, 0]]) + offset,
         "attention_mask": torch.tensor([[1, 1, 1, 1, 1, 1], [1, 1, 1, 1, 0, 0]]),
         "gaze_relation_values": torch.tensor([[0., 0., 0., 1., 4., 2.], [0., 0., 3., 7., 0., 0.]]) + offset * torch.arange(6),
         "gaze_relation_mask": torch.tensor([[0, 0, 0, 1, 1, 1], [0, 0, 1, 1, 0, 0]], dtype=torch.bool),
         "use_cache": False,
     }
+    if compact:
+        inputs.update(
+            gaze_relation_indices=torch.tensor([[3, 4, 5], [2, 3, 0]]),
+            gaze_relation_anchor_mask=torch.tensor([[True, True, True], [True, True, False]]),
+        )
+    return inputs
 
 
 @pytest.mark.parametrize("autocast_bfloat16", [False, True])
+@pytest.mark.parametrize("compact", [False, True])
 @pytest.mark.parametrize("head_dim,partial_rotary_factor", [(8, 1.0), (8, 0.25), (8, 0.5), (256, 0.25), (256, 0.5)])
 def test_native_zero_rotation_matches_eager_including_gqa_padding_and_gate(
-    autocast_bfloat16, head_dim, partial_rotary_factor,
+    autocast_bfloat16, head_dim, partial_rotary_factor, compact,
 ):
     """Full/partial native RoPE preserves zero-alpha identity and permits finite learned updates."""
 
@@ -74,7 +82,7 @@ def test_native_zero_rotation_matches_eager_including_gqa_padding_and_gate(
     info = install_gaze_relative_attention(model, scale=0.7)
     assert info == [{"name": "layers.1.self_attn", "layer_index": 1, "num_heads": 4, "head_dim": head_dim}]
     assert model.config._attn_implementation == GAZE_RELATIVE_ATTENTION_BACKEND
-    inputs = native_inputs()
+    inputs = native_inputs(compact=compact)
     with torch.autocast("cpu", dtype=torch.bfloat16, enabled=autocast_bfloat16):
         original = reference(**{key: value for key, value in inputs.items() if not key.startswith("gaze_")})
         actual = model(**inputs)
@@ -129,8 +137,9 @@ def test_backend_preserves_prefix_rows_causality_and_padded_key_mask():
 
 
 @pytest.mark.parametrize("with_lora", [False, True])
+@pytest.mark.parametrize("compact", [False, True])
 @pytest.mark.parametrize("partial_rotary_factor", [1.0, 0.25, 0.5])
-def test_checkpoint_replay_keeps_each_forward_relation_and_gradients(with_lora, partial_rotary_factor):
+def test_checkpoint_replay_keeps_each_forward_relation_and_gradients(with_lora, partial_rotary_factor, compact):
     """Two outstanding forwards retain their own TRT metadata through backward replay."""
 
     torch.manual_seed(37)
@@ -149,7 +158,7 @@ def test_checkpoint_replay_keeps_each_forward_relation_and_gradients(with_lora, 
     checkpointed.gradient_checkpointing_enable(gradient_checkpointing_kwargs={"use_reentrant": False})
     reference.train()
     checkpointed.train()
-    inputs_a, inputs_b = native_inputs(), native_inputs(offset=2)
+    inputs_a, inputs_b = native_inputs(compact=compact), native_inputs(offset=2, compact=compact)
     target = torch.randn(2, 6, 32)
     for model in (reference, checkpointed):
         out_a = model(**inputs_a).last_hidden_state
@@ -189,8 +198,34 @@ def test_linear_attention_receives_no_gaze_arguments():
     finally:
         handle.remove()
     assert len(seen) == 1
-    assert "gaze_relation_values" not in seen[0]
-    assert "gaze_relation_mask" not in seen[0]
+    assert GAZE_RELATION_ARGUMENTS.isdisjoint(seen[0])
+
+
+@pytest.mark.parametrize("bf16", [False, True])
+def test_compact_native_path_matches_dense_nonzero_outputs_and_all_gradients(bf16):
+    """Sparse computation preserves full hybrid-model behavior after alpha has learned."""
+
+    torch.manual_seed(51)
+    dense = tiny_backbone(partial_rotary_factor=0.5)
+    install_gaze_relative_attention(dense, scale=0.7)
+    dense.layers[1].self_attn.gaze_relative_rotation.alpha.data.copy_(torch.tensor([0.2, -0.3, 0.1, 0.4]))
+    compact = copy.deepcopy(dense)
+    target = torch.randn(2, 6, 32)
+    outputs = []
+    for model, use_compact in ((dense, False), (compact, True)):
+        with torch.autocast("cpu", dtype=torch.bfloat16, enabled=bf16):
+            output = model(**native_inputs(compact=use_compact)).last_hidden_state
+            loss = (output * target).sum()
+        loss.backward()
+        outputs.append(output)
+    torch.testing.assert_close(outputs[0], outputs[1], rtol=0, atol=0)
+    dense_parameters = dict(dense.named_parameters())
+    for name, parameter in compact.named_parameters():
+        expected = dense_parameters[name].grad
+        if expected is None:
+            assert parameter.grad is None
+        else:
+            torch.testing.assert_close(parameter.grad, expected, rtol=2e-5, atol=2e-6)
 
 
 def test_missing_metadata_and_cached_generation_fail_clearly():

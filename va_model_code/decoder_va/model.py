@@ -497,6 +497,8 @@ class DecoderVARegressor(nn.Module):
             relation_kwargs = {
                 "gaze_relation_values": packed.text_gaze_values,
                 "gaze_relation_mask": packed.text_gaze_mask,
+                "gaze_relation_indices": packed.text_gaze_indices,
+                "gaze_relation_anchor_mask": packed.text_gaze_anchor_mask,
             }
         return (
             packed.inputs_embeds,

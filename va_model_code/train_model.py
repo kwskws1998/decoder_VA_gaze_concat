@@ -62,6 +62,7 @@ from decoder_va.model import (
     validate_saved_gaze_relation,
 )
 from decoder_va.gaze_relation import GAZE_RELATION_INPUTS, GAZE_RELATION_METHODS, gaze_relation_contract
+from decoder_va.gaze_attention import GAZE_RELATION_IMPLEMENTATION
 from decoder_va.gaze_relation_reporting import write_gaze_relation_report
 from decoder_va.paths import (
     RESULTS_ROOT,
@@ -1032,6 +1033,9 @@ def run(args: argparse.Namespace) -> Path | None:
         **vars(args),
         "gaze_redistribution": _redistribution_config(args),
         "gaze_relation": _gaze_relation_config(args),
+        "gaze_relation_implementation": (
+            GAZE_RELATION_IMPLEMENTATION if args.gaze_relation != "none" else None
+        ),
         "gaze_alignment": (
             _json_ready(GAZE_ALIGNMENT_CONTRACT)
             if args.gaze_fusion == "prefix-concat"
@@ -1090,6 +1094,8 @@ def run(args: argparse.Namespace) -> Path | None:
             "scope": "per-fold current and peak CUDA allocated/reserved memory",
         },
     }
+    if args.gaze_relation != "none":
+        print(f"Gaze relation implementation: {GAZE_RELATION_IMPLEMENTATION} (FP32 anchor pairs; eager attention).")
     fold_predictions = []
 
     for held_out_fold, training_fold, train_frame, eval_frame, overlap_audit in training_folds:

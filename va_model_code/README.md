@@ -895,9 +895,9 @@ The correction and alpha storage use FP32. A separate alpha optimizer group
 uses `--gaze-relation-learning-rate` (default `1e-3`) with zero weight decay.
 Logs record alpha norm, maximum magnitude, mean, and current learning rate.
 The branch requires `--attn-implementation eager`, set automatically when
-enabled. Force eager in the raw comparison too. It uses extra quadratic score
-matrices and pairwise trigonometric computations and has not been benchmarked
-for production GPU memory or throughput.
+enabled. Force eager in the raw comparison too. The relation uses extra score
+matrices and pairwise trigonometric computations. Production GPU memory and
+full-model throughput require measurement on the target machine.
 Native Qwen query gating, grouped keys/values, masks, and one shared softmax are
 preserved. Explicit per-forward gaze arguments support checkpoint recomputation;
 cached generation is unsupported for this regression-only branch.
@@ -907,6 +907,71 @@ the relation, scale, and optimizer policy; safe reload and resume reject absent,
 malformed, nonfinite, or incompatible alpha weights. Evaluation always preserves
 input row order, even when training groups batches by length. Prediction export
 also checks returned labels against the original metadata when labels exist.
+
+### Compact execution and performance verification
+
+`compact_anchors_v1` retains the same equation, FP32 correction, alpha parameters,
+checkpoint keys, and masks. It gathers only mapped text anchors before FP32
+conversion and computes the two extra matrix products over those anchors. If
+the packed sequence length is `L` and a batch has at most `M` anchors per sample,
+the extra matrix products operate on `M × M` instead of `L × L`. A correction
+tensor is still scattered back into `L × L`; native eager attention, its dense
+logits, and its softmax remain unchanged. This is not a linear-memory attention
+implementation.
+
+The packed anchor layout is built once per forward and passed explicitly through
+checkpoint replay. Prefix packing uses batched gathers and one host metadata
+read instead of per-sample scalar reads and dynamic Boolean gathers. Rotation
+combines successful-path tensor validation into one host check per layer call.
+Zero/one-anchor batches return an exact zero correction while retaining the
+gradient graph. Zero alpha with two or more anchors still computes the full
+correction graph, preserving the gradient that learns alpha.
+
+Forward and backward comparisons cover dense/compact computation, native hybrid
+Qwen attention, BF16, grouped keys, partial native RoPE, padding, LoRA, multiple
+outstanding forwards, and checkpoint recomputation. Floating-point reduction
+order can differ; this preserves the mathematical operator, not a promise of
+bitwise identical training trajectories on every device. Run manifests record
+`gaze_relation_implementation` separately from the unchanged relation contract.
+Running Python processes retain their loaded code; updating Git alone does not
+apply this optimization to an already-running training process.
+
+An offline Python benchmark compares native eager attention, a frozen dense
+rotation reference from commit `1f95381`, and the optimized production path. It
+checks outputs and Q/K/V/alpha gradients before timing, including nonzero alpha.
+From `va_model_code` on the training GPU:
+
+```bash
+python benchmark_gaze_rotation.py \
+  --device cuda \
+  --dtype bfloat16 \
+  --batch-size 8 \
+  --gradient-accumulation-steps 2 \
+  --gradient-checkpointing \
+  --output ../results/gaze_rotation_benchmark_4090.json
+```
+
+The default head dimensions are an explicit synthetic template. Pass
+`--config /path/to/local/config.json` to use the model's stored dimensions without
+downloads. Timings include two attention forward/backward microbatches per
+measurement, with checkpoint replay. JSON records wall time, CUDA event time,
+peak allocated memory, numerical errors, shapes, and device/precision settings.
+TF32 is recorded and is not enabled by the script. Optional `--profile` writes
+Chrome traces and increases runtime.
+
+This is a single full-attention-layer microbenchmark. It excludes ET2, packing,
+projections, native RoPE, linear-attention layers, MLPs, optimizer updates, and
+evaluation. Its speed ratio must not be presented as a full-training speedup or
+used directly to divide a training ETA. For an offline CPU correctness check:
+
+```bash
+python benchmark_gaze_rotation.py \
+  --device cpu --dtype float32 --batch-size 2 \
+  --heads 4 --kv-heads 2 --head-dim 8 \
+  --lengths 8 --anchor-counts 0 1 half \
+  --warmup 1 --iterations 2 \
+  --output ../results/gaze_rotation_benchmark_cpu_smoke.json
+```
 
 ### Matched controls
 

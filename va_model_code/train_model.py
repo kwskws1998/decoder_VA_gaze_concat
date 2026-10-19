@@ -77,6 +77,7 @@ from decoder_va.redistribution import (
     validate_redistribution_state_file,
 )
 from decoder_va.trainer import VARegressionTrainer
+from decoder_va.training_kernels import training_kernel_report
 
 
 PRECISION_MODES = ("auto", "bf16", "fp16", "fp32")
@@ -1055,6 +1056,7 @@ def run(args: argparse.Namespace) -> Path | None:
         "python_version": platform.python_version(),
         "torch_version": torch.__version__,
         "transformers_version": _package_version("transformers"),
+        "training_kernels": training_kernel_report(),
         "peft_version": _package_version("peft"),
         "cuda_runtime": torch.version.cuda,
         "cuda_device": (
@@ -1096,6 +1098,14 @@ def run(args: argparse.Namespace) -> Path | None:
     }
     if args.gaze_relation != "none":
         print(f"Gaze relation implementation: {GAZE_RELATION_IMPLEMENTATION} (FP32 anchor pairs; eager attention).")
+    delta_dispatch = run_manifest["training_kernels"]["dispatch"]["torch_chunk_gated_delta_rule"]
+    print(f"Qwen linear-attention implementation: {delta_dispatch['selected'] or 'unresolved'}")
+    if not args.use_cpu and not delta_dispatch["is_fla"]:
+        print(
+            "Warning: Qwen linear attention is not using the FLA package kernel. "
+            "The Torch fallback can be slow. From the repository root, run "
+            "python setup_environment.py --current-env --kernels-only, then restart training."
+        )
     fold_predictions = []
 
     for held_out_fold, training_fold, train_frame, eval_frame, overlap_audit in training_folds:

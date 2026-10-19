@@ -39,6 +39,51 @@ The manual commands below assume you are using an interpreter with the
 requirements installed. See [SIGMA_EXPERIMENTS.md](SIGMA_EXPERIMENTS.md) for the
 Python experiment options and diagnostic outputs.
 
+### Qwen linear-attention training kernels
+
+The CUDA setup now adds `flash-linear-attention==0.5.2` and verifies that Qwen
+actually selected its FLA delta-rule implementation. Installation is constrained
+by the existing `requirements.txt`; it does not upgrade the pinned Torch or
+Transformers versions. The full package supplies the import namespace expected
+by Transformers; installing only `fla-core` is not a validated replacement.
+These packages use Python wheels and Triton JIT, without an NVCC source build.
+
+For an already installed environment, stop its training process and run:
+
+```bash
+python setup_environment.py --current-env --kernels-only
+```
+
+This preserves the existing environment, data, and checkpoints. It checks CUDA,
+installs the missing package, and requires a CUDA BF16 forward/backward check
+before printing `Environment ready`. The check compares FLA outputs and Q/K/V,
+gate, and beta gradients against the native Torch reference at short and
+non-chunk-aligned lengths. It also checks a tiny hybrid Qwen model with the
+production TRT rotation and gradient checkpoint replay. Models are randomly
+initialized; no pretrained weights or dataset downloads are required.
+
+The first GPU use can spend time compiling Triton kernels. A passing numerical
+check is not a measured full-model training speedup; compare steady training
+step times after compilation. A running Python process keeps its original
+import-time dispatch, so restart training after installation. Its original
+training command, data scope, seeds, and batch settings can remain the same.
+
+The report is saved to `results/training_kernel_check.json`. To inspect dispatch
+without model execution, or rerun the CUDA check explicitly:
+
+```bash
+python va_model_code/check_training_kernels.py
+python va_model_code/check_training_kernels.py --require-fla --smoke-test \
+  --output results/training_kernel_check.json
+```
+
+This repair accelerates the delta-rule operator. `causal-conv1d` is not installed
+automatically because compatible binary availability depends on Torch/CUDA;
+the report can still show the native convolution path. The full-attention-only
+`benchmark_gaze_rotation.py` excludes linear attention, so it cannot measure
+the benefit of installing FLA. Training logs and manifests now record the
+selected linear-attention implementation and optional package versions.
+
 ## Prepare data
 
 Keep generated datasets below the active directory's single `data/` root:

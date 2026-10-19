@@ -30,7 +30,77 @@ def test_setup_dry_run_does_not_install_or_create_environment(tmp_path, monkeypa
     destination = tmp_path / "environment with spaces"
     setup.main(["--dry-run", "--venv-dir", str(destination)])
     assert not destination.exists()
-    assert "torch==2.12.1+cu126" in capsys.readouterr().out
+    output = capsys.readouterr().out
+    assert "torch==2.12.1+cu126" in output
+    assert "flash-linear-attention==0.5.2" in output
+    assert "--require-fla --smoke-test" in output
+
+
+def test_kernel_only_setup_preserves_installed_torch_and_validates_before_ready(tmp_path, monkeypatch, capsys):
+    """Repair the active environment without reinstalling Torch or declaring untested success."""
+
+    monkeypatch.setattr(setup, "PROJECT_ROOT", tmp_path)
+    monkeypatch.setattr(setup, "detect_nvidia_driver", lambda: pytest.fail("kernel repair must not select another Torch wheel"))
+    gpu_checks = []
+    commands = []
+
+    def gpu_check(python, **kwargs):
+        """Observe the existing runtime checks without initializing CUDA."""
+
+        gpu_checks.append((str(python), kwargs))
+        return {"torch": "2.12.1+cu130", "cuda_forward_backward": "passed"}
+
+    def command_run(command, **kwargs):
+        """Capture installation and final required GPU smoke-test ordering."""
+
+        commands.append(([str(part) for part in command], kwargs))
+
+    monkeypatch.setattr(setup, "check_gpu", gpu_check)
+    monkeypatch.setattr(setup, "run", command_run)
+    setup.main(["--current-env", "--kernels-only", "--gpu", "2"])
+    assert len(commands) == 3
+    install = commands[0][0]
+    assert "--only-binary=:all:" in install
+    assert "flash-linear-attention==0.5.2" in install
+    assert "--constraint" in install
+    assert all("torch==" not in part for command, _ in commands for part in command)
+    assert "check_training_kernels.py" in commands[-1][0][1]
+    assert "--require-fla" in commands[-1][0] and "--smoke-test" in commands[-1][0]
+    assert commands[-1][1]["environment"]["CUDA_VISIBLE_DEVICES"] == "2"
+    assert len(gpu_checks) == 2
+    assert (tmp_path / "environment_setup.json").exists()
+    assert "Environment ready" in capsys.readouterr().out
+
+
+def test_failed_training_kernel_check_does_not_record_environment_ready(tmp_path, monkeypatch, capsys):
+    """An import, backward, or CUDA failure must stop setup before a success record."""
+
+    monkeypatch.setattr(setup, "PROJECT_ROOT", tmp_path)
+    monkeypatch.setattr(setup, "check_gpu", lambda *args, **kwargs: {})
+
+    def fail_probe(command, **kwargs):
+        """Fail the required final check after a successful simulated pip install."""
+
+        if "check_training_kernels.py" in str(command[1]):
+            raise subprocess.CalledProcessError(1, command)
+
+    monkeypatch.setattr(setup, "run", fail_probe)
+    with pytest.raises(subprocess.CalledProcessError):
+        setup.main(["--current-env", "--kernels-only"])
+    assert not (tmp_path / "environment_setup.json").exists()
+    assert "Environment ready" not in capsys.readouterr().out
+
+
+def test_kernel_only_dry_run_has_no_cuda_or_install_side_effects(monkeypatch, capsys):
+    """Allow inspecting the repair command on machines without CUDA."""
+
+    monkeypatch.setattr(setup, "detect_nvidia_driver", lambda: pytest.fail("unexpected driver query"))
+    monkeypatch.setattr(setup, "check_gpu", lambda *args, **kwargs: pytest.fail("unexpected GPU operation"))
+    monkeypatch.setattr(setup, "run", lambda *args, **kwargs: pytest.fail("unexpected install"))
+    setup.main(["--current-env", "--kernels-only", "--dry-run"])
+    output = capsys.readouterr().out
+    assert "flash-linear-attention==0.5.2" in output
+    assert "--index-url" not in output
 
 
 def test_runner_selects_virtual_environment_without_activation(tmp_path):

@@ -15,7 +15,12 @@ import pytest
 import pandas as pd
 
 from va_model_code.decoder_va.alignment import GAZE_ALIGNMENT_CONTRACT
-from va_model_code.decoder_va.filters import TRAIN_EVAL_TEXT_OVERLAP_CONTRACT, exclude_eval_text_overlaps
+from va_model_code.decoder_va.filters import (
+    TRAIN_EVAL_TEXT_OVERLAP_CONTRACT,
+    apply_training_text_overlap_policy,
+    exclude_eval_text_overlaps,
+    training_text_overlap_contract,
+)
 from va_model_code.decoder_va.model import PRECISION_CONTRACT
 from va_model_code.decoder_va.gaze_relation import gaze_relation_contract
 
@@ -1169,6 +1174,153 @@ def test_package_schema8_verifies_overlap_counts_from_actual_oof_texts(tmp_path,
     path.write_text(json.dumps(payload))
     with pytest.raises(ValueError, match="training_text_overlap does not match OOF"):
         package_results(run_dir, results_root=tmp_path, overwrite=True)
+
+
+def _write_overlapping_keep_run(run_dir: Path, *, version: int, record_policy: bool) -> None:
+    """Build a completed run that retains normalized text overlaps across folds."""
+
+    _write_completed_run(run_dir, schema_version=version)
+    for relative in ("oof_predictions.tsv", "heldout_fold2/predictions.tsv"):
+        path = run_dir / relative
+        path.write_text(path.read_text().replace("2\t2\tc\t", "2\t2\t A \t"))
+    frames = {
+        1: pd.DataFrame({"text": ["a", "b"]}),
+        2: pd.DataFrame({"text": [" A ", "d"]}),
+    }
+    for fold in (None, 1, 2):
+        path = (
+            run_dir / "training_parameters.json"
+            if fold is None
+            else run_dir / f"heldout_fold{fold}/run_manifest.json"
+        )
+        payload = json.loads(path.read_text())
+        payload["training_text_overlap_contract"] = training_text_overlap_contract("keep")
+        if record_policy:
+            payload["training_text_overlap_policy"] = "keep"
+        if fold is not None:
+            _, payload["training_text_overlap"] = apply_training_text_overlap_policy(
+                frames[3 - fold], frames[fold], policy="keep"
+            )
+        path.write_text(json.dumps(payload))
+
+
+@pytest.mark.parametrize("record_policy", (False, True))
+@pytest.mark.parametrize("version", (8, 9))
+def test_package_keeps_cross_fold_texts_with_explicit_contract(tmp_path, version, record_policy):
+    """Accept retained overlap counts while preserving the older contract-only format."""
+
+    run_dir = tmp_path / "keep_run"
+    _write_overlapping_keep_run(run_dir, version=version, record_policy=record_policy)
+    archive = package_results(run_dir, results_root=tmp_path)
+    with zipfile.ZipFile(archive) as saved:
+        manifest_name = next(
+            name for name in saved.namelist() if name.endswith("heldout_fold1/run_manifest.json")
+        )
+        manifest = json.loads(saved.read(manifest_name))
+    assert manifest["training_rows"] == 2
+    assert manifest["training_text_overlap"]["excluded_train_rows"] == 0
+    assert manifest["training_text_overlap"]["overlapping_eval_rows"] == 1
+    assert manifest["training_text_overlap"]["shared_normalized_texts"] == 1
+
+
+@pytest.mark.parametrize("version", (8, 9))
+def test_package_keep_verifies_overlap_counts_from_actual_oof_texts(tmp_path, version):
+    """Retaining rows does not disable the independent OOF overlap audit."""
+
+    run_dir = tmp_path / "keep_run"
+    _write_overlapping_keep_run(run_dir, version=version, record_policy=True)
+    path = run_dir / "heldout_fold1/run_manifest.json"
+    payload = json.loads(path.read_text())
+    payload["training_text_overlap"]["overlapping_eval_rows"] = 0
+    payload["training_text_overlap"]["shared_normalized_texts"] = 0
+    path.write_text(json.dumps(payload))
+    with pytest.raises(ValueError, match="training_text_overlap does not match OOF"):
+        package_results(run_dir, results_root=tmp_path)
+
+
+@pytest.mark.parametrize("version", (8, 9))
+def test_package_keep_rejects_excluded_training_rows(tmp_path, version):
+    """A keep contract cannot describe a training set with removed overlap rows."""
+
+    run_dir = tmp_path / "keep_run"
+    _write_overlapping_keep_run(run_dir, version=version, record_policy=True)
+    path = run_dir / "heldout_fold1/run_manifest.json"
+    payload = json.loads(path.read_text())
+    payload["training_rows"] = 1
+    payload["training_text_overlap"]["train_rows_after"] = 1
+    payload["training_text_overlap"]["excluded_train_rows"] = 1
+    path.write_text(json.dumps(payload))
+    with pytest.raises(ValueError, match="inconsistent training_text_overlap counts"):
+        package_results(run_dir, results_root=tmp_path)
+
+
+@pytest.mark.parametrize("version", (8, 9))
+def test_package_keep_rejects_mismatched_optional_policy(tmp_path, version):
+    """Do not label an explicitly retained-overlap run as an exclusion run."""
+
+    run_dir = tmp_path / "keep_run"
+    _write_overlapping_keep_run(run_dir, version=version, record_policy=True)
+    _rewrite_parameter_contract(run_dir, "training_text_overlap_policy", "exclude")
+    with pytest.raises(ValueError, match="training_text_overlap_policy disagrees"):
+        package_results(run_dir, results_root=tmp_path)
+
+
+@pytest.mark.parametrize("version", (8, 9))
+def test_package_rejects_fold_only_overlap_policy_mismatch(tmp_path, version):
+    """Validate an optional fold policy even when an older root omitted that field."""
+
+    run_dir = tmp_path / "keep_run"
+    _write_overlapping_keep_run(run_dir, version=version, record_policy=False)
+    path = run_dir / "heldout_fold1/run_manifest.json"
+    payload = json.loads(path.read_text())
+    payload["training_text_overlap_policy"] = "exclude"
+    path.write_text(json.dumps(payload))
+    with pytest.raises(ValueError, match="training_text_overlap_policy disagrees"):
+        package_results(run_dir, results_root=tmp_path)
+
+
+@pytest.mark.parametrize("version", (8, 9))
+def test_package_rejects_fold_only_boolean_overlap_contract_version(tmp_path, version):
+    """Strictly check the manifest contract before Python equates True with one."""
+
+    run_dir = tmp_path / "keep_run"
+    _write_overlapping_keep_run(run_dir, version=version, record_policy=False)
+    path = run_dir / "heldout_fold1/run_manifest.json"
+    payload = json.loads(path.read_text())
+    payload["training_text_overlap_contract"]["version"] = True
+    path.write_text(json.dumps(payload))
+    with pytest.raises(ValueError, match="training_text_overlap_contract"):
+        package_results(run_dir, results_root=tmp_path)
+
+
+@pytest.mark.parametrize("field,value", (
+    ("version", True),
+    ("policy", "keep_unverified"),
+    ("normalization", "none"),
+    ("evaluation_rows", "filtered"),
+    ("unexpected", "field"),
+))
+@pytest.mark.parametrize("version", (8, 9))
+def test_package_rejects_laundered_overlap_contracts(tmp_path, version, field, value):
+    """Reject noncanonical contracts even when all persisted copies agree."""
+
+    run_dir = tmp_path / "keep_run"
+    _write_overlapping_keep_run(run_dir, version=version, record_policy=False)
+    contract = training_text_overlap_contract("keep")
+    contract[field] = value
+    for fold in (None, 1, 2):
+        path = (
+            run_dir / "training_parameters.json"
+            if fold is None
+            else run_dir / f"heldout_fold{fold}/run_manifest.json"
+        )
+        payload = json.loads(path.read_text())
+        payload["training_text_overlap_contract"] = contract
+        if fold is not None:
+            payload["training_text_overlap"]["contract"] = contract
+        path.write_text(json.dumps(payload))
+    with pytest.raises(ValueError, match="training_text_overlap_contract"):
+        package_results(run_dir, results_root=tmp_path)
 
 
 @pytest.mark.parametrize("field", ("precision_contract", "training_text_overlap"))

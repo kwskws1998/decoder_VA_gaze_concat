@@ -163,6 +163,7 @@ def test_cli_defaults_to_prefix_and_requires_explicit_training_loss():
     assert defaults.gaze_redistribution == "none"
     assert defaults.redistribution_learning_rate is None
     assert defaults.sentence_only is False
+    assert defaults.training_text_overlap_policy == "exclude"
     assert train_model_module._redistribution_config(
         SimpleNamespace(**vars(defaults), gaze_feature_indices=(3,))
     ) == {"method": "none"}
@@ -182,6 +183,17 @@ def test_cli_defaults_to_prefix_and_requires_explicit_training_loss():
         parser.parse_args(["--finetuning-mode", "adapter"])
     with pytest.raises(SystemExit):
         parser.parse_args(["--output-dir", "Preds/old-layout"])
+
+
+def test_cli_keep_overlap_requires_explicit_valid_choice():
+    """Allow the requested historical split protocol without silently changing defaults."""
+
+    parser = train_model_module._build_parser()
+    args = parser.parse_args(["qwen3.5-0.8b", "mse", "--training-text-overlap", "keep"])
+    train_model_module._validate_args(args)
+    assert args.training_text_overlap_policy == "keep"
+    with pytest.raises(SystemExit):
+        parser.parse_args(["qwen3.5-0.8b", "mse", "--training-text-overlap", "include"])
 
 
 @pytest.mark.parametrize("left,right", [(0.5, 2.0), (2.0, 0.5)])
@@ -1137,6 +1149,40 @@ def test_resume_rejects_changed_sentence_only_scope(tmp_path):
 
     with pytest.raises(ValueError, match="sentence_only"):
         _check_resume_pair(tmp_path, recorded, expected)
+
+
+@pytest.mark.parametrize("owner", ["recorded", "expected"])
+@pytest.mark.parametrize("location", ["top_level", "audit"])
+@pytest.mark.parametrize("invalid_version", [True, False, 1.0])
+def test_resume_rejects_noninteger_overlap_contract_version(
+    tmp_path, owner, location, invalid_version
+):
+    """Strict provenance checks must catch values that Python dict equality treats as version 1."""
+
+    recorded = _current_resume_manifest()
+    expected = _current_resume_manifest()
+    manifest = recorded if owner == "recorded" else expected
+    contract = (
+        manifest["training_text_overlap_contract"]
+        if location == "top_level"
+        else manifest["training_text_overlap"]["contract"]
+    )
+    contract["version"] = invalid_version
+
+    with pytest.raises(ValueError, match="[Oo]verlap"):
+        _check_resume_pair(tmp_path, recorded, expected)
+
+
+@pytest.mark.parametrize("policy", ["exclude", "keep"])
+def test_resume_accepts_unchanged_overlap_policy(tmp_path, policy):
+    """Both valid data protocols remain resumable when their complete provenance agrees."""
+
+    expected = _current_resume_manifest()
+    expected["training_text_overlap_policy"] = policy
+    expected["training_text_overlap_contract"] = train_model_module.training_text_overlap_contract(policy)
+    expected["training_text_overlap"]["contract"] = copy.deepcopy(expected["training_text_overlap_contract"])
+
+    _check_resume_pair(tmp_path, copy.deepcopy(expected), expected)
 
 
 def _sigma_checkpoint_tensors():

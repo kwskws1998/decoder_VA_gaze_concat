@@ -26,9 +26,12 @@ from decoder_va.evaluation import (
 )
 from decoder_va.filters import (
     TRAIN_EVAL_TEXT_OVERLAP_CONTRACT,
+    TRAIN_EVAL_TEXT_OVERLAP_POLICIES,
+    apply_training_text_overlap_policy,
     dataset_counts,
-    exclude_eval_text_overlaps,
     load_filtered_folds,
+    training_text_overlap_contract,
+    validate_training_text_overlap_contract,
 )
 from decoder_va.alignment import GAZE_ALIGNMENT_CONTRACT
 from decoder_va.gaze import (
@@ -193,6 +196,16 @@ def _build_parser() -> argparse.ArgumentParser:
         help="Keep only EmoTales sentences, Emobank, and fb in both folds.",
     )
     parser.add_argument("--no-iemocap", action="store_true")
+    parser.add_argument(
+        "--training-text-overlap",
+        dest="training_text_overlap_policy",
+        choices=TRAIN_EVAL_TEXT_OVERLAP_POLICIES,
+        default="exclude",
+        help=(
+            "How to handle training texts also present in evaluation: exclude "
+            "(default) or keep all original training rows. Evaluation is unchanged."
+        ),
+    )
     parser.add_argument(
         "--no-ieomcap",
         action="store_true",
@@ -710,6 +723,21 @@ def _validate_resume_contract(
                 f"{label} architecture_manifest_version={schema_version!r}. Start a new run."
             )
         validate_precision_contract(manifest.get("precision_contract"), context=f"Resume {label} manifest")
+        overlap_contract = validate_training_text_overlap_contract(
+            manifest.get("training_text_overlap_contract"),
+            context=f"Resume {label} manifest",
+        )
+        if "training_text_overlap_policy" in manifest:
+            if training_text_overlap_contract(manifest["training_text_overlap_policy"]) != overlap_contract:
+                raise ValueError(f"Resume {label} training_text_overlap_policy disagrees with its contract.")
+        overlap_audit = manifest.get("training_text_overlap")
+        if not isinstance(overlap_audit, dict):
+            raise ValueError(f"Resume {label} training_text_overlap must be an audit object.")
+        audit_contract = validate_training_text_overlap_contract(
+            overlap_audit.get("contract"), context=f"Resume {label} training_text_overlap",
+        )
+        if audit_contract != overlap_contract:
+            raise ValueError(f"Resume {label} training_text_overlap disagrees with its contract.")
         manifest["gaze_alignment"] = validate_gaze_alignment_contract(
             manifest.get("gaze_alignment"),
             gaze_fusion=manifest["gaze_fusion"],
@@ -904,7 +932,9 @@ def run(args: argparse.Namespace) -> Path | None:
     for held_out_fold, training_fold, train_frame, eval_frame in _fold_specifications(
         filtered, args.held_out_folds
     ):
-        train_frame, overlap_audit = exclude_eval_text_overlaps(train_frame, eval_frame)
+        train_frame, overlap_audit = apply_training_text_overlap_policy(
+            train_frame, eval_frame, policy=args.training_text_overlap_policy,
+        )
         if train_frame.empty:
             raise ValueError(
                 f"Held-out fold {held_out_fold}: no training rows remain after "
@@ -925,7 +955,8 @@ def run(args: argparse.Namespace) -> Path | None:
             )
             print(
                 f"Held-out fold {held_out_fold}: {len(train_frame):,} training rows "
-                f"after excluding {overlap_audit['excluded_train_rows']:,} overlapping rows; "
+                f"with training-text-overlap={args.training_text_overlap_policy} "
+                f"({overlap_audit['excluded_train_rows']:,} rows excluded); "
                 f"{len(eval_frame):,} evaluation rows unchanged."
             )
         _print_dataset_counts("Validated datasets:", filtered_counts)
@@ -1033,7 +1064,7 @@ def run(args: argparse.Namespace) -> Path | None:
         },
         "excluded_dataset_names": filtered.excluded_names,
         "dataset_counts_after_filter": filtered_counts,
-        "training_text_overlap_contract": dict(TRAIN_EVAL_TEXT_OVERLAP_CONTRACT),
+        "training_text_overlap_contract": training_text_overlap_contract(args.training_text_overlap_policy),
         "fold_protocol": "two-fold out-of-fold; train the opposite fold and predict held-out",
         "gaze_features": active_feature_names,
         "gaze_feature_indices": active_feature_indices,
@@ -1087,11 +1118,18 @@ def run(args: argparse.Namespace) -> Path | None:
             f"evaluating held-out fold {held_out_fold} ({len(eval_frame):,} rows); "
             f"fine-tuning mode: {args.finetuning_mode}."
         )
-        print(
-            "Training text overlap: excluded "
-            f"{overlap_audit['excluded_train_rows']:,} training rows matching "
-            "held-out text; evaluation rows unchanged."
-        )
+        if args.training_text_overlap_policy == "keep":
+            print(
+                f"Training text overlap: kept all {len(train_frame):,} training rows "
+                f"({overlap_audit['shared_normalized_texts']:,} shared normalized texts); "
+                "evaluation rows unchanged."
+            )
+        else:
+            print(
+                "Training text overlap: excluded "
+                f"{overlap_audit['excluded_train_rows']:,} training rows matching "
+                "held-out text; evaluation rows unchanged."
+            )
         train_dataset = TokenizedVADataset(
             train_frame,
             tokenizer,

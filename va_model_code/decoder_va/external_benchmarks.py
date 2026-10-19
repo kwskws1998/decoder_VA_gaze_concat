@@ -32,9 +32,9 @@ from .downloads import sha256_file
 from .evaluation import calculate_va_metrics
 from .filters import (
     SENTENCE_ONLY_DATASET_NAMES,
-    TRAIN_EVAL_TEXT_OVERLAP_CONTRACT,
-    exclude_eval_text_overlaps,
+    apply_training_text_overlap_policy,
     read_fold,
+    validate_training_text_overlap_contract,
 )
 from .model import (
     ARCHITECTURE_MANIFEST_FILENAME,
@@ -1999,6 +1999,19 @@ def _tokenizer_artifact_hashes(model_dir: Path) -> dict[str, str]:
     return artifacts
 
 
+def _saved_training_overlap_policy(parameters: Mapping[str, Any], *, label: str) -> str:
+    """Recover the recorded overlap policy and reject conflicting optional CLI metadata."""
+
+    contract = validate_training_text_overlap_contract(
+        parameters.get("training_text_overlap_contract"),
+        context=f"{label} training_text_overlap_contract",
+    )
+    policy = "keep" if contract["policy"] == "keep_all_training_rows" else "exclude"
+    if "training_text_overlap_policy" in parameters and parameters["training_text_overlap_policy"] != policy:
+        raise ValueError(f"{label} training_text_overlap_policy disagrees with training_text_overlap_contract.")
+    return policy
+
+
 def _validate_root_run_parameters(root: Path, parameters: Mapping[str, Any]) -> None:
     """Validate the root identity and fields needed for safe model reconstruction."""
 
@@ -2062,9 +2075,7 @@ def _validate_root_run_parameters(root: Path, parameters: Mapping[str, Any]) -> 
             raise ValueError("Saved trainable_parameter_dtype must be float32.")
         if parameters["finetuning_mode"] == "full" and parameters["dtype"] != "float32":
             raise ValueError("Full finetuning requires float32 dtype storage.")
-        overlap_contract = parameters["training_text_overlap_contract"]
-        if not isinstance(overlap_contract, dict) or type(overlap_contract.get("version")) is not int or overlap_contract != TRAIN_EVAL_TEXT_OVERLAP_CONTRACT:
-            raise ValueError("Saved training_text_overlap_contract is missing or incompatible.")
+        _saved_training_overlap_policy(parameters, label="training_parameters.json")
     _saved_redistribution_contract(
         parameters, parameters, label="training_parameters.json"
     )
@@ -2297,6 +2308,7 @@ def discover_completed_run(
                 )
         training_rows_before = total_rows - run_manifest["evaluation_rows"]
         if training_parameters["architecture_manifest_version"] >= PRE_RELATION_MANIFEST_VERSION:
+            overlap_policy = _saved_training_overlap_policy(run_manifest, label=str(run_manifest_path))
             overlap_audit = run_manifest.get("training_text_overlap")
             count_names = (
                 "train_rows_before", "train_rows_after", "excluded_train_rows",
@@ -2304,7 +2316,7 @@ def discover_completed_run(
             )
             if (
                 not isinstance(overlap_audit, dict)
-                or overlap_audit.get("contract") != TRAIN_EVAL_TEXT_OVERLAP_CONTRACT
+                or overlap_audit.get("contract") != run_manifest["training_text_overlap_contract"]
                 or type(overlap_audit["contract"].get("version")) is not int
                 or any(type(overlap_audit.get(name)) is not int or overlap_audit[name] < 0 for name in count_names)
                 or overlap_audit["train_rows_before"] != training_rows_before
@@ -2312,7 +2324,9 @@ def discover_completed_run(
                 or overlap_audit["eval_rows"] != run_manifest["evaluation_rows"]
                 or overlap_audit["excluded_train_rows"] + overlap_audit["train_rows_after"] != training_rows_before
                 or overlap_audit["overlapping_eval_rows"] > run_manifest["evaluation_rows"]
-                or overlap_audit["shared_normalized_texts"] > min(overlap_audit["excluded_train_rows"], overlap_audit["overlapping_eval_rows"])
+                or overlap_audit["shared_normalized_texts"] > min(training_rows_before, overlap_audit["overlapping_eval_rows"])
+                or (overlap_policy == "exclude" and overlap_audit["shared_normalized_texts"] > overlap_audit["excluded_train_rows"])
+                or (overlap_policy == "keep" and overlap_audit["excluded_train_rows"] != 0)
             ):
                 raise ValueError(f"Fold manifest training_text_overlap audit is invalid: {run_manifest_path}")
         elif run_manifest["training_rows"] != training_rows_before:
@@ -2388,9 +2402,10 @@ def discover_completed_run(
         )
         if training_parameters["architecture_manifest_version"] >= PRE_RELATION_MANIFEST_VERSION:
             for member in members:
-                _, expected_audit = exclude_eval_text_overlaps(
+                _, expected_audit = apply_training_text_overlap_policy(
                     fold_prediction_frames[member.training_fold - 1],
                     fold_prediction_frames[member.held_out_fold - 1],
+                    policy=_saved_training_overlap_policy(member.run_manifest, label=member.name),
                 )
                 if member.run_manifest["training_text_overlap"] != expected_audit:
                     raise ValueError(f"{member.name} training_text_overlap disagrees with persisted fold texts.")
@@ -2515,9 +2530,18 @@ def audit_finetuning_text_overlap(
         if member.run_manifest.get("architecture_manifest_version", 0) >= PRE_RELATION_MANIFEST_VERSION:
             eval_frame = fold_frames[member.held_out_fold]
             eval_filtered = eval_frame.loc[~eval_frame["dataset_of_origin"].astype(str).isin(excluded)].copy()
-            filtered, actual_overlap_audit = exclude_eval_text_overlaps(filtered, eval_filtered)
-            if member.run_manifest.get("training_text_overlap_contract") != TRAIN_EVAL_TEXT_OVERLAP_CONTRACT or member.run_manifest.get("training_text_overlap") != actual_overlap_audit:
+            policy = _saved_training_overlap_policy(member.run_manifest, label=member.name)
+            filtered, actual_overlap_audit = apply_training_text_overlap_policy(filtered, eval_filtered, policy=policy)
+            saved_overlap_audit = member.run_manifest.get("training_text_overlap")
+            if (
+                not isinstance(saved_overlap_audit, dict)
+                or any(type(saved_overlap_audit.get(name)) is not int for name in actual_overlap_audit if name != "contract")
+                or saved_overlap_audit != actual_overlap_audit
+            ):
                 raise ValueError(f"Training-text overlap provenance mismatch for {member.name}.")
+            validate_training_text_overlap_contract(
+                saved_overlap_audit.get("contract"), context=f"{member.name} training_text_overlap audit",
+            )
         expected_rows = int(member.run_manifest.get("training_rows", -1))
         if len(filtered) != expected_rows:
             raise ValueError(

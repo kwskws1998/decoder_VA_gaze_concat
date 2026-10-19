@@ -165,6 +165,98 @@ def test_run_rejects_all_overlap_before_model_or_trainer(offline_overlap_run):
     assert not (run.run_root / "heldout_fold1").exists()
 
 
+def test_run_keep_overlap_delivers_all_rows_to_trainer_and_records_policy(offline_overlap_run):
+    """Verify the explicit historical protocol reaches training, evaluation, and saved reports."""
+
+    run = offline_overlap_run
+    originals = {
+        1: _write_fold(run.data_root, 1, ["Cafe\u0301  HELLO", "one unique", "another unique"]),
+        2: _write_fold(run.data_root, 2, ["Ｃａｆé hello", "café  hello", "two unique", "two another"]),
+    }
+    keep_contract = {
+        "version": 1,
+        "normalization": "NFKC+casefold+whitespace-collapse",
+        "policy": "keep_all_training_rows",
+        "evaluation_rows": "unchanged",
+    }
+
+    train_model_module.run(run.arguments("--training-text-overlap", "keep"))
+
+    for fold, trainer in enumerate(run.observed["trainers"], start=1):
+        original_training = originals[3 - fold]
+        assert trainer.train_dataset.index == original_training["index"].tolist()
+        assert trainer.train_dataset.texts == original_training["text"].tolist()
+        np.testing.assert_allclose(trainer.train_dataset.valence, original_training["valence"])
+        np.testing.assert_allclose(trainer.train_dataset.arousal, original_training["arousal"])
+        assert trainer.eval_dataset.index == originals[fold]["index"].tolist()
+        manifest = json.loads((run.run_root / f"heldout_fold{fold}" / "run_manifest.json").read_text())
+        assert manifest["training_rows"] == len(original_training)
+        assert manifest["evaluation_rows"] == len(originals[fold])
+        assert manifest["training_text_overlap_contract"] == keep_contract
+        assert manifest["training_text_overlap"] == {
+            "contract": keep_contract,
+            "train_rows_before": len(original_training),
+            "train_rows_after": len(original_training),
+            "excluded_train_rows": 0,
+            "eval_rows": len(originals[fold]),
+            "overlapping_eval_rows": fold,
+            "shared_normalized_texts": 1,
+        }
+        predictions = pd.read_csv(run.run_root / f"heldout_fold{fold}" / "predictions.tsv", sep="\t")
+        assert predictions["index"].tolist() == originals[fold]["index"].tolist()
+        assert predictions["text"].tolist() == originals[fold]["text"].tolist()
+
+    root_manifest = json.loads((run.run_root / "training_parameters.json").read_text())
+    assert root_manifest["training_text_overlap_contract"] == keep_contract
+    assert root_manifest["training_text_overlap_policy"] == "keep"
+    assert root_manifest["dataset_counts_after_filter"] == {"Emobank": 7}
+    assert len(pd.read_csv(run.run_root / "oof_predictions.tsv", sep="\t")) == 7
+
+
+def test_run_keep_all_overlap_is_usable_training_data(offline_overlap_run):
+    """The opt-in policy must not apply the exclusion mode's empty-training preflight."""
+
+    run = offline_overlap_run
+    _write_fold(run.data_root, 1, ["SAME", "HELLO"])
+    _write_fold(run.data_root, 2, [" same ", "Ｈｅｌｌｏ"])
+
+    train_model_module.run(run.arguments("--training-text-overlap", "keep"))
+
+    assert len(run.observed["trainers"]) == 2
+    assert all(len(trainer.train_dataset) == 2 for trainer in run.observed["trainers"])
+    assert len(run.observed["predictions"]) == 2
+
+
+@pytest.mark.parametrize("original_policy,new_policy", [("exclude", "keep"), ("keep", "exclude")])
+@pytest.mark.parametrize("shared_text", [True, False])
+def test_run_resume_rejects_overlap_policy_switch_even_when_row_counts_match(
+    offline_overlap_run, original_policy, new_policy, shared_text
+):
+    """A checkpoint's data policy cannot change, including on disjoint data with equal counts."""
+
+    run = offline_overlap_run
+    _write_fold(run.data_root, 1, ["Shared" if shared_text else "first", "only one"])
+    _write_fold(run.data_root, 2, ["shared" if shared_text else "second", "only two"])
+    train_model_module.run(
+        run.arguments("--held-out-folds", "1", "--training-text-overlap", original_policy)
+    )
+    checkpoint = run.run_root / "heldout_fold1" / "checkpoints" / "checkpoint-1"
+    checkpoint.mkdir(parents=True)
+    run.observed["builds"].clear()
+    run.observed["trainers"].clear()
+
+    with pytest.raises(ValueError, match="training_text_overlap"):
+        train_model_module.run(
+            run.arguments(
+                "--held-out-folds", "1", "--resume-from-checkpoint", str(checkpoint),
+                "--training-text-overlap", new_policy,
+            )
+        )
+
+    assert not run.observed["builds"]
+    assert not run.observed["trainers"]
+
+
 def test_resume_refuses_changed_overlap_audit_before_model_or_trainer(offline_overlap_run):
     run = offline_overlap_run
     _write_fold(run.data_root, 1, ["Shared", "only one"])

@@ -29,6 +29,33 @@ TRAIN_EVAL_TEXT_OVERLAP_CONTRACT = {
     "policy": "exclude_train_rows_matching_eval_text",
     "evaluation_rows": "unchanged",
 }
+TRAIN_EVAL_TEXT_OVERLAP_POLICIES = ("exclude", "keep")
+
+
+def training_text_overlap_contract(policy: str = "exclude") -> dict[str, object]:
+    """Return a fresh contract for the selected training text overlap policy."""
+
+    if policy not in TRAIN_EVAL_TEXT_OVERLAP_POLICIES:
+        raise ValueError(f"Unsupported training text overlap policy: {policy!r}.")
+    contract = dict(TRAIN_EVAL_TEXT_OVERLAP_CONTRACT)
+    if policy == "keep":
+        contract["policy"] = "keep_all_training_rows"
+    return contract
+
+
+def validate_training_text_overlap_contract(
+    value: object,
+    *,
+    context: str = "Training text overlap",
+) -> dict[str, object]:
+    """Accept only complete, supported overlap contracts without type coercion."""
+
+    if isinstance(value, dict) and type(value.get("version")) is int:
+        for policy in TRAIN_EVAL_TEXT_OVERLAP_POLICIES:
+            expected = training_text_overlap_contract(policy)
+            if value == expected:
+                return expected
+    raise ValueError(f"{context}: invalid training_text_overlap_contract.")
 
 
 @dataclass(frozen=True)
@@ -212,27 +239,32 @@ def _normalized_overlap_keys(frame: pd.DataFrame, *, split_name: str) -> list[st
     return keys
 
 
-def exclude_eval_text_overlaps(
+def apply_training_text_overlap_policy(
     train_frame: pd.DataFrame,
     eval_frame: pd.DataFrame,
+    *,
+    policy: str = "exclude",
 ) -> tuple[pd.DataFrame, dict[str, object]]:
-    """Remove training texts present in evaluation, preserving both folds' order.
+    """Keep or exclude shared training texts while auditing both input folds.
 
     Matching ignores Unicode compatibility differences, case, and whitespace;
-    labels and corpus names do not affect exclusion. Empty strings remain valid
-    matching keys. Neither input is mutated, and the returned training copy
-    retains its original index. An all-overlap input returns an empty copy so
-    callers can raise an error with their held-out fold context.
+    labels and corpus names do not affect the audit. Neither input is mutated.
+    Keeping overlaps retains every training row, label, index, and its order.
+    Excluding an all-overlap input returns an empty frame for callers to reject.
     """
 
+    contract = training_text_overlap_contract(policy)
     train_keys = _normalized_overlap_keys(train_frame, split_name="Training")
     eval_keys = _normalized_overlap_keys(eval_frame, split_name="Evaluation")
     eval_key_set = set(eval_keys)
     shared_keys = set(train_keys).intersection(eval_key_set)
-    keep_train_rows = [key not in eval_key_set for key in train_keys]
-    retained = train_frame.loc[keep_train_rows].copy()
+    if policy == "exclude":
+        keep_train_rows = [key not in eval_key_set for key in train_keys]
+        retained = train_frame.loc[keep_train_rows].copy()
+    else:
+        retained = train_frame.copy()
     audit: dict[str, object] = {
-        "contract": dict(TRAIN_EVAL_TEXT_OVERLAP_CONTRACT),
+        "contract": contract,
         "train_rows_before": len(train_frame),
         "train_rows_after": len(retained),
         "excluded_train_rows": len(train_frame) - len(retained),
@@ -241,6 +273,15 @@ def exclude_eval_text_overlaps(
         "shared_normalized_texts": len(shared_keys),
     }
     return retained, audit
+
+
+def exclude_eval_text_overlaps(
+    train_frame: pd.DataFrame,
+    eval_frame: pd.DataFrame,
+) -> tuple[pd.DataFrame, dict[str, object]]:
+    """Preserve the existing exclusion API and its saved audit contract."""
+
+    return apply_training_text_overlap_policy(train_frame, eval_frame, policy="exclude")
 
 
 def filter_fold_frames(

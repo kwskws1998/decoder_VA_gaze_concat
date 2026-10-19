@@ -14,7 +14,11 @@ import torch
 
 from va_model_code.decoder_va.downloads import sha256_file
 from va_model_code.decoder_va.alignment import GAZE_ALIGNMENT_CONTRACT
-from va_model_code.decoder_va.filters import TRAIN_EVAL_TEXT_OVERLAP_CONTRACT, exclude_eval_text_overlaps
+from va_model_code.decoder_va.filters import (
+    TRAIN_EVAL_TEXT_OVERLAP_CONTRACT,
+    apply_training_text_overlap_policy,
+    training_text_overlap_contract,
+)
 from va_model_code.decoder_va.external_benchmarks import (
     EXTERNAL_EVALUATION_COMPLETION_MARKER,
     IDEST_FILE,
@@ -347,11 +351,16 @@ def _write_completed_run(
     gaze_relation: dict | None = None,
     finetuning_mode: str = "full",
     overlapping_text: bool = False,
+    overlap_policy: str = "exclude",
+    record_overlap_policy: bool = False,
 ) -> None:
     root.mkdir(parents=True, exist_ok=True)
     parameters = _run_contract_fields(root)
     parameters["architecture_manifest_version"] = schema_version
     parameters["finetuning_mode"] = finetuning_mode
+    parameters["training_text_overlap_contract"] = training_text_overlap_contract(overlap_policy)
+    if record_overlap_policy:
+        parameters["training_text_overlap_policy"] = overlap_policy
     if schema_version < 9:
         parameters.pop("gaze_relation")
     if gaze_relation is not None:
@@ -415,7 +424,7 @@ def _write_completed_run(
             "held_out_fold": held_out,
             "training_fold": 2 if held_out == 1 else 1,
             "fold_seed": 42 + held_out - 1,
-            "training_rows": 1 if overlapping_text else 2,
+            "training_rows": 1 if overlapping_text and overlap_policy == "exclude" else 2,
             "evaluation_rows": 2,
             "total_parameters": 100,
             "trainable_parameters": 100,
@@ -423,10 +432,10 @@ def _write_completed_run(
         }
         if schema_version >= 8:
             manifest["training_text_overlap"] = {
-                "contract": copy.deepcopy(TRAIN_EVAL_TEXT_OVERLAP_CONTRACT),
+                "contract": training_text_overlap_contract(overlap_policy),
                 "train_rows_before": 2,
-                "train_rows_after": 1 if overlapping_text else 2,
-                "excluded_train_rows": 1 if overlapping_text else 0,
+                "train_rows_after": manifest["training_rows"],
+                "excluded_train_rows": 2 - manifest["training_rows"],
                 "eval_rows": 2,
                 "overlapping_eval_rows": 1 if overlapping_text else 0,
                 "shared_normalized_texts": 1 if overlapping_text else 0,
@@ -1723,6 +1732,72 @@ def test_current_discovery_accepts_overlap_exclusion_with_unchanged_eval_rows(tm
     assert all(member.run_manifest["evaluation_rows"] == 2 for member in members)
 
 
+@pytest.mark.parametrize("record_overlap_policy", [False, True])
+@pytest.mark.parametrize("schema_version", [8, ARCHITECTURE_MANIFEST_VERSION])
+def test_current_discovery_keeps_overlap_when_recorded_contract_requests_it(tmp_path, record_overlap_policy, schema_version):
+    """The explicit keep contract preserves all training rows and still audits overlap."""
+
+    _write_completed_run(
+        tmp_path, overlapping_text=True, overlap_policy="keep",
+        record_overlap_policy=record_overlap_policy, schema_version=schema_version,
+    )
+
+    members = discover_completed_run(tmp_path)
+
+    for member in members:
+        assert member.run_manifest["training_rows"] == 2
+        assert member.run_manifest["evaluation_rows"] == 2
+        assert member.run_manifest["training_text_overlap"] == {
+            "contract": training_text_overlap_contract("keep"),
+            "train_rows_before": 2, "train_rows_after": 2,
+            "excluded_train_rows": 0, "eval_rows": 2,
+            "overlapping_eval_rows": 1, "shared_normalized_texts": 1,
+        }
+
+
+@pytest.mark.parametrize("target", ["root", "fold1"])
+def test_current_discovery_rejects_optional_policy_disagreeing_with_contract(tmp_path, target):
+    """A CLI policy field cannot override the recorded authoritative contract."""
+
+    _write_completed_run(tmp_path, overlapping_text=True, overlap_policy="keep")
+    _edit_current_contract_metadata(tmp_path, target, "training_text_overlap_policy", "exclude")
+
+    with pytest.raises(ValueError, match="training_text_overlap_policy"):
+        discover_completed_run(tmp_path)
+
+
+@pytest.mark.parametrize("require_internal_evidence", [False, True])
+def test_current_discovery_rejects_keep_contract_that_excludes_rows(tmp_path, require_internal_evidence):
+    """Even without prediction evidence, keeping all rows cannot record any exclusions."""
+
+    _write_completed_run(tmp_path, overlapping_text=True, overlap_policy="keep")
+    path = tmp_path / "heldout_fold1" / "run_manifest.json"
+    manifest = json.loads(path.read_text())
+    manifest["training_rows"] = 1
+    manifest["training_text_overlap"].update(train_rows_after=1, excluded_train_rows=1)
+    path.write_text(json.dumps(manifest))
+
+    with pytest.raises(ValueError, match="training_text_overlap audit is invalid"):
+        discover_completed_run(tmp_path, require_internal_evidence=require_internal_evidence)
+
+
+@pytest.mark.parametrize("change", ["contract", "counts"])
+def test_current_discovery_rejects_false_keep_overlap_audit(tmp_path, change):
+    """Kept overlaps still require accurate counts and the same nested contract."""
+
+    _write_completed_run(tmp_path, overlapping_text=True, overlap_policy="keep")
+    path = tmp_path / "heldout_fold1" / "run_manifest.json"
+    manifest = json.loads(path.read_text())
+    if change == "contract":
+        manifest["training_text_overlap"]["contract"] = training_text_overlap_contract("exclude")
+    else:
+        manifest["training_text_overlap"].update(overlapping_eval_rows=0, shared_normalized_texts=0)
+    path.write_text(json.dumps(manifest))
+
+    with pytest.raises(ValueError, match="training_text_overlap"):
+        discover_completed_run(tmp_path)
+
+
 def test_current_discovery_recomputes_overlap_from_internal_prediction_texts(tmp_path):
     _write_completed_run(tmp_path, overlapping_text=True)
     for fold in (1, 2):
@@ -1738,7 +1813,9 @@ def test_current_discovery_recomputes_overlap_from_internal_prediction_texts(tmp
         discover_completed_run(tmp_path)
 
 
-def test_external_overlap_uses_effective_training_text_after_exclusion(tmp_path):
+def _external_overlap_fixture(tmp_path, policy):
+    """Persist matching fold texts and members with the selected training policy."""
+
     benchmark = _small_benchmark()
     folds = [pd.DataFrame({
         "index": [fold * 2, fold * 2 + 1],
@@ -1752,20 +1829,49 @@ def test_external_overlap_uses_effective_training_text_after_exclusion(tmp_path)
     members = []
     for heldout in (1, 2):
         training = 3 - heldout
-        _, audit = exclude_eval_text_overlaps(folds[training - 1], folds[heldout - 1])
+        effective, audit = apply_training_text_overlap_policy(folds[training - 1], folds[heldout - 1], policy=policy)
         members.append(SimpleNamespace(
             name=f"heldout_fold{heldout}", training_fold=training, held_out_fold=heldout,
             run_manifest={"architecture_manifest_version": 8, "fold_sha256": hashes,
-                "training_rows": 1, "excluded_dataset_names": [],
-                "training_text_overlap_contract": TRAIN_EVAL_TEXT_OVERLAP_CONTRACT,
+                "training_rows": len(effective), "excluded_dataset_names": [],
+                "training_text_overlap_contract": training_text_overlap_contract(policy),
                 "training_text_overlap": audit},
         ))
+    return benchmark, members
+
+
+@pytest.mark.parametrize("policy", ["exclude", "keep"])
+def test_external_overlap_uses_recorded_effective_training_text(tmp_path, policy):
+    benchmark, members = _external_overlap_fixture(tmp_path, policy)
 
     audited, report, _ = audit_finetuning_text_overlap(benchmark, members, tmp_path)
 
-    assert audited["overlap_with_any_finetuning_text"].tolist() == [False, False, False]
-    assert report["overlapping_external_rows_union"] == 0
-    assert all(member["training_rows"] == 1 for member in report["members"].values())
+    assert audited["overlap_with_any_finetuning_text"].tolist() == [policy == "keep", False, False]
+    assert report["overlapping_external_rows_union"] == int(policy == "keep")
+    assert all(member["training_rows"] == (2 if policy == "keep" else 1) for member in report["members"].values())
+
+
+@pytest.mark.parametrize("policy", ["exclude", "keep"])
+@pytest.mark.parametrize("change", ["contract", "policy", "counts", "boolean_version", "boolean_count"])
+def test_external_overlap_reconstruction_rejects_false_recorded_policy_or_audit(tmp_path, policy, change):
+    """Reconstruction validates provenance even when called without run discovery."""
+
+    benchmark, members = _external_overlap_fixture(tmp_path, policy)
+    manifest = members[0].run_manifest
+    alternate = "keep" if policy == "exclude" else "exclude"
+    if change == "contract":
+        manifest["training_text_overlap_contract"] = training_text_overlap_contract(alternate)
+    elif change == "policy":
+        manifest["training_text_overlap_policy"] = alternate
+    elif change == "counts":
+        manifest["training_text_overlap"]["shared_normalized_texts"] = 0
+    elif change == "boolean_version":
+        manifest["training_text_overlap"]["contract"]["version"] = True
+    else:
+        manifest["training_text_overlap"]["shared_normalized_texts"] = True
+
+    with pytest.raises(ValueError, match="[Tt]raining[-_]text"):
+        audit_finetuning_text_overlap(benchmark, members, tmp_path)
 
 
 @pytest.mark.parametrize("method", ["none", "trt-relative-rotation"])

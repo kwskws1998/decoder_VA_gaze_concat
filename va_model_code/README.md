@@ -139,17 +139,31 @@ log-variance head is used. The commands below use MSE as the simplest baseline.
 
 ## Training text overlap
 
-For each held-out fold, training excludes rows whose text also appears in the
-evaluation fold after Unicode NFKC normalization, case folding, and whitespace
-collapse. Labels and dataset names do not affect this text comparison. Evaluation
-rows, order, and labels remain unchanged; the same evaluation fold still selects
-the best checkpoint and supplies the reported predictions. No extra split is made.
+`--training-text-overlap exclude` (the default) excludes training rows whose text
+also appears in the evaluation fold after Unicode NFKC normalization, case
+folding, and whitespace collapse. `--training-text-overlap keep` retains every
+original training row, including different-source ratings for the same text.
+Use `keep` in both arms when comparing against the original dataset split;
+use the same policy for Raw TRT concat and TRT rotation.
+
+Labels and dataset names do not affect the overlap audit. Both policies preserve
+evaluation rows, order, and labels; the same evaluation fold still selects the
+best checkpoint and supplies the reported predictions. No extra split is made.
 Original fold files are never rewritten. An empty training set raises an error.
 
 Run manifests record `training_text_overlap_contract`; each fold additionally
 records its `training_text_overlap` counts and actual `training_rows`. The root
 `dataset_counts_after_filter` remains the full filtered corpus used for OOF
-reporting. Two-fold result packaging recomputes exclusions from the OOF texts.
+reporting. Two-fold result packaging recomputes the selected policy's audit from
+the OOF texts, and resuming a checkpoint with a different policy is rejected.
+
+For the existing `paper7_seed42` folds with only IEMOCAP excluded, `keep` uses
+26,898 training rows and 26,893 evaluation rows for held-out fold 1, and 26,893
+training rows and 26,898 evaluation rows for held-out fold 2. With one GPU,
+batch size 8, gradient accumulation 2, and 10 epochs, the progress totals are
+16,820 and 16,810 optimizer updates respectively. These are per-fold totals.
+The original full-data concat runs predate other alignment and precision fixes;
+matching the rows alone does not make those old results a controlled ablation.
 
 ## Gaze redistribution
 

@@ -26,8 +26,9 @@ if __package__:
     from .decoder_va.evaluation import calculate_va_metrics
     from .decoder_va.filters import (
         SENTENCE_ONLY_DATASET_NAMES,
-        TRAIN_EVAL_TEXT_OVERLAP_CONTRACT,
-        exclude_eval_text_overlaps,
+        apply_training_text_overlap_policy,
+        training_text_overlap_contract,
+        validate_training_text_overlap_contract,
     )
     from .decoder_va.gaze import ET2_FEATURE_NAMES
     from .decoder_va.gaze_relation import gaze_relation_contract, validate_gaze_relation_contract
@@ -61,8 +62,9 @@ else:
     from decoder_va.evaluation import calculate_va_metrics
     from decoder_va.filters import (
         SENTENCE_ONLY_DATASET_NAMES,
-        TRAIN_EVAL_TEXT_OVERLAP_CONTRACT,
-        exclude_eval_text_overlaps,
+        apply_training_text_overlap_policy,
+        training_text_overlap_contract,
+        validate_training_text_overlap_contract,
     )
     from decoder_va.gaze import ET2_FEATURE_NAMES
     from decoder_va.gaze_relation import gaze_relation_contract, validate_gaze_relation_contract
@@ -396,6 +398,21 @@ def _saved_relation_contract(
     return contract
 
 
+def _saved_training_text_overlap_contract(
+    metadata: Mapping[str, object], *, label: str
+) -> dict[str, object]:
+    """Validate the saved overlap identity and any explicitly recorded CLI policy."""
+
+    contract = validate_training_text_overlap_contract(
+        metadata.get("training_text_overlap_contract"),
+        context=f"{label}.training_text_overlap_contract",
+    )
+    if "training_text_overlap_policy" in metadata:
+        if training_text_overlap_contract(metadata["training_text_overlap_policy"]) != contract:
+            raise ValueError(f"{label}: training_text_overlap_policy disagrees with its contract.")
+    return contract
+
+
 def _validate_training_parameters(parameters: Mapping[str, object]) -> None:
     """Validate the minimum reproducibility and condition identity contract."""
 
@@ -442,13 +459,7 @@ def _validate_training_parameters(parameters: Mapping[str, object]) -> None:
             raise ValueError("trainable_parameter_dtype must be float32.")
         if parameters["finetuning_mode"] == "full" and parameters["dtype"] != "float32":
             raise ValueError("Full fine-tuning requires float32 parameter dtype.")
-        contract = parameters["training_text_overlap_contract"]
-        if (
-            not isinstance(contract, dict)
-            or type(contract.get("version")) is not int
-            or contract != TRAIN_EVAL_TEXT_OVERLAP_CONTRACT
-        ):
-            raise ValueError("Invalid training_text_overlap_contract.")
+        _saved_training_text_overlap_contract(parameters, label="training_parameters.json")
     for field in ("epochs", "learning_rate"):
         if _finite_number(parameters[field], label=field) <= 0:
             raise ValueError(f"{field} must be positive.")
@@ -1030,6 +1041,7 @@ def _validate_result_contract(
         manifest = _load_json_object(snapshots[manifest_label], manifest_label)
         if parameters["architecture_manifest_version"] > PRE_PRECISION_MANIFEST_VERSION:
             _validate_current_model_contracts(manifest, parameters, label=manifest_label)
+            _saved_training_text_overlap_contract(manifest, label=manifest_label)
         if _saved_redistribution_contract(
             manifest, parameters, label=manifest_label
         ) != _saved_redistribution_contract(
@@ -1097,9 +1109,12 @@ def _validate_result_contract(
             if (
                 not isinstance(audit, dict)
                 or audit.get("contract") != parameters["training_text_overlap_contract"]
-                or type(audit["contract"].get("version")) is not int
             ):
                 raise ValueError(f"{manifest_label} has invalid training_text_overlap.")
+            overlap_contract = validate_training_text_overlap_contract(
+                audit["contract"], context=f"{manifest_label} training_text_overlap"
+            )
+            keep_overlaps = overlap_contract["policy"] == "keep_all_training_rows"
             for field in (
                 "train_rows_before", "train_rows_after", "excluded_train_rows",
                 "eval_rows", "overlapping_eval_rows", "shared_normalized_texts",
@@ -1113,7 +1128,11 @@ def _validate_result_contract(
                 or audit["train_rows_after"] != training_rows
                 or audit["eval_rows"] != evaluation_rows
                 or audit["overlapping_eval_rows"] > evaluation_rows
-                or audit["shared_normalized_texts"] > min(excluded_rows, audit["overlapping_eval_rows"])
+                or audit["shared_normalized_texts"] > min(
+                    audit["train_rows_before"] if keep_overlaps else excluded_rows,
+                    audit["overlapping_eval_rows"],
+                )
+                or (keep_overlaps and excluded_rows != 0)
             ):
                 raise ValueError(f"{manifest_label} has inconsistent training_text_overlap counts.")
         if training_rows != total_rows - evaluation_rows - excluded_rows:
@@ -1288,8 +1307,15 @@ def _validate_result_contract(
             fold: pd.DataFrame([row for row in oof_rows if row["held_out_fold"] == str(fold)])
             for fold in (1, 2)
         }
+        overlap_policy = (
+            "keep"
+            if parameters["training_text_overlap_contract"]["policy"] == "keep_all_training_rows"
+            else "exclude"
+        )
         for fold in (1, 2):
-            _, expected_audit = exclude_eval_text_overlaps(frames[3 - fold], frames[fold])
+            _, expected_audit = apply_training_text_overlap_policy(
+                frames[3 - fold], frames[fold], policy=overlap_policy
+            )
             label = f"heldout_fold{fold}/run_manifest.json"
             recorded_audit = _load_json_object(snapshots[label], label)["training_text_overlap"]
             if recorded_audit != expected_audit:

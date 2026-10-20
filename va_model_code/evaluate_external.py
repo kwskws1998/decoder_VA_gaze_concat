@@ -38,7 +38,7 @@ from decoder_va.external_benchmarks import (
     write_external_evaluation,
 )
 from decoder_va.model import load_saved_decoder_va_model
-from decoder_va.uncertainty import prediction_contract, validate_prediction_contract
+from decoder_va.baseline_contracts import prediction_contract, validate_prediction_contract
 
 
 SCRIPT_DIR = Path(__file__).resolve().parent

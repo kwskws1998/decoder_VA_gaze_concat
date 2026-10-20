@@ -21,7 +21,7 @@ if str(VA_MODEL_CODE) not in sys.path:
 evaluate_external = importlib.import_module("evaluate_external")
 from decoder_va.external_benchmarks import ExternalBenchmarkData
 from decoder_va.model import ARCHITECTURE_MANIFEST_VERSION, PRECISION_CONTRACT
-from decoder_va.readout import readout_contract
+from decoder_va.baseline_contracts import readout_contract
 from decoder_va.filters import TRAIN_EVAL_TEXT_OVERLAP_CONTRACT
 
 

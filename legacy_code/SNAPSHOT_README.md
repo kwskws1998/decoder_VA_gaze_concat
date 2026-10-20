@@ -1,0 +1,274 @@
+# Decoder-based VA prediction
+
+The repository has one active code directory, one legacy directory, and one
+generated-results directory:
+
+```text
+va_model_code/   active Qwen VA training, data preparation, and tests
+legacy/          archived encoder VA code, GazeReward reference, paper evidence
+results/         every current training run and its results-only ZIP
+```
+
+Only the repository-root `requirements.txt` defines the active environment.
+Nothing under `legacy/` is imported or installed.
+
+## Install and run with Python
+
+On the server, open the existing GitHub checkout's repository root (the directory
+containing this README) and update it before setup:
+
+```text
+git pull --ff-only origin main
+```
+
+Python 3.11 or newer and a working NVIDIA driver are required. Setup detects
+this machine's driver, selects a compatible CUDA wheel family, and verifies
+actual CUDA forward/backward execution. GPU names are not hard-coded.
+
+```text
+python setup_environment.py
+python run_sigma_experiments.py --mode smoke
+python run_sigma_experiments.py --mode full
+```
+
+Setup creates `.venv`; the experiment runner selects that Python automatically,
+so shell activation is unnecessary. To install into your already active Python
+instead, use `python setup_environment.py --current-env` and select that
+interpreter with `--python` when a project `.venv` also exists.
+The manual commands below assume you are using an interpreter with the
+requirements installed. See [SIGMA_EXPERIMENTS.md](SIGMA_EXPERIMENTS.md) for the
+Python experiment options and diagnostic outputs.
+
+### Qwen linear-attention training kernels
+
+The CUDA setup now adds `flash-linear-attention==0.5.2` and verifies that Qwen
+actually selected its FLA delta-rule implementation. Installation is constrained
+by the existing `requirements.txt`; it does not upgrade the pinned Torch or
+Transformers versions. The full package supplies the import namespace expected
+by Transformers; installing only `fla-core` is not a validated replacement.
+These packages use Python wheels and Triton JIT, without an NVCC source build.
+
+For an already installed environment, stop its training process and run:
+
+```bash
+python setup_environment.py --current-env --kernels-only
+```
+
+This preserves the existing environment, data, and checkpoints. It checks CUDA,
+installs the missing package, and requires a CUDA BF16 forward/backward check
+before printing `Environment ready`. The check compares FLA outputs and Q/K/V,
+gate, and beta gradients against the native Torch reference at short and
+non-chunk-aligned lengths. It also checks a tiny hybrid Qwen model with the
+production TRT rotation and gradient checkpoint replay. Models are randomly
+initialized; no pretrained weights or dataset downloads are required.
+
+The first GPU use can spend time compiling Triton kernels. A passing numerical
+check is not a measured full-model training speedup; compare steady training
+step times after compilation. A running Python process keeps its original
+import-time dispatch, so restart training after installation. Its original
+training command, data scope, seeds, and batch settings can remain the same.
+
+The report is saved to `results/training_kernel_check.json`. To inspect dispatch
+without model execution, or rerun the CUDA check explicitly:
+
+```bash
+python va_model_code/check_training_kernels.py
+python va_model_code/check_training_kernels.py --require-fla --smoke-test \
+  --output results/training_kernel_check.json
+```
+
+This repair accelerates the delta-rule operator. `causal-conv1d` is not installed
+automatically because compatible binary availability depends on Torch/CUDA;
+the report can still show the native convolution path. The full-attention-only
+`benchmark_gaze_rotation.py` excludes linear attention, so it cannot measure
+the benefit of installing FLA. Training logs and manifests now record the
+selected linear-attention implementation and optional package versions.
+
+## Prepare data
+
+Keep generated datasets below the active directory's single `data/` root:
+
+```bash
+python va_model_code/prepare_english_data.py \
+  --download-default \
+  --download-path va_model_code/data/external/english_va_bundle.zip \
+  --output-dir va_model_code/data
+
+python va_model_code/prepare_english_data.py \
+  --download-default \
+  --download-path va_model_code/data/external/english_va_bundle.zip \
+  --paper-protocol \
+  --seed 42 \
+  --output-dir va_model_code/data/paper7_seed42
+```
+
+## Verify
+
+Run tests from the repository root:
+
+```bash
+python -m pytest -q va_model_code/tests
+
+python va_model_code/train_model.py \
+  --list-datasets \
+  --data-dir va_model_code/data/paper7_seed42
+python va_model_code/train_model.py --dry-run \
+  --data-dir va_model_code/data/paper7_seed42 \
+  --finetuning-mode full \
+  --gaze-fusion prefix-concat \
+  --gaze-features TRT
+```
+
+## Optional TRT relation experiment
+
+`--gaze-relation trt-relative-rotation` keeps the frozen ET2 raw gaze prefix and
+adds learned TRT-relative rotations to mapped text-pair attention scores in
+Qwen3.5 full-attention layers. It is disabled by default and requires eager
+attention. Use `--attn-implementation eager` for the raw comparison too.
+
+```text
+python va_model_code/train_model.py qwen3.5-0.8b mse --data-dir va_model_code/data/paper7_seed42 --sentence-only --no-iemocap --gaze-features TRT --gaze-relation trt-relative-rotation --gaze-relation-learning-rate 1e-3 --attn-implementation eager --max-steps 20 --held-out-folds 1
+```
+
+This is a training smoke run; it does not establish effectiveness. A CPU-only
+synthetic mechanism diagnostic is available without model downloads:
+
+```text
+python va_model_code/run_gaze_relation_diagnostic.py --help
+```
+
+See the [method, contracts, and limitations](va_model_code/README.md#trt-relative-attention-experiment).
+The same training CLI supports `--gaze-relation-input shuffled` with
+`--gaze-relation-shuffle-seed 42` for a deterministic relation-only control;
+the actual TRT prefix is retained. Compare raw/eager, aligned rotation, and
+shuffled rotation with otherwise identical settings. Learned per-layer/head
+alpha values are exported to each fold's `gaze_relation_parameters.json`.
+
+The new `--readout learned-token --gaze-relation trt-readout-rotation` condition
+connects the final prediction token directly to mapped TRT keys, including
+single-word inputs with positive TRT. Its matched control uses the same learned
+readout with `--gaze-relation none`. Existing rotation checkpoints retain their
+original semantics. [Readout experiment commands and paired checkpoint diagnostics](READOUT_EXPERIMENTS.md)
+describe the new schema and validation; real-data improvement remains untested.
+
+## Heteroscedastic VA uncertainty
+
+The `heteroscedastic` loss adds two input-dependent variance outputs to the
+existing VA mean head. The requested experiments compare text-only VA with
+raw TRT prefix concat, both using the original last-text-token prediction.
+Best-checkpoint selection remains VA mean MSE; Gaussian NLL and uncertainty
+coverage/widths are reported separately. See
+[setup, sequential experiment commands, and output contracts](HETEROSCEDASTIC_EXPERIMENTS.md).
+
+## Optional gaze redistribution
+
+For the matched raw/fixed/learned sigma diagnosis suite, environment setup,
+and gradient/sensitivity logging, see [SIGMA_EXPERIMENTS.md](SIGMA_EXPERIMENTS.md).
+
+Gaze concat and gaze redistribution are separate settings. Existing commands
+still use raw ET2 features because `--gaze-redistribution none` is the default.
+To learn an asymmetric Gaussian TRT transformation before the same gaze-prefix
+projection, add:
+
+```bash
+python va_model_code/train_model.py --dry-run \
+  --data-dir va_model_code/data/paper7_seed42 \
+  --finetuning-mode full \
+  --gaze-fusion prefix-concat \
+  --gaze-features TRT \
+  --gaze-redistribution asym-gaussian \
+  --redistribution-sigma-left 1.0 \
+  --redistribution-sigma-right 1.0 \
+  --redistribution-learning-rate 1e-3 \
+  --sentence-only \
+  --no-iemocap
+```
+
+The independent `decoder_va/redistribution.py` module uses the mapped gaze mask
+for both source and destination tokens, including interior unmapped positions.
+It introduces two learned Gaussian-width parameters and leaves frozen ET2,
+the other selected gaze channels, data preprocessing, and evaluation unchanged.
+The two widths use a dedicated learning rate (default `1e-3`) and zero weight
+decay; all other trainable parameters keep the main optimizer settings.
+`--sentence-only` retains exactly `EmoTales sentences`, `Emobank`, and `fb` in
+both folds.
+Configuration is recorded in training and architecture manifests; learned
+parameters are stored with the model weights. Train a new condition to enable
+redistribution; checkpoint loading does not add it to previously trained weights.
+
+See [the implementation details and full BF16 command](va_model_code/README.md#gaze-redistribution)
+for mask semantics, source provenance, and the FP32 variant. GPU memory for the
+new condition has not been measured; 24 GB is not a verified memory guarantee.
+
+## Gaze alignment and checkpoint compatibility
+
+The corrected ET2-to-Qwen alignment uses each segment's character position in
+the decoded text and verified Qwen tokenizer offsets. Repeated punctuation or
+words cannot jump to a later occurrence. Each segment contributes at its first
+overlapping visible Qwen token. When several ET2 segments share that token,
+`nFix` and `TRT` are summed; `FFD`, `GPT`, and `fixProp` are averaged. This
+applies to both raw gaze and redistributed gaze.
+
+New runs use alignment version 3: ET2 receives whitespace words, retains the
+first subword prediction, clips negative predictions to zero, and fails on
+nonfinite selected predictions. Architecture schemas 8 and 9 store trainable weights
+in FP32 and compute the regression head in FP32; BF16/FP16 remains an autocast
+compute option. Before each fold trains, texts also present in that fold's
+evaluation data are excluded from training. Evaluation folds and best-checkpoint
+selection remain unchanged.
+
+Schema-8 checkpoints remain loadable for evaluation; older checkpoints require
+their original code. New training and resume use schema 9 with explicit relation
+metadata. Existing schema-6/7/8 result reports can still be packaged.
+Start fresh matched runs to compare
+these changes; see [the implementation details](va_model_code/README.md).
+
+## Result-path contract
+
+Training accepts a single directory name through `--run-name`. Regardless of
+whether the command is launched from the repository root or `va_model_code`,
+the output is always:
+
+```text
+<repository>/results/<run-name>/
+```
+
+Arbitrary training `--output-dir` paths and the old `Preds/` layout are
+intentionally unsupported. The data-preparation CLI still uses `--output-dir`
+for its dataset destination. A condition-aware run name is generated when
+`--run-name` is omitted. Names containing `baseline` or `gaze` are checked
+against the actual `--gaze-fusion` setting before any model is downloaded.
+
+After both held-out folds complete, create a small verified ZIP inside the same
+run directory:
+
+```bash
+python va_model_code/package_results.py --run-name <run-name>
+```
+
+The packager accepts only the complete two-fold OOF result. The archive name is
+derived from `training_parameters.json`, not from the directory name. Model
+weights, optimizer states, and other large checkpoint files are excluded by
+construction.
+
+## One-time migration of an old Vast.ai checkout
+
+Stop active training before moving completed runs. From the repository root,
+inspect the old locations and move each run by its exact name:
+
+```bash
+find . -maxdepth 3 -type d -name Preds -print
+
+mkdir -p results
+mv va_model_code/Preds/<completed-run-name> results/<completed-run-name>
+
+mkdir -p va_model_code/data
+mv va_model_code/data_paper7_seed42 va_model_code/data/paper7_seed42
+```
+
+Do not use a wildcard for these moves: an existing destination must be
+inspected rather than overwritten. New runs no longer create either legacy
+location.
+
+See `va_model_code/README.md` for model design and complete baseline/gaze
+commands.

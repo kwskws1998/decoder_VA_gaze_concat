@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-from datetime import datetime
 import copy
 from importlib import import_module
 import json
@@ -10,79 +9,14 @@ from types import SimpleNamespace
 
 import pytest
 
+from va_model_code.decoder_va.filters import TRAIN_EVAL_TEXT_OVERLAP_CONTRACT
+
 
 VA_MODEL_ROOT = Path(__file__).resolve().parents[1]
 if str(VA_MODEL_ROOT) not in sys.path:
     sys.path.insert(0, str(VA_MODEL_ROOT))
 
 train_model_module = import_module("train_model")
-
-
-def test_relation_cli_forces_eager_and_dedicated_zero_decay_rate():
-    """Keep the new branch explicit while retaining raw gaze as the default."""
-
-    parser = train_model_module._build_parser()
-    args = parser.parse_args([
-        "qwen3.5-0.8b", "mse", "--gaze-relation", "trt-relative-rotation",
-    ])
-    train_model_module._validate_args(args)
-    assert args.attn_implementation == "eager"
-    assert args.gaze_relation_learning_rate == 1e-3
-    assert args.gaze_relation_weight_decay == 0
-    assert args.gaze_redistribution == "none"
-
-
-@pytest.mark.parametrize("options", [
-    ["--gaze-fusion", "none"],
-    ["--gaze-features", "FFD"],
-    ["--gaze-redistribution", "asym-gaussian"],
-    ["--attn-implementation", "sdpa"],
-    ["--gaze-relation-scale", "0"],
-    ["--gaze-relation-learning-rate", "nan"],
-])
-def test_relation_cli_rejects_incompatible_settings(options):
-    """Reject invalid combinations before downloading pretrained assets."""
-
-    args = train_model_module._build_parser().parse_args([
-        "qwen3.5-0.8b", "mse", "--gaze-relation", "trt-relative-rotation", *options,
-    ])
-    with pytest.raises(ValueError):
-        train_model_module._validate_args(args)
-
-
-@pytest.mark.parametrize("field,value", [
-    ("gaze_relation", {"version": 1, "method": "none"}),
-    ("gaze_relation_learning_rate", 0.2),
-    ("gaze_relation_weight_decay", 0.01),
-])
-def test_relation_resume_rejects_changed_policy(tmp_path, field, value):
-    """Protect both the relation operator and its optimizer state on resume."""
-
-    expected = _expected_resume_manifest()
-    expected.update({
-        "gaze_relation": train_model_module.gaze_relation_contract("trt-relative-rotation"),
-        "gaze_relation_learning_rate": 1e-3,
-        "gaze_relation_weight_decay": 0.0,
-        "attn_implementation": "eager",
-    })
-    recorded = copy.deepcopy(expected)
-    recorded[field] = value
-    with pytest.raises(ValueError, match=field):
-        _check_resume_pair(tmp_path, recorded, expected)
-
-
-def test_relation_scale_names_are_portable_and_do_not_round_distinct_conditions():
-    """Avoid collisions and forbidden plus signs in scientific-notation condition names."""
-
-    from decoder_va.paths import condition_slug, validate_run_name
-
-    names = [condition_slug(
-        model="qwen", finetuning_mode="full", gaze_fusion="prefix-concat",
-        gaze_features=("TRT",), seed=42,
-        gaze_relation=train_model_module.gaze_relation_contract("trt-relative-rotation", scale=scale),
-    ) for scale in (1e6, 1e20, 1.000001, 1.000002)]
-    assert len(set(names)) == len(names)
-    assert all(validate_run_name(name) == name for name in names)
 
 
 def _expected_resume_manifest() -> dict[str, object]:
@@ -95,9 +29,9 @@ def _expected_resume_manifest() -> dict[str, object]:
         "output_dim": 2,
         "training_rows": 5,
         "evaluation_rows": 5,
-        "training_text_overlap_contract": copy.deepcopy(train_model_module.TRAIN_EVAL_TEXT_OVERLAP_CONTRACT),
+        "training_text_overlap_contract": copy.deepcopy(TRAIN_EVAL_TEXT_OVERLAP_CONTRACT),
         "training_text_overlap": {
-            "contract": copy.deepcopy(train_model_module.TRAIN_EVAL_TEXT_OVERLAP_CONTRACT),
+            "contract": copy.deepcopy(TRAIN_EVAL_TEXT_OVERLAP_CONTRACT),
             "train_rows_before": 5,
             "train_rows_after": 5,
             "excluded_train_rows": 0,
@@ -198,30 +132,6 @@ def test_cli_keep_overlap_requires_explicit_valid_choice():
         parser.parse_args(["qwen3.5-0.8b", "mse", "--training-text-overlap", "include"])
 
 
-@pytest.mark.parametrize("left,right", [(0.5, 2.0), (2.0, 0.5)])
-def test_cli_accepts_frozen_direction_pair_without_sigma_optimizer(left, right):
-    """Accept unequal fixed widths while rejecting an unused sigma learning rate."""
-
-    parser = train_model_module._build_parser()
-    options = [
-        "qwen3.5-0.8b", "mse", "--gaze-redistribution", "fixed-gaussian",
-        "--redistribution-sigma-left", str(left),
-        "--redistribution-sigma-right", str(right), "--sentence-only",
-    ]
-    args = parser.parse_args(options)
-    train_model_module._validate_args(args)
-    config = train_model_module._redistribution_config(args)
-    assert config["trainable"] is False
-    assert config["init_sigma_left"] == left
-    assert config["init_sigma_right"] == right
-    assert args.redistribution_learning_rate is None
-    assert args.redistribution_weight_decay is None
-    with pytest.raises(ValueError, match="requires --gaze-redistribution asym-gaussian"):
-        train_model_module._validate_args(
-            parser.parse_args([*options, "--redistribution-learning-rate", "0.05"])
-        )
-
-
 def test_cli_resolves_mode_specific_learning_rates():
     parser = train_model_module._build_parser()
     lora_args = parser.parse_args(["qwen3.5-0.8b", "mse"])
@@ -250,50 +160,6 @@ def test_cli_resolves_mode_specific_learning_rates():
     assert full_args.lora_alpha is None
     assert full_args.lora_dropout is None
     train_model_module._validate_args(full_args)
-
-
-def test_cli_resolves_and_validates_redistribution_optimizer_policy():
-    parser = train_model_module._build_parser()
-    defaults = parser.parse_args(
-        ["qwen3.5-0.8b", "mse", "--gaze-redistribution", "asym-gaussian"]
-    )
-    explicit = parser.parse_args(
-        [
-            "qwen3.5-0.8b",
-            "mse",
-            "--gaze-redistribution",
-            "asym-gaussian",
-            "--redistribution-learning-rate",
-            "2e-3",
-        ]
-    )
-
-    train_model_module._validate_args(defaults)
-    train_model_module._validate_args(explicit)
-    assert defaults.redistribution_learning_rate == pytest.approx(1e-3)
-    assert explicit.redistribution_learning_rate == pytest.approx(2e-3)
-    assert defaults.redistribution_weight_decay == pytest.approx(0.0)
-    assert explicit.redistribution_weight_decay == pytest.approx(0.0)
-
-    disabled = parser.parse_args(
-        ["qwen3.5-0.8b", "mse", "--redistribution-learning-rate", "1e-3"]
-    )
-    with pytest.raises(ValueError, match="requires --gaze-redistribution"):
-        train_model_module._validate_args(disabled)
-
-    for invalid in ("0", "-0.1", "nan", "inf"):
-        args = parser.parse_args(
-            [
-                "qwen3.5-0.8b",
-                "mse",
-                "--gaze-redistribution",
-                "asym-gaussian",
-                "--redistribution-learning-rate",
-                invalid,
-            ]
-        )
-        with pytest.raises(ValueError, match="finite and positive"):
-            train_model_module._validate_args(args)
 
 
 def test_sentence_only_dry_run_filters_both_folds_without_model_loading(
@@ -461,78 +327,6 @@ def test_cli_canonicalizes_named_gaze_subsets_and_rejects_duplicates():
         train_model_module._validate_args(duplicate_args)
 
 
-def test_cli_redistribution_config_and_names_keep_raw_condition_unchanged():
-    from decoder_va.paths import condition_slug, default_run_name
-
-    parser = train_model_module._build_parser()
-    args = parser.parse_args(
-        [
-            "qwen3.5-0.8b", "mse", "--gaze-redistribution", "asym-gaussian",
-            "--redistribution-sigma-left", "0.75",
-            "--redistribution-sigma-right", "1.5",
-            "--gaze-features", "TRT", "nFix",
-        ]
-    )
-    train_model_module._validate_args(args)
-    train_model_module._validate_args(args)
-    contract = train_model_module._redistribution_config(args)
-    assert contract["method"] == "asym-gaussian"
-    assert contract["init_sigma_left"] == 0.75
-    assert contract["init_sigma_right"] == 1.5
-    assert contract["feature"] == "TRT"
-    assert contract["mask_policy"] == "valid_gaze_sources_and_targets"
-    shared = {
-        "model": "qwen3.5-0.8b",
-        "finetuning_mode": "full",
-        "gaze_fusion": "prefix-concat",
-        "gaze_features": ("TRT",),
-        "seed": 43,
-        "no_iemocap": True,
-    }
-    original = condition_slug(**shared)
-    assert original == "qwen3.5-0.8b_full_gaze_TRT_no_iemocap_seed43"
-    assert condition_slug(**shared, gaze_redistribution={"method": "none"}) == original
-    enabled = condition_slug(**shared, gaze_redistribution=contract)
-    assert enabled != original
-    assert "gaze_TRT_redistribution_asym-gaussian" in enabled
-    timestamp = datetime(2026, 9, 4, 12)
-    assert default_run_name(
-        **shared, timestamp=timestamp, gaze_redistribution=contract
-    ).endswith(enabled)
-
-
-@pytest.mark.parametrize(
-    "options",
-    (
-        ["--gaze-fusion", "none"],
-        ["--gaze-features", "FFD", "GPT"],
-        ["--redistribution-sigma-left", "0"],
-        ["--redistribution-sigma-right", "-1"],
-        ["--redistribution-min-sigma", "0"],
-        ["--redistribution-sigma-left", "nan"],
-        ["--redistribution-sigma-right", "inf"],
-        ["--redistribution-min-sigma", "nan"],
-    ),
-)
-def test_cli_rejects_invalid_redistribution_before_loading(options):
-    args = train_model_module._build_parser().parse_args(
-        ["qwen3.5-0.8b", "mse", "--gaze-redistribution", "asym-gaussian", *options]
-    )
-    with pytest.raises((TypeError, ValueError)):
-        train_model_module._validate_args(args)
-
-
-@pytest.mark.parametrize(
-    "option", ("--redistribution-sigma-left", "--redistribution-sigma-right", "--redistribution-min-sigma")
-)
-def test_cli_rejects_ignored_redistribution_options(option):
-    args = train_model_module._build_parser().parse_args(
-        ["qwen3.5-0.8b", "mse", option, "0.5"]
-    )
-    with pytest.raises(ValueError, match="require --gaze-redistribution"):
-        train_model_module._validate_args(args)
-
-
 def test_cli_rejects_redistribution_name_when_disabled():
     args = train_model_module._build_parser().parse_args(
         ["qwen3.5-0.8b", "mse", "--run-name", "qwen_gaze_TRT_redistribution_seed42"]
@@ -541,7 +335,7 @@ def test_cli_rejects_redistribution_name_when_disabled():
         train_model_module._validate_args(args)
 
 
-@pytest.mark.parametrize("method", ("none", "asym-gaussian"))
+@pytest.mark.parametrize("method", ("none",))
 def test_training_records_and_passes_canonical_redistribution(tmp_path, monkeypatch, method):
     """Run the real two-fold orchestration with offline model/trainer stand-ins."""
 
@@ -588,7 +382,7 @@ def test_training_records_and_passes_canonical_redistribution(tmp_path, monkeypa
         def __init__(self, **kwargs):
             self.model = kwargs["model"]
             trainer_redistribution_lrs.append(
-                kwargs["redistribution_learning_rate"]
+                kwargs.get("redistribution_learning_rate")
             )
 
         def train(self, resume_from_checkpoint):
@@ -616,11 +410,11 @@ def test_training_records_and_passes_canonical_redistribution(tmp_path, monkeypa
         [
             "qwen3.5-0.8b", "mse", "--data-dir", str(data_root),
             "--finetuning-mode", "full", "--precision", "fp32", "--use-cpu",
-            "--gaze-redistribution", method, "--sentence-only", "--run-name", "test_run",
+             "--sentence-only", "--run-name", "test_run",
         ]
     )
     assert train_model_module.run(args) == run_root
-    expected = train_model_module.redistribution_contract(method)
+    expected = {"method": "none"}
     assert build_contracts == [expected, expected]
     root_manifest = json.loads((run_root / "training_parameters.json").read_text())
     assert root_manifest["architecture_manifest_version"] == train_model_module.ARCHITECTURE_MANIFEST_VERSION
@@ -984,12 +778,7 @@ def _current_resume_manifest(method="none"):
 
     manifest = _expected_resume_manifest()
     manifest["architecture_manifest_version"] = train_model_module.ARCHITECTURE_MANIFEST_VERSION
-    manifest["gaze_redistribution"] = train_model_module.redistribution_contract(
-        method, gaze_fusion="prefix-concat", feature_indices=(0, 3)
-    )
-    if method != "none":
-        manifest["redistribution_learning_rate"] = 1e-3
-        manifest["redistribution_weight_decay"] = 0.0
+    manifest["gaze_redistribution"] = {"method": "none"}
     return manifest
 
 
@@ -1003,50 +792,12 @@ def test_resume_legacy_checkpoints_rejected_even_with_redistribution_disabled(tm
         _check_resume_pair(tmp_path, recorded, _current_resume_manifest())
 
 
-@pytest.mark.parametrize("method", ("none", "asym-gaussian"))
+@pytest.mark.parametrize("method", ("none",))
 def test_resume_current_requires_explicit_redistribution_metadata(tmp_path, method):
     recorded = _current_resume_manifest(method)
     recorded.pop("gaze_redistribution")
     with pytest.raises(ValueError, match="missing gaze_redistribution"):
         _check_resume_pair(tmp_path, recorded, _current_resume_manifest(method))
-
-
-@pytest.mark.parametrize("legacy_version", (5, 6))
-def test_resume_legacy_cannot_reset_into_redistribution(tmp_path, legacy_version):
-    recorded = _expected_resume_manifest()
-    recorded["architecture_manifest_version"] = legacy_version
-    if legacy_version == 5:
-        recorded.pop("finetuning_mode")
-    with pytest.raises(ValueError, match="historical precision"):
-        _check_resume_pair(tmp_path, recorded, _current_resume_manifest("asym-gaussian"))
-
-
-def test_resume_rejects_enabled_contract_falsely_tagged_as_legacy(tmp_path):
-    recorded = _current_resume_manifest("asym-gaussian")
-    recorded["architecture_manifest_version"] = 6
-    with pytest.raises(ValueError, match="historical precision"):
-        _check_resume_pair(tmp_path, recorded, _current_resume_manifest("asym-gaussian"))
-
-
-@pytest.mark.parametrize("field", ("method", "init_sigma_left", "init_sigma_right", "min_sigma"))
-def test_resume_rejects_changed_redistribution_configuration(tmp_path, field):
-    recorded = _current_resume_manifest("asym-gaussian")
-    expected = _current_resume_manifest("asym-gaussian")
-    if field == "method":
-        expected["gaze_redistribution"] = {"method": "none"}
-    else:
-        expected["gaze_redistribution"][field] *= 2
-    with pytest.raises(ValueError, match="gaze_redistribution"):
-        _check_resume_pair(tmp_path, recorded, expected)
-
-
-def test_resume_accepts_matching_enabled_contract(tmp_path):
-    _check_resume_pair(
-        tmp_path,
-        _current_resume_manifest("asym-gaussian"),
-        _current_resume_manifest("asym-gaussian"),
-        checkpoint_tensors=_sigma_checkpoint_tensors(),
-    )
 
 
 @pytest.mark.parametrize("version", (5, 6, 7))
@@ -1104,45 +855,6 @@ def test_resume_rejects_historical_text_only_precision(tmp_path, version):
         _check_resume_pair(tmp_path, recorded, expected)
 
 
-@pytest.mark.parametrize(
-    "field,new_value",
-    (
-        ("redistribution_learning_rate", 2e-3),
-        ("redistribution_weight_decay", 0.1),
-    ),
-)
-def test_resume_rejects_changed_redistribution_optimizer_policy(
-    tmp_path, field, new_value
-):
-    recorded = _current_resume_manifest("asym-gaussian")
-    expected = _current_resume_manifest("asym-gaussian")
-    expected[field] = new_value
-
-    with pytest.raises(ValueError, match=field):
-        _check_resume_pair(
-            tmp_path,
-            recorded,
-            expected,
-            checkpoint_tensors=_sigma_checkpoint_tensors(),
-        )
-
-
-@pytest.mark.parametrize(
-    "field", ("redistribution_learning_rate", "redistribution_weight_decay")
-)
-def test_resume_rejects_old_redistribution_optimizer_layout(tmp_path, field):
-    recorded = _current_resume_manifest("asym-gaussian")
-    recorded.pop(field)
-
-    with pytest.raises(ValueError, match=field):
-        _check_resume_pair(
-            tmp_path,
-            recorded,
-            _current_resume_manifest("asym-gaussian"),
-            checkpoint_tensors=_sigma_checkpoint_tensors(),
-        )
-
-
 def test_resume_rejects_changed_sentence_only_scope(tmp_path):
     recorded = _current_resume_manifest()
     expected = _current_resume_manifest()
@@ -1185,88 +897,6 @@ def test_resume_accepts_unchanged_overlap_policy(tmp_path, policy):
     expected["training_text_overlap"]["contract"] = copy.deepcopy(expected["training_text_overlap_contract"])
 
     _check_resume_pair(tmp_path, copy.deepcopy(expected), expected)
-
-
-def _sigma_checkpoint_tensors():
-    """Build safe scalar learned-width state, deliberately different from initialization."""
-
-    torch = train_model_module.torch
-    return {
-        "gaze_redistributor.kernel.log_sigma_left": torch.tensor(-0.6, dtype=torch.float32),
-        "gaze_redistributor.kernel.log_sigma_right": torch.tensor(0.8, dtype=torch.float32),
-        "backbone.dummy": torch.zeros(1),
-    }
-
-
-def test_enabled_resume_rejects_missing_safe_weights_before_metadata_mutation(tmp_path):
-    recorded = _current_resume_manifest("asym-gaussian")
-    with pytest.raises(ValueError, match="regular single-file"):
-        _check_resume_pair(tmp_path, recorded, dict(recorded))
-    assert json.loads((tmp_path / "run" / "heldout_fold1" / "run_manifest.json").read_text()) == recorded
-
-
-@pytest.mark.parametrize(
-    "defect, error",
-    (
-        ("both_missing", "state keys mismatch"),
-        ("left_missing", "state keys mismatch"),
-        ("unexpected_key", "state keys mismatch"),
-        ("vector", "must be scalar"),
-        ("bf16", "must be FP32"),
-        ("fp64", "must be FP32"),
-        ("nan", "must be finite"),
-        ("inf", "must be finite"),
-    ),
-)
-def test_enabled_resume_rejects_corrupt_sigma_state(tmp_path, defect, error):
-    torch = train_model_module.torch
-    state = _sigma_checkpoint_tensors()
-    left = "gaze_redistributor.kernel.log_sigma_left"
-    right = "gaze_redistributor.kernel.log_sigma_right"
-    if defect == "both_missing":
-        state.pop(left)
-        state.pop(right)
-    elif defect == "left_missing":
-        state.pop(left)
-    elif defect == "unexpected_key":
-        state["gaze_redistributor.sigma_left"] = torch.tensor(1.0)
-    elif defect == "vector":
-        state[left] = torch.tensor([0.0])
-    elif defect == "bf16":
-        state[right] = state[right].to(torch.bfloat16)
-    elif defect == "fp64":
-        state[left] = state[left].to(torch.float64)
-    else:
-        state[left] = torch.tensor(float(defect), dtype=torch.float32)
-    recorded = _current_resume_manifest("asym-gaussian")
-    with pytest.raises(ValueError, match=error):
-        _check_resume_pair(tmp_path, recorded, dict(recorded), checkpoint_tensors=state)
-    assert json.loads((tmp_path / "run" / "heldout_fold1" / "run_manifest.json").read_text()) == recorded
-
-
-@pytest.mark.parametrize("defect", ("symlink", "malformed", "sharded", "pickle", "adapter"))
-def test_enabled_resume_rejects_unsafe_or_unsupported_weight_layout(tmp_path, defect):
-    from safetensors.torch import save_file
-
-    checkpoint = tmp_path / "checkpoint-10"
-    checkpoint.mkdir()
-    weights = checkpoint / "model.safetensors"
-    if defect == "symlink":
-        target = tmp_path / "linked.safetensors"
-        save_file(_sigma_checkpoint_tensors(), target)
-        weights.symlink_to(target)
-    elif defect == "malformed":
-        weights.write_bytes(b"not safetensors")
-    else:
-        save_file(_sigma_checkpoint_tensors(), weights)
-        alternate = {
-            "sharded": "model.safetensors.index.json",
-            "pickle": "pytorch_model.bin",
-            "adapter": "adapter_model.safetensors",
-        }[defect]
-        (checkpoint / alternate).write_bytes(b"not loaded")
-    with pytest.raises(ValueError, match="gaze_redistribution"):
-        train_model_module._validate_redistribution_checkpoint(checkpoint)
 
 
 def test_resume_contract_rejects_finetuning_mode_mismatch(tmp_path):

@@ -9,7 +9,7 @@ import subprocess
 import sys
 import venv
 
-from sigma_runtime import (
+from environment_runtime import (
     DEFAULT_ENVIRONMENT, PROJECT_ROOT, check_gpu, choose_torch_index,
     child_environment, detect_nvidia_driver, environment_python, run,
 )

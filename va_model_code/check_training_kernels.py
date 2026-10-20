@@ -84,15 +84,10 @@ def check_chunk_kernel(qwen, *, length: int) -> dict[str, Any]:
 
 
 def check_hybrid_checkpoint() -> dict[str, Any]:
-    """Exercise native hybrid Qwen, production TRT rotation, and checkpoint replay on CUDA."""
+    """Exercise native hybrid Qwen forward/backward and checkpoint replay on CUDA."""
 
     import torch
     from transformers import Qwen3_5TextConfig, Qwen3_5TextModel
-    if __package__:
-        from .decoder_va.gaze_attention import install_gaze_relative_attention
-    else:
-        from decoder_va.gaze_attention import install_gaze_relative_attention
-
     torch.manual_seed(912)
     config = Qwen3_5TextConfig(
         vocab_size=64, hidden_size=128, intermediate_size=256,
@@ -108,27 +103,14 @@ def check_hybrid_checkpoint() -> dict[str, Any]:
     )
     config._attn_implementation = "eager"
     reference = Qwen3_5TextModel(config).cuda().train()
-    install_gaze_relative_attention(reference)
-    with torch.no_grad():
-        reference.layers[1].self_attn.gaze_relative_rotation.alpha.fill_(0.2)
     replay = copy.deepcopy(reference)
     replay.gradient_checkpointing_enable(gradient_checkpointing_kwargs={"use_reentrant": False})
     length = 65
     mask = torch.ones(2, length, device="cuda", dtype=torch.long)
     mask[1, -3:] = 0
-    anchors = torch.tensor([[3, 7, 9], [4, 8, 0]], device="cuda")
-    anchor_mask = torch.tensor([[True, True, True], [True, True, False]], device="cuda")
-    gaze_mask = torch.zeros(2, length, device="cuda", dtype=torch.bool)
-    gaze_mask[0, [3, 7, 9]] = True
-    gaze_mask[1, [4, 8]] = True
-    values = torch.zeros(2, length, device="cuda")
-    values[0, [3, 7, 9]] = torch.tensor([1.0, 4.0, 2.0], device="cuda")
-    values[1, [4, 8]] = torch.tensor([2.0, 5.0], device="cuda")
     inputs = {
         "input_ids": torch.randint(1, 64, (2, length), device="cuda"),
         "attention_mask": mask, "use_cache": False,
-        "gaze_relation_values": values, "gaze_relation_mask": gaze_mask,
-        "gaze_relation_indices": anchors, "gaze_relation_anchor_mask": anchor_mask,
     }
     target = torch.randn(2, length, 128, device="cuda") / (2 * length * 128) ** 0.5
     results = []
@@ -142,7 +124,6 @@ def check_hybrid_checkpoint() -> dict[str, Any]:
     expected_parameters = dict(reference.named_parameters())
     largest_rmse = 0.0
     checked = 0
-    alpha_norm = None
     for name, parameter in replay.named_parameters():
         expected = expected_parameters[name].grad
         if expected is None:
@@ -154,13 +135,9 @@ def check_hybrid_checkpoint() -> dict[str, Any]:
         stats = comparison_stats(parameter.grad, expected, label=name, rtol=0.03, atol=0.002)
         largest_rmse = max(largest_rmse, stats["normalized_rmse"])
         checked += 1
-        if name.endswith("gaze_relative_rotation.alpha"):
-            alpha_norm = parameter.grad.float().norm().item()
-    if alpha_norm is None or alpha_norm <= 0:
-        raise AssertionError("TRT rotation alpha did not receive a finite nonzero gradient")
     return {
         "output": output_stats, "checked_parameter_gradients": checked,
-        "largest_gradient_normalized_rmse": largest_rmse, "alpha_gradient_norm": alpha_norm,
+        "largest_gradient_normalized_rmse": largest_rmse,
         "shape": [2, length, 128], "gradient_checkpointing": "nonreentrant",
         "precision": "FP32 parameters with CUDA BF16 autocast",
     }

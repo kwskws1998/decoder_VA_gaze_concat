@@ -1,4 +1,4 @@
-"""Offline corrected ET alignment, cache, redistribution, and decoder integration."""
+"""Offline raw ET alignment, cache, gradient checkpointing and decoder integration."""
 
 from __future__ import annotations
 
@@ -7,7 +7,6 @@ import torch
 from transformers import Qwen3_5TextConfig, Qwen3_5TextModel
 
 from va_model_code.decoder_va.model import DecoderVARegressor
-from va_model_code.decoder_va.redistribution import redistribution_contract
 from va_model_code.tests.test_alignment_spans import punctuation_fixture
 from va_model_code.tests.test_gaze import FakeET2GazeProvider
 
@@ -39,8 +38,8 @@ def tiny_native_qwen_backbone(dtype):
 
 
 @pytest.mark.parametrize("dtype", [torch.float32, torch.bfloat16])
-def test_corrected_et_compute_cache_and_checkpointed_decoder_sigma_updates(dtype):
-    """Train sigma through real provider compute, using offline deterministic ET assets."""
+def test_corrected_et_compute_cache_and_checkpointed_decoder_projector_updates(dtype):
+    """Train the raw TRT projector through real provider compute with offline ET assets."""
 
     torch.manual_seed(17)
     tokenizer = punctuation_fixture()
@@ -72,9 +71,6 @@ def test_corrected_et_compute_cache_and_checkpointed_decoder_sigma_updates(dtype
         tiny_native_qwen_backbone(dtype=dtype),
         gaze_provider=provider,
         gaze_fusion="prefix-concat",
-        gaze_redistribution=redistribution_contract(
-            "asym-gaussian", init_sigma_left=1.5, init_sigma_right=2.0,
-        ),
         classifier_dropout=0,
         gaze_projection_dropout=(0, 0),
         gaze_projection_dim=8,
@@ -83,13 +79,8 @@ def test_corrected_et_compute_cache_and_checkpointed_decoder_sigma_updates(dtype
     model.train()
     assert model.backbone.is_gradient_checkpointing
     assert next(model.backbone.parameters()).dtype == torch.float32
-    kernel = model.gaze_redistributor.kernel
-    parameters = tuple(kernel.parameters())
+    parameters = tuple(model.gaze_projector.parameters())
     assert all(parameter.dtype == torch.float32 for parameter in parameters)
-    redistributed = model.gaze_redistributor(raw, gaze_mask)
-    assert torch.count_nonzero(redistributed[:, 8:]).item() == 0
-    torch.testing.assert_close(redistributed.sum(dim=1), raw.sum(dim=1), rtol=1e-6, atol=1e-5)
-    assert not torch.equal(redistributed[:, :8], raw[:, :8])
     labels = torch.tensor([[0.1, 0.9], [0.7, 0.2]])
     optimizer = torch.optim.AdamW(model.parameters(), lr=0.01, weight_decay=0)
     before = [parameter.detach().clone() for parameter in parameters]
@@ -104,7 +95,7 @@ def test_corrected_et_compute_cache_and_checkpointed_decoder_sigma_updates(dtype
         for parameter in parameters:
             assert parameter.grad is not None
             assert torch.isfinite(parameter.grad).all()
-            assert parameter.grad.abs().item() > 0
+            assert parameter.grad.abs().sum().item() > 0
         optimizer.step()
 
     assert all(not torch.equal(initial, final) for initial, final in zip(before, parameters))

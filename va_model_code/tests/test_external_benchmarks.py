@@ -50,8 +50,8 @@ from va_model_code.decoder_va.external_benchmarks import (
     _validate_zip_members,
 )
 from va_model_code.decoder_va.evaluation import calculate_va_metrics
-from va_model_code.decoder_va.uncertainty import prediction_contract
-from va_model_code.decoder_va.gaze_relation import gaze_relation_contract
+from va_model_code.decoder_va.baseline_contracts import prediction_contract
+from va_model_code.decoder_va.baseline_contracts import gaze_relation_contract
 from va_model_code.decoder_va.model import (
     ARCHITECTURE_MANIFEST_VERSION,
     ARCHITECTURE_MANIFEST_FILENAME,
@@ -61,8 +61,8 @@ from va_model_code.decoder_va.model import (
     DEFAULT_GAZE_PROJECTION_DROPOUT,
     SAFE_WEIGHTS_FILENAME,
 )
-from va_model_code.decoder_va.redistribution import redistribution_contract
-from va_model_code.decoder_va.readout import readout_contract, readout_concat_order, readout_pooling_position
+
+from va_model_code.decoder_va.baseline_contracts import readout_contract, readout_concat_order, readout_pooling_position
 from va_model_code.decoder_va.preprocessing import FOLD_FILENAMES
 
 
@@ -1420,14 +1420,14 @@ def test_new_benchmark_source_rejection_allows_unrelated_training_data(
 
 
 @pytest.mark.parametrize("redistribution_method,relation_method", [
-    ("none", "none"), ("asym-gaussian", "none"), ("none", "trt-relative-rotation"),
+    ("none", "none"),
 ])
 def test_write_external_evaluation_is_non_overwriting_and_manifest_says_no_training(
     tmp_path, redistribution_method, relation_method,
 ):
     run_root = tmp_path / "run"
-    saved_redistribution = redistribution_contract(redistribution_method)
-    saved_relation = gaze_relation_contract(relation_method)
+    saved_redistribution = {"method": "none"}
+    saved_relation = gaze_relation_contract()
     _write_completed_run(run_root, gaze_redistribution=saved_redistribution, gaze_relation=saved_relation)
     members = discover_completed_run(run_root)
     benchmark = _small_benchmark()
@@ -1584,25 +1584,6 @@ def test_atomic_publish_never_replaces_an_existing_empty_directory(tmp_path):
     assert list(target.iterdir()) == []
 
 
-@pytest.mark.parametrize("version,method", [(6, None), (7, "none"), (7, "asym-gaussian"), (8, "none"), (8, "asym-gaussian")])
-def test_discover_completed_run_preserves_legacy_and_active_redistribution(
-    tmp_path, version, method
-):
-    """Accept original schema-six bundles and fully declared new conditions."""
-
-    contract = None if method is None else redistribution_contract(method)
-    _write_completed_run(tmp_path, schema_version=version, gaze_redistribution=contract)
-
-    members = discover_completed_run(tmp_path)
-
-    assert len(members) == 2
-    for member in members:
-        assert member.architecture_manifest["schema_version"] == version
-        assert member.run_manifest.get("gaze_redistribution", {"method": "none"}) == (
-            {"method": "none"} if contract is None else contract
-        )
-
-
 def _edit_redistribution_metadata(root: Path, target: str, value, *, remove=False) -> None:
     """Tamper one independent artifact without altering other provenance copies."""
 
@@ -1619,93 +1600,6 @@ def _edit_redistribution_metadata(root: Path, target: str, value, *, remove=Fals
     else:
         container["gaze_redistribution"] = value
     path.write_text(json.dumps(payload), encoding="utf-8")
-
-
-@pytest.mark.parametrize("method", ["none", "trt-readout-rotation"])
-def test_discovery_accepts_matched_learned_readout_conditions(tmp_path, method):
-    """Require the same explicit readout geometry for Raw and rotated saved models."""
-
-    contract = readout_contract("learned-token")
-    _write_completed_run(tmp_path, readout=contract, gaze_relation=gaze_relation_contract(method))
-    members = discover_completed_run(tmp_path)
-    assert len(members) == 2
-    assert all(member.architecture_manifest["readout"] == contract for member in members)
-
-
-@pytest.mark.parametrize("target", ["root", "fold1", "fold2", "architecture", "reconstruction"])
-@pytest.mark.parametrize("remove", [False, True])
-def test_discovery_rejects_missing_or_mixed_readout(tmp_path, target, remove):
-    """Reject readout changes even when all other architecture fields still agree."""
-
-    _write_completed_run(tmp_path, readout=readout_contract("learned-token"))
-    _edit_current_contract_metadata(tmp_path, target, "readout", readout_contract(), remove=remove)
-    with pytest.raises(ValueError, match="readout"):
-        discover_completed_run(tmp_path)
-
-
-def test_discovery_preserves_schema9_relative_rotation(tmp_path):
-    """Continue discovering the user's completed legacy relative-rotation run."""
-
-    _write_completed_run(tmp_path, schema_version=9, gaze_relation=gaze_relation_contract("trt-relative-rotation"))
-    members = discover_completed_run(tmp_path)
-    assert all("readout" not in member.run_manifest for member in members)
-
-
-def test_discovery_rejects_readout_semantics_under_schema9(tmp_path):
-    """Do not reinterpret a previous schema as a new readout architecture."""
-
-    _write_completed_run(tmp_path, schema_version=9, readout=readout_contract("learned-token"))
-    with pytest.raises(ValueError, match="readout|schema"):
-        discover_completed_run(tmp_path)
-
-
-@pytest.mark.parametrize("target", ["root", "fold1", "fold2", "architecture", "reconstruction"])
-@pytest.mark.parametrize("method", ["none", "asym-gaussian"])
-def test_discover_schema7_rejects_missing_redistribution(tmp_path, target, method):
-    """Never infer disabled behavior from a missing new-schema condition field."""
-
-    _write_completed_run(tmp_path, gaze_redistribution=redistribution_contract(method))
-    _edit_redistribution_metadata(tmp_path, target, None, remove=True)
-
-    with pytest.raises(ValueError, match="gaze_redistribution"):
-        discover_completed_run(tmp_path)
-
-
-@pytest.mark.parametrize("target", ["root", "fold1", "fold2", "architecture", "reconstruction"])
-def test_discover_rejects_redistribution_disagreement(tmp_path, target):
-    """Require all provenance copies and both ensemble folds to describe one condition."""
-
-    _write_completed_run(tmp_path, gaze_redistribution=redistribution_contract("asym-gaussian"))
-    _edit_redistribution_metadata(tmp_path, target, {"method": "none"})
-
-    with pytest.raises(ValueError, match="gaze_redistribution"):
-        discover_completed_run(tmp_path)
-
-
-@pytest.mark.parametrize("target", ["root", "fold1", "fold2", "architecture", "reconstruction"])
-def test_discover_rejects_redistribution_in_schema6(tmp_path, target):
-    """Reject claiming learned redistribution parameters in pre-feature artifacts."""
-
-    _write_completed_run(tmp_path, schema_version=6)
-    _edit_redistribution_metadata(tmp_path, target, redistribution_contract("asym-gaussian"))
-
-    with pytest.raises(ValueError, match="schema 6 cannot enable"):
-        discover_completed_run(tmp_path)
-
-
-@pytest.mark.parametrize(
-    "field,value",
-    [("mask_policy", "targets_only"), ("trainable", False), ("init_sigma_left", -1), ("feature", "FFD")],
-)
-def test_discover_rejects_malformed_redistribution(tmp_path, field, value):
-    """Validate contract semantics in addition to equality across saved artifacts."""
-
-    contract = redistribution_contract("asym-gaussian")
-    contract[field] = value
-    _write_completed_run(tmp_path, gaze_redistribution=contract)
-
-    with pytest.raises(ValueError, match="redistribution|sigma"):
-        discover_completed_run(tmp_path)
 
 
 @pytest.mark.parametrize("finetuning_mode, storage", [("full", "float32"), ("lora", "bfloat16")])
@@ -1925,61 +1819,3 @@ def test_external_overlap_reconstruction_rejects_false_recorded_policy_or_audit(
 
     with pytest.raises(ValueError, match="[Tt]raining[-_]text"):
         audit_finetuning_text_overlap(benchmark, members, tmp_path)
-
-
-@pytest.mark.parametrize("method", ["none", "trt-relative-rotation"])
-def test_current_discovery_preserves_explicit_relation_identity(tmp_path, method):
-    """Both ensemble members retain the same explicit enabled or disabled relation."""
-
-    relation = gaze_relation_contract(method)
-    _write_completed_run(tmp_path, gaze_relation=relation)
-    members = discover_completed_run(tmp_path)
-    for member in members:
-        assert member.run_manifest["gaze_relation"] == relation
-        assert member.architecture_manifest["gaze_relation"] == relation
-        assert member.architecture_manifest["reconstruction"]["gaze_relation"] == relation
-
-
-@pytest.mark.parametrize("target", ["root", "fold1", "fold2", "architecture", "reconstruction"])
-@pytest.mark.parametrize("remove", [False, True])
-def test_current_relation_provenance_rejects_missing_or_mismatched_identity(tmp_path, target, remove):
-    """Never ensemble a rotated checkpoint with a provenance copy claiming raw attention."""
-
-    _write_completed_run(tmp_path, gaze_relation=gaze_relation_contract("trt-relative-rotation"))
-    _edit_current_contract_metadata(
-        tmp_path, target, "gaze_relation", gaze_relation_contract(), remove=remove,
-    )
-    with pytest.raises(ValueError, match="gaze_relation"):
-        discover_completed_run(tmp_path)
-
-
-@pytest.mark.parametrize("schema_version", [6, 7, 8])
-def test_legacy_schema_cannot_claim_active_gaze_relation(tmp_path, schema_version):
-    """Old manifests cannot opt into a mechanism their architecture did not contain."""
-
-    _write_completed_run(
-        tmp_path, schema_version=schema_version,
-        gaze_relation=gaze_relation_contract("trt-relative-rotation"),
-    )
-    with pytest.raises(ValueError, match=f"schema {schema_version} cannot enable gaze_relation"):
-        discover_completed_run(tmp_path)
-
-
-@pytest.mark.parametrize("value", [None, {}, {"version": 1, "method": "unknown"}])
-def test_current_relation_rejects_null_or_malformed_metadata(tmp_path, value):
-    """An explicit but invalid field must not silently become the disabled condition."""
-
-    _write_completed_run(tmp_path)
-    _edit_current_contract_metadata(tmp_path, "root", "gaze_relation", value)
-    with pytest.raises(ValueError, match="gaze_relation"):
-        discover_completed_run(tmp_path)
-
-
-@pytest.mark.parametrize("backend", [None, "sdpa"])
-def test_active_relation_requires_saved_eager_backend(tmp_path, backend):
-    """Saved runs must state the audited implementation rather than inherit a default."""
-
-    _write_completed_run(tmp_path, gaze_relation=gaze_relation_contract("trt-relative-rotation"))
-    _edit_current_contract_metadata(tmp_path, "root", "attn_implementation", backend)
-    with pytest.raises(ValueError, match="gaze_relation"):
-        discover_completed_run(tmp_path)

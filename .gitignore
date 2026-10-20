@@ -143,3 +143,7 @@ logs/
 
 # Pyre type checker
 .pyre/
+
+# Generated files from direct use of the frozen archive
+/legacy_code/results/
+/legacy_code/environment_setup.json

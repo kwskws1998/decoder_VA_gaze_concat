@@ -25,7 +25,6 @@ from decoder_va.evaluation import (
     write_oof_reports,
 )
 from decoder_va.filters import (
-    TRAIN_EVAL_TEXT_OVERLAP_CONTRACT,
     TRAIN_EVAL_TEXT_OVERLAP_POLICIES,
     apply_training_text_overlap_policy,
     dataset_counts,
@@ -59,36 +58,23 @@ from decoder_va.model import (
     build_qwen_va_model,
     validate_gaze_alignment_contract,
     validate_gaze_relation_setup,
-    validate_saved_gaze_relation,
-    validate_saved_readout,
 )
-from decoder_va.readout import (
-    READOUT_MODES, readout_contract, saved_readout_contract,
-    readout_pooling_position, readout_concat_order,
+from decoder_va.baseline_contracts import (
+    readout_contract, saved_readout_contract, readout_pooling_position, readout_concat_order,
+    prediction_contract, saved_prediction_contract, reject_experimental_weights,
+    gaze_relation_contract, validate_redistribution_contract,
 )
-from decoder_va.uncertainty import prediction_contract, saved_prediction_contract, validate_saved_variance_head
-from decoder_va.gaze_relation import GAZE_RELATION_INPUTS, GAZE_RELATION_METHODS, gaze_relation_contract
-from decoder_va.gaze_attention import GAZE_RELATION_IMPLEMENTATION
-from decoder_va.gaze_relation_reporting import write_gaze_relation_report
 from decoder_va.paths import (
     RESULTS_ROOT,
     default_run_name,
     resolve_run_directory,
     validate_run_name,
 )
-from decoder_va.redistribution import (
-    GAZE_REDISTRIBUTION_METHODS,
-    redistribution_contract,
-    validate_redistribution_contract,
-    validate_redistribution_state_file,
-)
 from decoder_va.trainer import VARegressionTrainer
 from decoder_va.training_kernels import training_kernel_report
 
 
 PRECISION_MODES = ("auto", "bf16", "fp16", "fp32")
-DEFAULT_REDISTRIBUTION_LEARNING_RATE = 1e-3
-REDISTRIBUTION_WEIGHT_DECAY = 0.0
 
 
 def _build_parser() -> argparse.ArgumentParser:
@@ -98,7 +84,8 @@ def _build_parser() -> argparse.ArgumentParser:
         description=(
             "Two-fold out-of-fold VA regression with Qwen3.5-0.8B-Base and "
             "optional frozen ET2 gaze-feature prefix concat."
-        )
+        ),
+        epilog="Experimental options moved to: python legacy_code/run.py train --help",
     )
     parser.add_argument("model", nargs="?", default="qwen3.5-0.8b", choices=MODEL_ALIASES)
     parser.add_argument(
@@ -133,10 +120,6 @@ def _build_parser() -> argparse.ArgumentParser:
         default="prefix-concat",
     )
     parser.add_argument(
-        "--readout", choices=READOUT_MODES, default="last-token",
-        help="Pool the final text token or append a learned causal prediction token.",
-    )
-    parser.add_argument(
         "--gaze-features",
         nargs="+",
         choices=ET2_FEATURE_NAMES,
@@ -145,45 +128,6 @@ def _build_parser() -> argparse.ArgumentParser:
         help=(
             "Raw ET2 channels used by prefix-concat. Choose one or more from "
             f"{', '.join(ET2_FEATURE_NAMES)}; default: TRT."
-        ),
-    )
-    parser.add_argument(
-        "--gaze-redistribution",
-        choices=GAZE_REDISTRIBUTION_METHODS,
-        default="none",
-        help=(
-            "Mask-aware TRT transformation before gaze-prefix projection. "
-            "fixed-gaussian freezes both specified widths, including unequal widths; "
-            "asym-gaussian learns them."
-        ),
-    )
-    parser.add_argument("--redistribution-sigma-left", type=float, default=1.0)
-    parser.add_argument(
-        "--gaze-relation", choices=GAZE_RELATION_METHODS, default="none",
-        help="Optional raw-TRT rotation of text pairs or learned readout-to-word pairs; requires eager attention.",
-    )
-    parser.add_argument("--gaze-relation-scale", type=float, default=1.0)
-    parser.add_argument(
-        "--gaze-relation-input", choices=GAZE_RELATION_INPUTS, default="aligned",
-        help="Use aligned TRT or deterministically shuffle only the relation input within each sentence; gaze prefix stays aligned.",
-    )
-    parser.add_argument(
-        "--gaze-relation-shuffle-seed", type=int, default=None,
-        help="Seed for shuffled relation input; defaults to --seed and is saved for identical training/evaluation behavior.",
-    )
-    parser.add_argument(
-        "--gaze-relation-learning-rate", type=float, default=None,
-        help="Per-head alpha learning rate; defaults to 1e-3 when enabled, with zero weight decay.",
-    )
-    parser.add_argument("--redistribution-sigma-right", type=float, default=1.0)
-    parser.add_argument("--redistribution-min-sigma", type=float, default=1e-6)
-    parser.add_argument(
-        "--redistribution-learning-rate",
-        type=float,
-        default=None,
-        help=(
-            "Learning rate for log_sigma_left/right only. Defaults to 1e-3 when "
-            "asym-gaussian redistribution is enabled; their weight decay is fixed at 0."
         ),
     )
     parser.add_argument("--et-model-id", default="skboy/et_prediction_2")
@@ -266,14 +210,6 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--logging-steps", type=int, default=50)
-    parser.add_argument(
-        "--sigma-diagnostics-steps", type=int, default=0,
-        help="Record sigma gradients/updates every N optimizer steps; 0 disables diagnostics.",
-    )
-    parser.add_argument(
-        "--sigma-diagnostics-batch-size", type=int, default=2,
-        help="Fixed training examples for dropout-free epoch sensitivity probes.",
-    )
     parser.add_argument("--save-total-limit", type=int, default=1)
     parser.add_argument(
         "--group-by-length",
@@ -289,35 +225,24 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--resume-from-checkpoint")
     parser.add_argument("--report-to", action="append", default=[])
     parser.add_argument("--use-cpu", action="store_true")
+    parser.set_defaults(
+        gaze_redistribution="none", gaze_relation="none", readout="last-token",
+        redistribution_learning_rate=None, redistribution_weight_decay=None,
+        gaze_relation_learning_rate=None, gaze_relation_weight_decay=None,
+    )
     return parser
 
 
 def _redistribution_config(args: argparse.Namespace) -> dict[str, object]:
-    """Resolve CLI redistribution options into the persisted model contract."""
+    """Record the original raw-gaze identity for checkpoint compatibility."""
 
-    return redistribution_contract(
-        args.gaze_redistribution,
-        init_sigma_left=args.redistribution_sigma_left,
-        init_sigma_right=args.redistribution_sigma_right,
-        min_sigma=args.redistribution_min_sigma,
-        gaze_fusion=args.gaze_fusion,
-        feature_indices=(
-            args.gaze_feature_indices if args.gaze_fusion == "prefix-concat" else ()
-        ),
-    )
+    return {"method": "none"}
 
 
 def _gaze_relation_config(args: argparse.Namespace) -> dict[str, object]:
-    """Resolve relation input and its reproducible control into the saved contract."""
+    """Record ordinary backbone attention for checkpoint compatibility."""
 
-    input_mode = args.gaze_relation_input
-    shuffle_seed = args.gaze_relation_shuffle_seed
-    if input_mode == "shuffled" and shuffle_seed is None:
-        shuffle_seed = args.seed
-    return gaze_relation_contract(
-        args.gaze_relation, scale=args.gaze_relation_scale,
-        input_mode=input_mode, shuffle_seed=shuffle_seed,
-    )
+    return gaze_relation_contract()
 
 
 def _validate_args(args: argparse.Namespace) -> None:
@@ -326,58 +251,6 @@ def _validate_args(args: argparse.Namespace) -> None:
     gaze_feature_indices = et2_feature_indices_from_names(args.gaze_features)
     args.gaze_feature_indices = gaze_feature_indices
     args.gaze_features = et2_feature_names_from_indices(gaze_feature_indices)
-    if args.gaze_redistribution == "none" and (
-        args.redistribution_sigma_left != 1.0
-        or args.redistribution_sigma_right != 1.0
-        or args.redistribution_min_sigma != 1e-6
-    ):
-        raise ValueError(
-            "Redistribution sigma options require --gaze-redistribution "
-            "fixed-gaussian or asym-gaussian."
-        )
-    if args.gaze_redistribution != "asym-gaussian":
-        if args.redistribution_learning_rate is not None:
-            raise ValueError(
-                "--redistribution-learning-rate requires "
-                "--gaze-redistribution asym-gaussian."
-            )
-        args.redistribution_weight_decay = None
-    else:
-        if args.redistribution_learning_rate is None:
-            args.redistribution_learning_rate = DEFAULT_REDISTRIBUTION_LEARNING_RATE
-        if (
-            not math.isfinite(args.redistribution_learning_rate)
-            or args.redistribution_learning_rate <= 0
-        ):
-            raise ValueError("--redistribution-learning-rate must be finite and positive.")
-        args.redistribution_weight_decay = REDISTRIBUTION_WEIGHT_DECAY
-    _redistribution_config(args)
-    relation = validate_gaze_relation_setup(
-        _gaze_relation_config(args),
-        readout=readout_contract(args.readout),
-        gaze_fusion=args.gaze_fusion, feature_indices=args.gaze_feature_indices,
-        gaze_redistribution=_redistribution_config(args),
-        attn_implementation=args.attn_implementation,
-    )
-    if relation["method"] == "none":
-        if args.gaze_relation_learning_rate is not None:
-            raise ValueError("--gaze-relation-learning-rate requires an enabled --gaze-relation method.")
-        args.gaze_relation_weight_decay = None
-    else:
-        args.attn_implementation = "eager"
-        if args.gaze_relation_learning_rate is None:
-            args.gaze_relation_learning_rate = 1e-3
-        if not math.isfinite(args.gaze_relation_learning_rate) or args.gaze_relation_learning_rate <= 0:
-            raise ValueError("--gaze-relation-learning-rate must be finite and positive.")
-        args.gaze_relation_weight_decay = 0.0
-    if args.sigma_diagnostics_steps < 0 or args.sigma_diagnostics_batch_size <= 0:
-        raise ValueError("Sigma diagnostics require nonnegative steps and positive batch size.")
-    if args.sigma_diagnostics_steps and (
-        args.gaze_fusion != "prefix-concat" or args.gaze_feature_indices != (3,)
-    ):
-        raise ValueError("Sigma diagnostics require prefix-concat with TRT only.")
-    if args.sigma_diagnostics_steps and args.precision == "fp16":
-        raise ValueError("Sigma diagnostics support fp32/bf16; FP16 gradients are scaled.")
     if args.run_name:
         args.run_name = validate_run_name(args.run_name)
         normalized_run_name = args.run_name.lower()
@@ -601,37 +474,6 @@ def _cuda_memory_snapshot(use_cpu: bool) -> dict[str, object]:
     }
 
 
-def _validate_redistribution_checkpoint(checkpoint_path: Path) -> None:
-    """Check learned Gaussian widths without deserializing unsafe checkpoint files."""
-
-    weights_path = checkpoint_path / "model.safetensors"
-    if weights_path.is_symlink() or not weights_path.is_file():
-        raise ValueError(
-            "Enabled gaze_redistribution resume requires a regular single-file "
-            f"model.safetensors checkpoint: {weights_path}."
-        )
-    unsupported_names = (
-        "model.safetensors.index.json",
-        "pytorch_model.bin",
-        "pytorch_model.bin.index.json",
-        "adapter_model.safetensors",
-        "adapter_model.bin",
-        "adapter_model.safetensors.index.json",
-    )
-    unsupported = [
-        name
-        for name in unsupported_names
-        if (checkpoint_path / name).exists() or (checkpoint_path / name).is_symlink()
-    ]
-    if unsupported:
-        raise ValueError(
-            "Enabled gaze_redistribution resume supports only ordinary single-file "
-            "Trainer safetensors; unsupported or ambiguous weight layout: "
-            + ", ".join(unsupported)
-        )
-    validate_redistribution_state_file(weights_path)
-
-
 def _validate_resume_contract(
     args: argparse.Namespace,
     fold_output: Path,
@@ -810,13 +652,6 @@ def _validate_resume_contract(
         recorded_manifest["architecture_manifest_version"] = ARCHITECTURE_MANIFEST_VERSION
     if expected_manifest.get("finetuning_mode") == "lora":
         contract_fields += ("lora_rank", "lora_alpha", "lora_dropout")
-    if expected_manifest["gaze_redistribution"]["method"] != "none":
-        contract_fields += (
-            "redistribution_learning_rate",
-            "redistribution_weight_decay",
-        )
-    if expected_manifest["gaze_relation"]["method"] != "none":
-        contract_fields += ("gaze_relation_learning_rate", "gaze_relation_weight_decay")
     mismatches = []
     for field in contract_fields:
         expected_value = _json_ready(expected_manifest[field])
@@ -834,8 +669,6 @@ def _validate_resume_contract(
             "incompatible weights:\n- "
             + "\n- ".join(mismatches)
         )
-    if expected_manifest["gaze_redistribution"]["method"] != "none":
-        _validate_redistribution_checkpoint(checkpoint_path)
     return recorded_schema
 
 
@@ -1020,12 +853,6 @@ def run(args: argparse.Namespace) -> Path | None:
         print(f"Gaze relation: {_gaze_relation_config(args)}")
         print(f"Readout: {readout_contract(args.readout)}")
         print(f"Prediction distribution: {prediction_contract(args.loss)}")
-        if args.gaze_redistribution == "asym-gaussian":
-            print(
-                "Redistribution optimizer: "
-                f"learning rate={args.redistribution_learning_rate:g}; "
-                f"weight decay={args.redistribution_weight_decay:g}"
-            )
         print(
             "Dry run complete; Trainer arguments are compatible and no tokenizer "
             "or model was downloaded."
@@ -1068,12 +895,6 @@ def run(args: argparse.Namespace) -> Path | None:
         if active_feature_indices
         else (0,) * len(ET2_FEATURE_NAMES)
     )
-    if args.gaze_redistribution == "asym-gaussian":
-        print(
-            "Redistribution optimizer: "
-            f"log-sigma learning rate={args.redistribution_learning_rate:g}; "
-            f"weight decay={args.redistribution_weight_decay:g}."
-        )
 
     run_manifest = {
         **vars(args),
@@ -1081,9 +902,7 @@ def run(args: argparse.Namespace) -> Path | None:
         "gaze_relation": _gaze_relation_config(args),
         "readout": readout_contract(args.readout),
         "prediction_distribution": prediction_contract(loss_name),
-        "gaze_relation_implementation": (
-            GAZE_RELATION_IMPLEMENTATION if args.gaze_relation != "none" else None
-        ),
+        "gaze_relation_implementation": None,
         "gaze_alignment": (
             _json_ready(GAZE_ALIGNMENT_CONTRACT)
             if args.gaze_fusion == "prefix-concat"
@@ -1137,8 +956,6 @@ def run(args: argparse.Namespace) -> Path | None:
     }
     print(f"Readout: {run_manifest['readout']}")
     print(f"Prediction distribution: {run_manifest['prediction_distribution']}")
-    if args.gaze_relation != "none":
-        print(f"Gaze relation implementation: {GAZE_RELATION_IMPLEMENTATION} (FP32 anchor pairs; eager attention).")
     delta_dispatch = run_manifest["training_kernels"]["dispatch"]["torch_chunk_gated_delta_rule"]
     print(f"Qwen linear-attention implementation: {delta_dispatch['selected'] or 'unresolved'}")
     if not args.use_cpu and not delta_dispatch["is_fla"]:
@@ -1224,9 +1041,7 @@ def run(args: argparse.Namespace) -> Path | None:
             validate_saved_trainable_precision(
                 model, Path(args.resume_from_checkpoint) / "model.safetensors"
             )
-            validate_saved_gaze_relation(model, Path(args.resume_from_checkpoint) / "model.safetensors")
-            validate_saved_readout(model, Path(args.resume_from_checkpoint) / "model.safetensors")
-            validate_saved_variance_head(model, Path(args.resume_from_checkpoint) / "model.safetensors")
+            reject_experimental_weights(Path(args.resume_from_checkpoint) / "model.safetensors")
         parameter_summary = model.trainable_parameter_summary()
         print(
             "Trainable parameters: "
@@ -1253,22 +1068,8 @@ def run(args: argparse.Namespace) -> Path | None:
             processing_class=tokenizer,
             compute_metrics=trainer_compute_metrics,
             loss_name=loss_name,
-            redistribution_learning_rate=args.redistribution_learning_rate,
-            gaze_relation_learning_rate=args.gaze_relation_learning_rate,
         )
-        if args.sigma_diagnostics_steps:
-            from decoder_va.sigma_diagnostics import attach_sigma_diagnostics
-
-            attach_sigma_diagnostics(
-                trainer, fold_output,
-                every_steps=args.sigma_diagnostics_steps,
-                batch_size=args.sigma_diagnostics_batch_size,
-            )
         trainer.train(resume_from_checkpoint=args.resume_from_checkpoint)
-        if run_manifest["gaze_relation"]["method"] != "none":
-            write_gaze_relation_report(model, fold_output)
-        if args.sigma_diagnostics_steps:
-            trainer.save_state()
         trainer.save_model(str(fold_output / "final_model"))
         model.save_architecture_manifest(fold_output / "final_model")
         prediction_output = trainer.predict(eval_dataset)

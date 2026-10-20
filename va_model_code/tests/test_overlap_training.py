@@ -11,6 +11,8 @@ import numpy as np
 import pandas as pd
 import pytest
 
+from va_model_code.decoder_va.filters import TRAIN_EVAL_TEXT_OVERLAP_CONTRACT
+
 
 VA_MODEL_ROOT = Path(__file__).resolve().parents[1]
 if str(VA_MODEL_ROOT) not in sys.path:
@@ -132,7 +134,7 @@ def test_run_excludes_overlap_from_training_and_keeps_evaluation_reuse(offline_o
         assert manifest["training_rows"] == 2
         assert manifest["evaluation_rows"] == len(originals[fold])
         assert manifest["training_text_overlap"] == {
-            "contract": train_model_module.TRAIN_EVAL_TEXT_OVERLAP_CONTRACT,
+            "contract": TRAIN_EVAL_TEXT_OVERLAP_CONTRACT,
             "train_rows_before": len(originals[3 - fold]),
             "train_rows_after": 2,
             "excluded_train_rows": expected_excluded[fold],
@@ -147,7 +149,7 @@ def test_run_excludes_overlap_from_training_and_keeps_evaluation_reuse(offline_o
 
     assert len(run.observed["predictions"]) == 2
     root_manifest = json.loads((run.run_root / "training_parameters.json").read_text())
-    assert root_manifest["training_text_overlap_contract"] == train_model_module.TRAIN_EVAL_TEXT_OVERLAP_CONTRACT
+    assert root_manifest["training_text_overlap_contract"] == TRAIN_EVAL_TEXT_OVERLAP_CONTRACT
     assert root_manifest["dataset_counts_after_filter"] == {"Emobank": 7}
     oof = pd.read_csv(run.run_root / "oof_predictions.tsv", sep="\t")
     assert len(oof) == 7

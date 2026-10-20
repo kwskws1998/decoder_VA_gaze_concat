@@ -18,13 +18,12 @@ from typing import Mapping, Sequence
 import uuid
 import zipfile
 
-import numpy as np
 import pandas as pd
 
 if __package__:
     from .decoder_va.contracts import LOSS_CHOICES, MODEL_ALIASES
     from .decoder_va.evaluation import calculate_va_metrics, prediction_array_from_frame
-    from .decoder_va.uncertainty import saved_prediction_contract, UNCERTAINTY_TABLE_COLUMNS
+    from .decoder_va.baseline_contracts import saved_prediction_contract
     from .decoder_va.filters import (
         SENTENCE_ONLY_DATASET_NAMES,
         apply_training_text_overlap_policy,
@@ -32,9 +31,8 @@ if __package__:
         validate_training_text_overlap_contract,
     )
     from .decoder_va.gaze import ET2_FEATURE_NAMES
-    from .decoder_va.gaze_relation import gaze_relation_contract, validate_gaze_relation_contract
-    from .decoder_va.gaze_relation_reporting import validate_gaze_relation_report
-    from .decoder_va.readout import (
+    from .decoder_va.baseline_contracts import gaze_relation_contract, validate_gaze_relation_contract
+    from .decoder_va.baseline_contracts import (
         saved_readout_contract, readout_pooling_position, readout_concat_order,
     )
     from .decoder_va.model import (
@@ -60,11 +58,11 @@ if __package__:
         resolve_run_directory,
         validate_run_name,
     )
-    from .decoder_va.redistribution import validate_redistribution_contract
+    from .decoder_va.baseline_contracts import validate_redistribution_contract
 else:
     from decoder_va.contracts import LOSS_CHOICES, MODEL_ALIASES
     from decoder_va.evaluation import calculate_va_metrics, prediction_array_from_frame
-    from decoder_va.uncertainty import saved_prediction_contract, UNCERTAINTY_TABLE_COLUMNS
+    from decoder_va.baseline_contracts import saved_prediction_contract
     from decoder_va.filters import (
         SENTENCE_ONLY_DATASET_NAMES,
         apply_training_text_overlap_policy,
@@ -72,9 +70,8 @@ else:
         validate_training_text_overlap_contract,
     )
     from decoder_va.gaze import ET2_FEATURE_NAMES
-    from decoder_va.gaze_relation import gaze_relation_contract, validate_gaze_relation_contract
-    from decoder_va.gaze_relation_reporting import validate_gaze_relation_report
-    from decoder_va.readout import (
+    from decoder_va.baseline_contracts import gaze_relation_contract, validate_gaze_relation_contract
+    from decoder_va.baseline_contracts import (
         saved_readout_contract, readout_pooling_position, readout_concat_order,
     )
     from decoder_va.model import (
@@ -100,7 +97,7 @@ else:
         resolve_run_directory,
         validate_run_name,
     )
-    from decoder_va.redistribution import validate_redistribution_contract
+    from decoder_va.baseline_contracts import validate_redistribution_contract
 
 
 ROOT_RESULT_FILES = (
@@ -732,16 +729,6 @@ def _select_result_paths(
     for fold in sorted(recorded_folds):
         fold_root = Path(f"heldout_fold{fold}")
         relative_paths.extend(fold_root / name for name in FOLD_RESULT_FILES)
-        relation_report = run_dir / fold_root / "gaze_relation_parameters.json"
-        if relation_report.exists() or relation_report.is_symlink():
-            relative_paths.append(relation_report.relative_to(run_dir))
-        elif (
-            parameters["architecture_manifest_version"] > PRE_READOUT_MANIFEST_VERSION
-            and _saved_relation_contract(parameters, parameters, label="training_parameters.json")["method"] != "none"
-        ):
-            raise FileNotFoundError(
-                f"Current rotation run is missing gaze_relation_parameters.json: {relation_report}"
-            )
         checkpoint_root = run_dir / fold_root / "checkpoints"
         if checkpoint_root.is_symlink() or not checkpoint_root.is_dir():
             raise FileNotFoundError(
@@ -1190,9 +1177,7 @@ def _validate_result_contract(
         distribution = saved_prediction_contract(
             parameters, schema_version=parameters["architecture_manifest_version"], context="training_parameters.json"
         )
-        expected_columns = PREDICTION_COLUMNS + (
-            UNCERTAINTY_TABLE_COLUMNS if distribution["family"] == "diagonal_gaussian" else ()
-        )
+        expected_columns = PREDICTION_COLUMNS
         if headers != expected_columns:
             raise ValueError(
                 f"{prediction_label} must contain exactly the prediction columns in canonical order "
@@ -1250,15 +1235,6 @@ def _validate_result_contract(
             architecture_label,
         )
         _validate_architecture(architecture, parameters, fold=fold)
-        relation_report_label = f"{fold_prefix}/gaze_relation_parameters.json"
-        if relation_report_label in snapshots:
-            validate_gaze_relation_report(
-                _load_json_object(snapshots[relation_report_label], relation_report_label),
-                expected_contract=_saved_relation_contract(
-                    parameters, parameters, label="training_parameters.json",
-                ),
-                expected_layers=architecture.get("gaze_relation_layers"),
-            )
         trainer_states = [
             name
             for name in snapshots

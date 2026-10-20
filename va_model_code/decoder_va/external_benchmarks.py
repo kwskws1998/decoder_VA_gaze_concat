@@ -30,7 +30,7 @@ from torch.utils.data import Dataset
 
 from .downloads import sha256_file
 from .evaluation import calculate_va_metrics, prediction_array_from_frame
-from .uncertainty import saved_prediction_contract, UNCERTAINTY_TABLE_COLUMNS
+from .baseline_contracts import saved_prediction_contract
 from .filters import (
     SENTENCE_ONLY_DATASET_NAMES,
     apply_training_text_overlap_policy,
@@ -55,8 +55,8 @@ from .model import (
     validate_precision_contract,
 )
 from .preprocessing import FOLD_FILENAMES
-from .redistribution import validate_redistribution_contract
-from .readout import saved_readout_contract, readout_pooling_position, readout_concat_order
+from .baseline_contracts import validate_redistribution_contract
+from .baseline_contracts import saved_readout_contract, readout_pooling_position, readout_concat_order
 
 
 EXTERNAL_EVALUATION_SCHEMA_VERSION = 1
@@ -1710,7 +1710,7 @@ def _read_persisted_prediction_table(
         )
     except (OSError, pd.errors.ParserError, UnicodeDecodeError) as exc:
         raise ValueError(f"Cannot read {description}: {path}") from exc
-    if tuple(frame.columns) not in (PERSISTED_PREDICTION_COLUMNS, PERSISTED_PREDICTION_COLUMNS + UNCERTAINTY_TABLE_COLUMNS):
+    if tuple(frame.columns) != PERSISTED_PREDICTION_COLUMNS:
         raise ValueError(
             f"{description} must contain the canonical internal prediction columns."
         )
@@ -2384,9 +2384,7 @@ def discover_completed_run(
                 prediction_path,
                 description=f"held-out fold {held_out_fold} predictions",
             )
-            expected_columns = PERSISTED_PREDICTION_COLUMNS + (
-                UNCERTAINTY_TABLE_COLUMNS if expected_distribution["family"] == "diagonal_gaussian" else ()
-            )
+            expected_columns = PERSISTED_PREDICTION_COLUMNS
             if tuple(prediction_frame.columns) != expected_columns:
                 raise ValueError("Fold prediction columns disagree with prediction_distribution.")
             if len(prediction_frame) != run_manifest["evaluation_rows"]:

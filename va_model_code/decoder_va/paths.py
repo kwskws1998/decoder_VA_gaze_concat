@@ -8,10 +8,10 @@ import re
 from typing import Mapping, Sequence
 
 from .gaze import et2_feature_indices_from_names
-from .redistribution import validate_redistribution_contract
-from .gaze_relation import gaze_relation_contract, validate_gaze_relation_contract
-from .readout import readout_contract, validate_readout_contract
-from .uncertainty import prediction_contract, validate_prediction_contract
+from .baseline_contracts import validate_redistribution_contract
+from .baseline_contracts import gaze_relation_contract, validate_gaze_relation_contract
+from .baseline_contracts import readout_contract, validate_readout_contract
+from .baseline_contracts import prediction_contract, validate_prediction_contract
 
 
 ACTIVE_CODE_ROOT = Path(__file__).resolve().parents[1]
@@ -75,7 +75,7 @@ def condition_slug(
             for value in gaze_features
         )
         condition = f"gaze_{feature_slug}"
-    redistribution = validate_redistribution_contract(
+    validate_redistribution_contract(
         {"method": "none"} if gaze_redistribution is None else gaze_redistribution,
         gaze_fusion=gaze_fusion,
         feature_indices=(
@@ -84,33 +84,14 @@ def condition_slug(
             else ()
         ),
     )
-    if redistribution["method"] != "none":
-        condition += f"_redistribution_{redistribution['method']}"
-    relation = validate_gaze_relation_contract(
+    validate_gaze_relation_contract(
         gaze_relation_contract() if gaze_relation is None else gaze_relation
     )
-    pooling = validate_readout_contract(readout_contract() if readout is None else readout)
-    if pooling["mode"] != "last-token":
-        condition += f"_readout_{pooling['mode']}"
-    if relation["method"] == "trt-readout-rotation" and pooling["mode"] != "learned-token":
-        raise ValueError("TRT readout rotation requires learned-token readout.")
-    if relation["method"] == "trt-relative-rotation" and pooling["mode"] != "last-token":
-        raise ValueError("Legacy TRT relative rotation requires last-token readout.")
-    if relation["method"] != "none":
-        if gaze_fusion != "prefix-concat" or "TRT" not in gaze_features:
-            raise ValueError("A TRT relation condition requires a TRT gaze prefix.")
-        if redistribution["method"] != "none":
-            raise ValueError("A TRT relation condition requires raw, unredistributed TRT.")
-        scale_slug = repr(float(relation["scale"])).replace("+", "")
-        condition += f"_relation_{relation['method']}_scale{scale_slug}"
-        if relation.get("input_mode", "aligned") == "shuffled":
-            condition += f"_shuffled{relation['shuffle_seed']}"
+    validate_readout_contract(readout_contract() if readout is None else readout)
     scope = "_sentence_only" if sentence_only else ""
-    distribution = validate_prediction_contract(
+    validate_prediction_contract(
         prediction_contract() if prediction_distribution is None else prediction_distribution
     )
-    if distribution["family"] != "point":
-        condition += "_heteroscedastic"
     exclusion = "_no_iemocap" if no_iemocap else ""
     return f"{model_slug}_{mode_slug}_{condition}{scope}{exclusion}_seed{int(seed)}"
 

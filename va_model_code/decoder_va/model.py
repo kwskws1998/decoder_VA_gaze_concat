@@ -6,6 +6,7 @@ import copy
 import inspect
 import json
 from collections.abc import Mapping
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Sequence
 
@@ -25,20 +26,13 @@ from .gaze import (
     et2_features_used_from_indices,
     normalize_et2_feature_indices,
 )
-from .packing import PackedCausalInputs, append_readout_token, pack_prefix_gaze
-from .uncertainty import (
+from .packing import pack_prefix_gaze
+from .baseline_contracts import (
     prediction_contract, validate_prediction_contract, saved_prediction_contract,
-    make_variance_head, log_variance_from_raw, validate_saved_variance_head,
-)
-from .readout import (
     readout_contract, validate_readout_contract, saved_readout_contract,
     readout_pooling_position, readout_concat_order,
-)
-from .gaze_relation import gaze_relation_contract, validate_gaze_relation_contract
-from .redistribution import (
-    GazeRedistributor,
-    validate_redistribution_contract,
-    validate_redistribution_state_file,
+    gaze_relation_contract, validate_gaze_relation_contract,
+    validate_redistribution_contract, reject_experimental_weights,
 )
 
 
@@ -159,51 +153,6 @@ def validate_saved_trainable_precision(model: nn.Module, weights_path: str | Pat
                     raise ValueError(f"Saved trainable parameter {name!r} must be FP32.")
 
 
-def validate_saved_gaze_relation(model: nn.Module, weights_path: str | Path) -> None:
-    """Reject absent, unexpected, malformed, or nonfinite relation checkpoint weights."""
-
-    from safetensors import safe_open
-
-    expected = {
-        name: parameter for name, parameter in model.named_parameters()
-        if name.endswith("gaze_relative_rotation.alpha")
-    }
-    with safe_open(weights_path, framework="pt", device="cpu") as saved:
-        available = {name for name in saved.keys() if name.endswith("gaze_relative_rotation.alpha")}
-        if available != set(expected):
-            raise ValueError("Saved gaze_relation parameter keys disagree with the model contract.")
-        for name, parameter in expected.items():
-            value = saved.get_tensor(name)
-            if value.dtype != torch.float32 or value.shape != parameter.shape:
-                raise ValueError(f"Saved gaze_relation parameter {name!r} has incompatible shape or dtype.")
-            if not bool(torch.isfinite(value).all().item()):
-                raise ValueError(f"Saved gaze_relation parameter {name!r} must be finite.")
-
-
-def validate_saved_readout(model: nn.Module, weights_path: str | Path) -> None:
-    """Reject missing, extra, malformed, or nonfinite learned readout checkpoint values."""
-
-    from safetensors import safe_open
-
-    expected = {
-        name: parameter for name, parameter in model.named_parameters()
-        if name == "readout_token" or name.endswith(".readout_token")
-    }
-    with safe_open(weights_path, framework="pt", device="cpu") as saved:
-        available = {
-            name for name in saved.keys()
-            if name == "readout_token" or name.endswith(".readout_token")
-        }
-        if available != set(expected):
-            raise ValueError("Saved readout parameter keys disagree with the model contract.")
-        for name, parameter in expected.items():
-            value = saved.get_tensor(name)
-            if value.dtype != torch.float32 or value.shape != parameter.shape:
-                raise ValueError(f"Saved readout parameter {name!r} has incompatible shape or dtype.")
-            if not bool(torch.isfinite(value).all().item()):
-                raise ValueError(f"Saved readout parameter {name!r} must be finite.")
-
-
 def validate_precision_contract(value: Any, *, context: str) -> dict[str, Any]:
     """Reject saved semantics that predate FP32 weights and FP32 regression output."""
 
@@ -250,28 +199,27 @@ def validate_gaze_relation_setup(
     gaze_redistribution: Mapping, attn_implementation: str | None = None,
     readout: Mapping | None = None,
 ) -> dict[str, Any]:
-    """Require raw TRT prefix input and eager attention for the relation experiment."""
+    """Validate disabled experimental identities in existing baseline manifests."""
 
-    relation = validate_gaze_relation_contract(
-        gaze_relation_contract() if value is None else value
+    validate_readout_contract(readout_contract() if readout is None else readout)
+    validate_redistribution_contract(
+        gaze_redistribution, gaze_fusion=gaze_fusion, feature_indices=feature_indices,
     )
-    pooling = validate_readout_contract(readout_contract() if readout is None else readout)
-    if relation["method"] == "trt-readout-rotation" and pooling["mode"] != "learned-token":
-        raise ValueError("trt-readout-rotation requires learned-token readout.")
-    if relation["method"] == "trt-relative-rotation" and pooling["mode"] != "last-token":
-        raise ValueError("Legacy trt-relative-rotation requires last-token readout; use trt-readout-rotation.")
-    if relation["method"] != "none":
-        if gaze_fusion != "prefix-concat" or 3 not in feature_indices:
-            raise ValueError("TRT gaze_relation requires prefix-concat with the TRT feature.")
-        if gaze_redistribution["method"] != "none":
-            raise ValueError("gaze_relation requires raw TRT; disable gaze_redistribution.")
-        if attn_implementation not in (None, "eager"):
-            raise ValueError("gaze_relation currently requires attn_implementation='eager'.")
-    return relation
+    return validate_gaze_relation_contract(gaze_relation_contract() if value is None else value)
+
+
+@dataclass
+class EncodedVAFeatures:
+    """Expose shared encoder features without coupling the baseline to another head."""
+
+    pooled: torch.Tensor
+    text_hidden: torch.Tensor | None = None
+    raw_gaze: torch.Tensor | None = None
+    gaze_mask: torch.Tensor | None = None
 
 
 class DecoderVARegressor(nn.Module):
-    """Pool a causal decoder at the final valid text token or an explicit learned readout."""
+    """Pool the original causal decoder at the final valid text token."""
 
     supports_gradient_checkpointing = True
 
@@ -335,11 +283,6 @@ class DecoderVARegressor(nn.Module):
             gaze_fusion=self.gaze_fusion,
             feature_indices=() if provider_indices is None else provider_indices,
         )
-        self.gaze_redistributor = (
-            GazeRedistributor(self.gaze_redistribution, provider_indices)
-            if self.gaze_redistribution["method"] != "none"
-            else None
-        )
         self.gaze_relation = validate_gaze_relation_setup(
             gaze_relation, gaze_fusion=self.gaze_fusion,
             feature_indices=() if provider_indices is None else provider_indices,
@@ -347,12 +290,6 @@ class DecoderVARegressor(nn.Module):
             readout=self.readout,
         )
         self.gaze_relation_layers = []
-        if self.gaze_relation["method"] != "none":
-            from .gaze_attention import install_gaze_relative_attention
-
-            self.gaze_relation_layers = install_gaze_relative_attention(
-                self.backbone, scale=self.gaze_relation["scale"],
-            )
         if self.gaze_projection_dim <= 0:
             raise ValueError("gaze_projection_dim must be positive.")
         if len(self.gaze_projection_dropout) != 2:
@@ -397,15 +334,6 @@ class DecoderVARegressor(nn.Module):
             self.gaze_projector = None
             self.register_parameter("eye_start", None)
             self.register_parameter("eye_end", None)
-        if self.readout["mode"] == "learned-token":
-            self.readout_token = nn.Parameter(torch.empty(self.hidden_size, dtype=torch.float32))
-            nn.init.normal_(self.readout_token, mean=0.0, std=0.02)
-        else:
-            self.register_parameter("readout_token", None)
-        self.variance_head = (
-            make_variance_head(self.hidden_size)
-            if self.prediction_distribution["family"] == "diagonal_gaussian" else None
-        )
         self.config.prediction_distribution = copy.deepcopy(self.prediction_distribution)
         self.config.readout = copy.deepcopy(self.readout)
         self.config.num_labels = self.output_dim
@@ -501,12 +429,6 @@ class DecoderVARegressor(nn.Module):
             raise ValueError("attention_mask must use contiguous right padding.")
         positions = mask_bool.to(dtype=torch.long).cumsum(dim=1) - 1
         positions = positions.masked_fill(~mask_bool, 0)
-        if self.readout_token is not None:
-            packed = append_readout_token(
-                PackedCausalInputs(text_embeddings, attention_mask, positions, lengths - 1),
-                self.readout_token,
-            )
-            return packed.inputs_embeds, packed.attention_mask, packed.position_ids, packed.pooling_positions
         return text_embeddings, attention_mask, positions, lengths - 1
 
     def _gaze_inputs(
@@ -514,33 +436,18 @@ class DecoderVARegressor(nn.Module):
         input_ids: torch.Tensor,
         attention_mask: torch.Tensor,
         text_embeddings: torch.Tensor,
-    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, dict]:
-        """Infer raw ET2 channels, optionally redistribute TRT, then project/pack."""
+        gaze_features: tuple[torch.Tensor, torch.Tensor] | None = None,
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+        """Project frozen raw ET2 features and pack the original gaze prefix."""
 
-        raw_gaze, gaze_mask = self.gaze_provider.compute(input_ids, attention_mask)
-        if self.gaze_redistributor is not None:
-            if gaze_mask.shape != attention_mask.shape:
-                raise ValueError("gaze_mask must match the text attention_mask shape.")
-            if gaze_mask.device != attention_mask.device:
-                raise ValueError("gaze_mask and attention_mask must share a device.")
-            if bool((gaze_mask.bool() & ~attention_mask.bool()).any().item()):
-                raise ValueError("Valid gaze positions must also be valid text positions.")
-            raw_gaze = self.gaze_redistributor(raw_gaze, gaze_mask)
-            raw_gaze = torch.where(gaze_mask.bool().unsqueeze(-1), raw_gaze, 0.0)
+        raw_gaze, gaze_mask = (
+            self.gaze_provider.compute(input_ids, attention_mask)
+            if gaze_features is None else gaze_features
+        )
         projector_dtype = next(self.gaze_projector.parameters()).dtype
         projected_gaze = self.gaze_projector(
             raw_gaze.to(device=text_embeddings.device, dtype=projector_dtype)
         ).to(dtype=text_embeddings.dtype)
-        relation_values = None
-        if self.gaze_relation["method"] != "none":
-            relation_values = raw_gaze[..., tuple(self.gaze_provider.feature_indices).index(3)]
-            if self.gaze_relation.get("input_mode", "aligned") == "shuffled":
-                from .gaze_relation_inputs import shuffle_relation_trt
-
-                relation_values = shuffle_relation_trt(
-                    relation_values, input_ids, attention_mask, gaze_mask,
-                    seed=self.gaze_relation["shuffle_seed"],
-                )
         packed = pack_prefix_gaze(
             text_embeddings=text_embeddings,
             text_attention_mask=attention_mask,
@@ -548,39 +455,18 @@ class DecoderVARegressor(nn.Module):
             gaze_mask=gaze_mask,
             eye_start=self.eye_start,
             eye_end=self.eye_end,
-            text_gaze_values=relation_values,
         )
-        if self.readout_token is not None:
-            packed = append_readout_token(
-                packed, self.readout_token,
-                relation_reference=self.gaze_relation["method"] == "trt-readout-rotation",
-            )
-        relation_kwargs = {}
-        if self.gaze_relation["method"] != "none":
-            relation_kwargs = {
-                "gaze_relation_values": packed.text_gaze_values,
-                "gaze_relation_mask": packed.text_gaze_mask,
-                "gaze_relation_indices": packed.text_gaze_indices,
-                "gaze_relation_anchor_mask": packed.text_gaze_anchor_mask,
-            }
-        return (
-            packed.inputs_embeds,
-            packed.attention_mask,
-            packed.position_ids,
-            packed.pooling_positions,
-            relation_kwargs,
-        )
+        return packed.inputs_embeds, packed.attention_mask, packed.position_ids, packed.pooling_positions
 
-    def forward(
+    def encode(
         self,
         input_ids: torch.Tensor,
         attention_mask: torch.Tensor,
-        labels: torch.Tensor | None = None,
-        **kwargs,
-    ) -> SequenceClassifierOutput:
-        """Return bounded VA means, optionally followed by two unbounded log variances."""
+        *,
+        return_aligned_tokens: bool = False,
+    ) -> EncodedVAFeatures:
+        """Run Qwen once and optionally expose text-aligned contextual features."""
 
-        del labels, kwargs
         if input_ids.ndim != 2 or attention_mask.ndim != 2:
             raise ValueError("input_ids and attention_mask must both be rank-2.")
         if tuple(input_ids.shape) != tuple(attention_mask.shape):
@@ -589,12 +475,15 @@ class DecoderVARegressor(nn.Module):
             raise ValueError("input_ids and attention_mask must be on the same device.")
 
         text_embeddings = self.get_input_embeddings()(input_ids)
-        relation_kwargs = {}
+        gaze_features = None
         if self.gaze_fusion == "prefix-concat":
-            inputs_embeds, fused_mask, position_ids, pooling_positions, relation_kwargs = self._gaze_inputs(
+            if return_aligned_tokens:
+                gaze_features = self.gaze_provider.compute(input_ids, attention_mask)
+            inputs_embeds, fused_mask, position_ids, pooling_positions = self._gaze_inputs(
                 input_ids,
                 attention_mask,
                 text_embeddings,
+                gaze_features,
             )
         else:
             inputs_embeds, fused_mask, position_ids, pooling_positions = (
@@ -608,54 +497,51 @@ class DecoderVARegressor(nn.Module):
             position_ids=position_ids,
             use_cache=False,
             return_dict=True,
-            **relation_kwargs,
         )
         hidden = outputs.last_hidden_state
         row_indices = torch.arange(hidden.shape[0], device=hidden.device)
         pooled = hidden[row_indices, pooling_positions]
+        if not return_aligned_tokens:
+            return EncodedVAFeatures(pooled=pooled)
+        lengths = attention_mask.long().sum(1)
+        offsets = pooling_positions + 1 - lengths
+        positions = offsets[:, None] + torch.arange(input_ids.shape[1], device=hidden.device)
+        positions = positions.clamp_max(hidden.shape[1] - 1)
+        text_hidden = hidden.gather(1, positions[..., None].expand(-1, -1, hidden.shape[-1]))
+        text_hidden = text_hidden.masked_fill(~attention_mask.bool()[..., None], 0)
+        return EncodedVAFeatures(
+            pooled=pooled, text_hidden=text_hidden,
+            raw_gaze=None if gaze_features is None else gaze_features[0],
+            gaze_mask=None if gaze_features is None else gaze_features[1],
+        )
+
+    def forward(
+        self,
+        input_ids: torch.Tensor,
+        attention_mask: torch.Tensor,
+        labels: torch.Tensor | None = None,
+        **kwargs,
+    ) -> SequenceClassifierOutput:
+        """Return the original two bounded valence/arousal predictions."""
+
+        del labels, kwargs
+        pooled = self.encode(input_ids, attention_mask).pooled
         if any(parameter.dtype != torch.float32 for parameter in self.regression_head.parameters()):
             raise ValueError("The regression head must remain FP32; use autocast for mixed precision.")
         with torch.autocast(device_type=pooled.device.type, enabled=False):
             raw_logits = self.regression_head(pooled.float())
             logits = F.hardsigmoid(raw_logits)
-            if self.variance_head is not None:
-                if any(parameter.dtype != torch.float32 for parameter in self.variance_head.parameters()):
-                    raise ValueError("The variance head must remain FP32; use autocast for mixed precision.")
-                variance_features = self.regression_head[0](pooled.float())
-                log_variance = log_variance_from_raw(self.variance_head(variance_features))
-                logits = torch.cat((logits, log_variance), dim=-1)
         return SequenceClassifierOutput(logits=logits)
 
     def trainable_parameter_summary(self) -> dict[str, int | float]:
         """Return trainable and total parameter counts for run manifests."""
 
         total = sum(parameter.numel() for parameter in self.parameters())
-        trainable = sum(
-            parameter.numel()
-            for parameter in self.parameters()
-            if parameter.requires_grad
-        )
+        trainable = sum(parameter.numel() for parameter in self.parameters() if parameter.requires_grad)
         return {
             "total_parameters": int(total),
             "trainable_parameters": int(trainable),
             "trainable_fraction": float(trainable / total) if total else 0.0,
-            "variance_head_trainable_parameters": sum(
-                parameter.numel() for parameter in self.variance_head.parameters()
-            ) if self.variance_head is not None else 0,
-            "gaze_redistribution_trainable_parameters": sum(
-                parameter.numel()
-                for parameter in (
-                    self.gaze_redistributor.parameters()
-                    if self.gaze_redistributor is not None
-                    else ()
-                )
-                if parameter.requires_grad
-            ),
-            "readout_trainable_parameters": self.readout_token.numel() if self.readout_token is not None else 0,
-            "gaze_relation_trainable_parameters": sum(
-                parameter.numel() for name, parameter in self.named_parameters()
-                if name.endswith("gaze_relative_rotation.alpha") and parameter.requires_grad
-            ),
         }
 
     def save_architecture_manifest(self, output_dir: str | Path) -> Path:
@@ -896,8 +782,6 @@ def build_qwen_va_model(
         attn_implementation=attn_implementation,
         readout=normalized_readout,
     )
-    if normalized_relation["method"] != "none":
-        attn_implementation = "eager"
     active_feature_names = (
         et2_feature_names_from_indices(active_feature_indices)
         if active_feature_indices
@@ -1236,8 +1120,6 @@ def load_saved_decoder_va_model(
     elif et_model is not None:
         raise ValueError("Text-only models must not declare ET2 model metadata.")
 
-    if saved_redistribution["method"] != "none":
-        validate_redistribution_state_file(weights_path)
 
     if tokenizer is None:
         from transformers import AutoTokenizer
@@ -1287,9 +1169,7 @@ def load_saved_decoder_va_model(
     from safetensors.torch import load_model
 
     validate_saved_trainable_precision(model, weights_path)
-    validate_saved_gaze_relation(model, weights_path)
-    validate_saved_readout(model, weights_path)
-    validate_saved_variance_head(model, weights_path)
+    reject_experimental_weights(weights_path)
     load_model(model, weights_path, strict=True, device="cpu")
     model.eval()
     return model, tokenizer

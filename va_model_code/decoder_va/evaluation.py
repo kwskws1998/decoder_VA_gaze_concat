@@ -12,6 +12,8 @@ import pandas as pd
 from scipy import stats
 from sklearn.metrics import mean_absolute_error, mean_squared_error
 
+from .uncertainty import MIN_VARIANCE, MAX_LOG_VARIANCE, UNCERTAINTY_COLUMNS, UNCERTAINTY_TABLE_COLUMNS
+
 
 VA_NAMES = ("valence", "arousal")
 
@@ -20,9 +22,9 @@ def _as_prediction_array(predictions) -> np.ndarray:
     if isinstance(predictions, (tuple, list)):
         predictions = predictions[0]
     array = np.asarray(predictions, dtype=np.float64)
-    if array.ndim != 2 or array.shape[1] != 2:
+    if array.ndim != 2 or array.shape[1] not in (2, 4):
         raise ValueError(
-            "Predictions must have shape [examples, 2]; "
+            "Predictions must have shape [examples, 2] or [examples, 4] (VA means then log variances); "
             f"got {array.shape}."
         )
     return array
@@ -39,6 +41,10 @@ def _validate_arrays(labels, predictions) -> tuple[np.ndarray, np.ndarray]:
         raise ValueError("Cannot evaluate an empty dataset.")
     if not np.isfinite(label_array).all() or not np.isfinite(prediction_array).all():
         raise ValueError("Labels and predictions must contain only finite numbers.")
+    if prediction_array.shape[1] == 4:
+        log_variance = prediction_array[:, 2:]
+        if (log_variance < math.log(MIN_VARIANCE) - 1e-5).any() or (log_variance > MAX_LOG_VARIANCE).any():
+            raise ValueError("Predicted log variance violates the finite FP32 variance contract.")
     return label_array, prediction_array
 
 
@@ -85,7 +91,7 @@ def calculate_va_metrics(
     labels,
     predictions,
 ) -> dict[str, float]:
-    """Calculate point-regression metrics for valence and arousal."""
+    """Score VA means separately from optional Gaussian uncertainty in normalized label units."""
 
     label_array, prediction_array = _validate_arrays(labels, predictions)
     metrics: dict[str, float] = {"n_examples": int(label_array.shape[0])}
@@ -115,6 +121,36 @@ def calculate_va_metrics(
     metrics["mae_mean"] = _finite_mean(mae_values)
     metrics["pearson_corr_mean"] = _finite_mean(pearson_values)
     metrics["ccc_mean"] = _finite_mean(ccc_values)
+    if prediction_array.shape[1] == 4:
+        metrics.update(calculate_uncertainty_metrics(label_array, prediction_array))
+    return metrics
+
+
+def calculate_uncertainty_metrics(labels: np.ndarray, predictions: np.ndarray) -> dict[str, float]:
+    """Report proper NLL, error association and untruncated Gaussian interval calibration."""
+
+    metrics = {}
+    residual_squared = (labels - predictions[:, :2]) ** 2
+    log_variances = predictions[:, 2:]
+    variances = np.exp(log_variances)
+    for index, name in enumerate(VA_NAMES):
+        error = residual_squared[:, index]
+        variance = variances[:, index]
+        std = np.sqrt(variance)
+        metrics[f"gaussian_nll_{name}"] = float(np.mean(
+            0.5 * (math.log(2 * math.pi) + log_variances[:, index] + error / variance)
+        ))
+        metrics[f"pred_variance_mean_{name}"] = float(np.mean(variance))
+        metrics[f"pred_std_mean_{name}"] = float(np.mean(std))
+        metrics[f"standardized_mse_{name}"] = float(np.mean(error / variance))
+        metrics[f"variance_error_spearman_{name}"] = (
+            float(stats.spearmanr(variance, error).statistic)
+            if len(error) > 1 and np.ptp(variance) > 0 and np.ptp(error) > 0 else float("nan")
+        )
+        for coverage, z in ((90, 1.6448536269514722), (95, 1.959963984540054)):
+            metrics[f"coverage_{coverage}_{name}"] = float(np.mean(error <= z * z * variance))
+            metrics[f"interval_width_{coverage}_{name}"] = float(np.mean(2 * z * std))
+    metrics["gaussian_nll_mean"] = _finite_mean([metrics[f"gaussian_nll_{name}"] for name in VA_NAMES])
     return metrics
 
 
@@ -166,6 +202,13 @@ def prediction_frame(
     output["arousal"] = label_array[:, 1]
     output["pred_valence"] = prediction_array[:, 0]
     output["pred_arousal"] = prediction_array[:, 1]
+    if prediction_array.shape[1] == 4:
+        for index, name in enumerate(VA_NAMES):
+            output[UNCERTAINTY_COLUMNS[index]] = prediction_array[:, index + 2]
+        for index, name in enumerate(VA_NAMES):
+            output[f"pred_variance_{name}"] = np.exp(prediction_array[:, index + 2])
+        for index, name in enumerate(VA_NAMES):
+            output[f"pred_std_{name}"] = np.exp(0.5 * prediction_array[:, index + 2])
     return output
 
 
@@ -174,8 +217,28 @@ def metrics_from_prediction_frame(frame: pd.DataFrame) -> dict[str, float]:
 
     return calculate_va_metrics(
         frame.loc[:, ["valence", "arousal"]].to_numpy(),
-        frame.loc[:, ["pred_valence", "pred_arousal"]].to_numpy(),
+        prediction_array_from_frame(frame),
     )
+
+
+def prediction_array_from_frame(frame: pd.DataFrame) -> np.ndarray:
+    """Recover canonical model outputs and verify every exported variance/std against log variance."""
+
+    columns = ["pred_valence", "pred_arousal"]
+    present = set(UNCERTAINTY_TABLE_COLUMNS).intersection(frame.columns)
+    if present:
+        if present != set(UNCERTAINTY_TABLE_COLUMNS):
+            raise ValueError("Incomplete uncertainty columns in prediction table.")
+        columns += list(UNCERTAINTY_COLUMNS)
+        log_variances = frame.loc[:, list(UNCERTAINTY_COLUMNS)].to_numpy(dtype=np.float64)
+        if not np.isfinite(log_variances).all() or (log_variances > MAX_LOG_VARIANCE).any() or (log_variances < math.log(MIN_VARIANCE) - 1e-5).any():
+            raise ValueError("Invalid log variance in prediction table.")
+        for index, name in enumerate(VA_NAMES):
+            for prefix, exponent in (("pred_variance", 1.0), ("pred_std", 0.5)):
+                values = frame[f"{prefix}_{name}"].to_numpy(dtype=np.float64)
+                if not np.isfinite(values).all() or not np.allclose(values, np.exp(exponent * log_variances[:, index]), rtol=1e-6, atol=1e-12):
+                    raise ValueError(f"{prefix}_{name} disagrees with log variance.")
+    return frame.loc[:, columns].to_numpy(dtype=np.float64)
 
 
 def write_oof_reports(
@@ -187,6 +250,8 @@ def write_oof_reports(
 
     if not fold_frames:
         raise ValueError("At least one held-out fold prediction frame is required.")
+    if any(tuple(frame.columns) != tuple(fold_frames[0].columns) for frame in fold_frames):
+        raise ValueError("Fold prediction schemas must match before writing OOF reports.")
     output_path = Path(output_dir)
     output_path.mkdir(parents=True, exist_ok=True)
     combined = pd.concat(fold_frames, ignore_index=True)

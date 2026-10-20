@@ -151,6 +151,15 @@ readout with `--gaze-relation none`. Existing rotation checkpoints retain their
 original semantics. [Readout experiment commands and paired checkpoint diagnostics](READOUT_EXPERIMENTS.md)
 describe the new schema and validation; real-data improvement remains untested.
 
+## Heteroscedastic VA uncertainty
+
+The `heteroscedastic` loss adds two input-dependent variance outputs to the
+existing VA mean head. The requested experiments compare text-only VA with
+raw TRT prefix concat, both using the original last-text-token prediction.
+Best-checkpoint selection remains VA mean MSE; Gaussian NLL and uncertainty
+coverage/widths are reported separately. See
+[setup, sequential experiment commands, and output contracts](HETEROSCEDASTIC_EXPERIMENTS.md).
+
 ## Optional gaze redistribution
 
 For the matched raw/fixed/learned sigma diagnosis suite, environment setup,

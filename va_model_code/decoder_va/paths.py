@@ -11,6 +11,7 @@ from .gaze import et2_feature_indices_from_names
 from .redistribution import validate_redistribution_contract
 from .gaze_relation import gaze_relation_contract, validate_gaze_relation_contract
 from .readout import readout_contract, validate_readout_contract
+from .uncertainty import prediction_contract, validate_prediction_contract
 
 
 ACTIVE_CODE_ROOT = Path(__file__).resolve().parents[1]
@@ -54,6 +55,7 @@ def condition_slug(
     gaze_redistribution: Mapping[str, object] | None = None,
     gaze_relation: Mapping[str, object] | None = None,
     readout: Mapping[str, object] | None = None,
+    prediction_distribution: Mapping[str, object] | None = None,
 ) -> str:
     """Build a condition-identifying slug from the actual training contract."""
 
@@ -104,6 +106,11 @@ def condition_slug(
         if relation.get("input_mode", "aligned") == "shuffled":
             condition += f"_shuffled{relation['shuffle_seed']}"
     scope = "_sentence_only" if sentence_only else ""
+    distribution = validate_prediction_contract(
+        prediction_contract() if prediction_distribution is None else prediction_distribution
+    )
+    if distribution["family"] != "point":
+        condition += "_heteroscedastic"
     exclusion = "_no_iemocap" if no_iemocap else ""
     return f"{model_slug}_{mode_slug}_{condition}{scope}{exclusion}_seed{int(seed)}"
 
@@ -121,6 +128,7 @@ def default_run_name(
     gaze_redistribution: Mapping[str, object] | None = None,
     gaze_relation: Mapping[str, object] | None = None,
     readout: Mapping[str, object] | None = None,
+    prediction_distribution: Mapping[str, object] | None = None,
 ) -> str:
     """Create a sortable, collision-resistant, condition-aware run name."""
 
@@ -137,6 +145,7 @@ def default_run_name(
         gaze_redistribution=gaze_redistribution,
         gaze_relation=gaze_relation,
         readout=readout,
+        prediction_distribution=prediction_distribution,
     )
     return f"{prefix}_{condition}"
 

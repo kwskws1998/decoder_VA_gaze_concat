@@ -138,8 +138,14 @@ The regression head emits exactly:
 
 Both outputs are constrained to `[0, 1]` with the original VA paper's hard
 sigmoid output activation. Training requires an explicit choice
-of `mse`, `ccc`, or the legacy-compatible 50:50 `mse+ccc`; no uncertainty or
-log-variance head is used. The commands below use MSE as the simplest baseline.
+of `mse`, `ccc`, the legacy-compatible 50:50 `mse+ccc`, or `heteroscedastic`.
+The first three keep the original two-output head. `heteroscedastic` retains
+the same two mean predictions and adds two FP32 log-variance outputs trained
+with Gaussian NLL. Only the means are bounded by hard sigmoid. The commands
+below use MSE as the simplest baseline. See
+[the two heteroscedastic experiments](../HETEROSCEDASTIC_EXPERIMENTS.md) for
+setup, sequential text-only/TRT-concat training, uncertainty metrics, and
+schema11 checkpoint/result contracts.
 
 ## Training text overlap
 

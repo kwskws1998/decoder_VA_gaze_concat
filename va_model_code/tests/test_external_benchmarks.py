@@ -50,6 +50,7 @@ from va_model_code.decoder_va.external_benchmarks import (
     _validate_zip_members,
 )
 from va_model_code.decoder_va.evaluation import calculate_va_metrics
+from va_model_code.decoder_va.uncertainty import prediction_contract
 from va_model_code.decoder_va.gaze_relation import gaze_relation_contract
 from va_model_code.decoder_va.model import (
     ARCHITECTURE_MANIFEST_VERSION,
@@ -287,6 +288,7 @@ def _run_contract_fields(root: Path) -> dict:
         "architecture_manifest_version": ARCHITECTURE_MANIFEST_VERSION,
         "model": "qwen3.5-0.8b",
         "loss": "mse",
+        "prediction_distribution": prediction_contract(),
         "output_dim": 2,
         "dtype": "float32",
         "compute_dtype": "bfloat16",
@@ -359,6 +361,8 @@ def _write_completed_run(
     root.mkdir(parents=True, exist_ok=True)
     parameters = _run_contract_fields(root)
     parameters["architecture_manifest_version"] = schema_version
+    if schema_version < 11:
+        parameters.pop("prediction_distribution")
     parameters["finetuning_mode"] = finetuning_mode
     if schema_version >= 10 or readout is not None:
         parameters["readout"] = readout_contract() if readout is None else readout
@@ -398,6 +402,8 @@ def _write_completed_run(
         if "gaze_relation" in parameters else {}
     )
     readout_metadata = {"readout": parameters["readout"]} if "readout" in parameters else {}
+    if schema_version >= 11:
+        readout_metadata["prediction_distribution"] = parameters["prediction_distribution"]
     (root / "training_parameters.json").write_text(
         json.dumps(parameters), encoding="utf-8"
     )

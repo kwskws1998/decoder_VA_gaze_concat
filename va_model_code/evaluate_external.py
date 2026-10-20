@@ -38,6 +38,7 @@ from decoder_va.external_benchmarks import (
     write_external_evaluation,
 )
 from decoder_va.model import load_saved_decoder_va_model
+from decoder_va.uncertainty import prediction_contract, validate_prediction_contract
 
 
 SCRIPT_DIR = Path(__file__).resolve().parent
@@ -535,11 +536,15 @@ def _predict_texts(
             with _autocast_context(device, dtype, autocast_enabled):
                 output = model(**model_inputs)
             logits = output.logits
-            if logits.ndim != 2 or logits.shape[1] != 2:
+            contract = validate_prediction_contract(getattr(model, "prediction_distribution", prediction_contract()))
+            width = len(contract["output_columns"])
+            if logits.ndim != 2 or logits.shape[1] != width:
                 raise RuntimeError(
-                    f"Saved VA model must return [examples, 2], got {tuple(logits.shape)}."
+                    f"Saved VA model must return [examples, {width}], got {tuple(logits.shape)}."
                 )
-            batches.append(logits.detach().to(device="cpu", dtype=torch.float64).numpy())
+            if not torch.isfinite(logits).all():
+                raise RuntimeError("Saved model produced non-finite external predictions.")
+            batches.append(logits[:, :2].detach().to(device="cpu", dtype=torch.float64).numpy())
     if not batches:
         raise ValueError("Cannot evaluate an empty text sequence.")
     predictions = np.concatenate(batches, axis=0)

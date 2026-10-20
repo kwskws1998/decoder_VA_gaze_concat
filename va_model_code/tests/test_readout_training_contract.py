@@ -93,7 +93,7 @@ def test_readout_run_propagates_to_model_and_both_fold_manifests(offline_overlap
         assert construction["readout"] == expected
     for relative in ("training_parameters.json", "heldout_fold1/run_manifest.json", "heldout_fold2/run_manifest.json"):
         manifest = json.loads((run.run_root / relative).read_text())
-        assert manifest["architecture_manifest_version"] == 10
+        assert manifest["architecture_manifest_version"] == train_model_module.ARCHITECTURE_MANIFEST_VERSION
         assert manifest["readout"] == expected
         assert manifest["pooling_position"] == readout_pooling_position(gaze_fusion, expected)
         assert manifest["gaze_concat_order"] == readout_concat_order(gaze_fusion, expected)
@@ -215,7 +215,7 @@ def test_schema9_last_token_resume_preserves_contract_and_source_metadata(tmp_pa
     _check_resume_pair(tmp_path, recorded, expected)
     saved = json.loads((tmp_path / "run/heldout_fold1/run_manifest.json").read_text())
     assert saved == recorded
-    assert expected["architecture_manifest_version"] == 10
+    assert expected["architecture_manifest_version"] == train_model_module.ARCHITECTURE_MANIFEST_VERSION
     assert expected["readout"] == readout_contract()
 
 
@@ -278,13 +278,17 @@ def test_resume_records_source_schema_and_checks_weights_before_training(offline
     def record_readout(model, path):
         calls.append(("readout", path))
 
+    def record_variance(model, path):
+        calls.append(("variance", path))
+
     monkeypatch.setattr(train_model_module, "validate_saved_trainable_precision", record_precision)
     monkeypatch.setattr(train_model_module, "validate_saved_gaze_relation", record_relation)
     monkeypatch.setattr(train_model_module, "validate_saved_readout", record_readout)
+    monkeypatch.setattr(train_model_module, "validate_saved_variance_head", record_variance)
     args.resume_from_checkpoint = str(checkpoint)
     train_model_module.run(args)
     saved = json.loads(manifest_path.read_text())
-    assert saved["architecture_manifest_version"] == 10
+    assert saved["architecture_manifest_version"] == train_model_module.ARCHITECTURE_MANIFEST_VERSION
     assert saved["resume_source_architecture_manifest_version"] == 9
     assert saved["readout"] == readout_contract()
-    assert calls == [(name, checkpoint / "model.safetensors") for name in ("precision", "relation", "readout")]
+    assert calls == [(name, checkpoint / "model.safetensors") for name in ("precision", "relation", "readout", "variance")]

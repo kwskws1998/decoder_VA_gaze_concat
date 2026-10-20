@@ -118,6 +118,7 @@ def _expected_resume_manifest() -> dict[str, object]:
         "gaze_redistribution": {"method": "none"},
         "gaze_relation": {"version": 1, "method": "none"},
         "readout": train_model_module.readout_contract(),
+        "prediction_distribution": train_model_module.prediction_contract(),
         "gaze_features": ["nFix", "TRT"],
         "gaze_feature_indices": [0, 3],
         "features_used": [1, 0, 0, 1, 0],

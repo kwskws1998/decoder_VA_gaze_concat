@@ -62,6 +62,7 @@ def offline_overlap_run(tmp_path, monkeypatch):
             self.train_dataset = kwargs["train_dataset"]
             self.eval_dataset = kwargs["eval_dataset"]
             self.args = kwargs["args"]
+            self.loss_name = kwargs["loss_name"]
             observed["trainers"].append(self)
 
         def train(self, resume_from_checkpoint):
@@ -76,7 +77,11 @@ def offline_overlap_run(tmp_path, monkeypatch):
             assert dataset is self.eval_dataset
             observed["predictions"].append(dataset)
             labels = np.column_stack((dataset.valence, dataset.arousal))
-            return SimpleNamespace(label_ids=labels, predictions=labels, metrics={})
+            predictions = (
+                np.column_stack((labels, np.full_like(labels, np.log(0.01))))
+                if self.loss_name == "heteroscedastic" else labels
+            )
+            return SimpleNamespace(label_ids=labels, predictions=predictions, metrics={})
 
     def build_model(tokenizer, **kwargs):
         observed["builds"].append(kwargs)

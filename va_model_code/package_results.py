@@ -23,7 +23,8 @@ import pandas as pd
 
 if __package__:
     from .decoder_va.contracts import LOSS_CHOICES, MODEL_ALIASES
-    from .decoder_va.evaluation import calculate_va_metrics
+    from .decoder_va.evaluation import calculate_va_metrics, prediction_array_from_frame
+    from .decoder_va.uncertainty import saved_prediction_contract, UNCERTAINTY_TABLE_COLUMNS
     from .decoder_va.filters import (
         SENTENCE_ONLY_DATASET_NAMES,
         apply_training_text_overlap_policy,
@@ -48,6 +49,7 @@ if __package__:
         PRE_PRECISION_MANIFEST_VERSION,
         PRE_RELATION_MANIFEST_VERSION,
         PRE_READOUT_MANIFEST_VERSION,
+        PRE_UNCERTAINTY_MANIFEST_VERSION,
         validate_precision_contract,
         validate_gaze_alignment_contract,
         validate_gaze_relation_setup,
@@ -61,7 +63,8 @@ if __package__:
     from .decoder_va.redistribution import validate_redistribution_contract
 else:
     from decoder_va.contracts import LOSS_CHOICES, MODEL_ALIASES
-    from decoder_va.evaluation import calculate_va_metrics
+    from decoder_va.evaluation import calculate_va_metrics, prediction_array_from_frame
+    from decoder_va.uncertainty import saved_prediction_contract, UNCERTAINTY_TABLE_COLUMNS
     from decoder_va.filters import (
         SENTENCE_ONLY_DATASET_NAMES,
         apply_training_text_overlap_policy,
@@ -86,6 +89,7 @@ else:
         PRE_PRECISION_MANIFEST_VERSION,
         PRE_RELATION_MANIFEST_VERSION,
         PRE_READOUT_MANIFEST_VERSION,
+        PRE_UNCERTAINTY_MANIFEST_VERSION,
         validate_precision_contract,
         validate_gaze_alignment_contract,
         validate_gaze_relation_setup,
@@ -372,6 +376,11 @@ def _validate_current_model_contracts(
     validate_gaze_alignment_contract(
         metadata["gaze_alignment"], gaze_fusion=parameters["gaze_fusion"], context=label
     )
+    version = parameters["architecture_manifest_version"]
+    if saved_prediction_contract(metadata, schema_version=version, context=label) != saved_prediction_contract(
+        parameters, schema_version=version, context="training_parameters.json"
+    ):
+        raise ValueError(f"{label}: prediction_distribution disagrees with training parameters.")
 
 
 def _saved_relation_contract(
@@ -453,7 +462,8 @@ def _validate_training_parameters(parameters: Mapping[str, object]) -> None:
         _strict_int(parameters[field], label=field, positive=True)
     if parameters["architecture_manifest_version"] not in {
         PRE_REDISTRIBUTION_MANIFEST_VERSION, PRE_PRECISION_MANIFEST_VERSION,
-        PRE_RELATION_MANIFEST_VERSION, PRE_READOUT_MANIFEST_VERSION, ARCHITECTURE_MANIFEST_VERSION
+        PRE_RELATION_MANIFEST_VERSION, PRE_READOUT_MANIFEST_VERSION,
+        PRE_UNCERTAINTY_MANIFEST_VERSION, ARCHITECTURE_MANIFEST_VERSION
     }:
         raise ValueError(
             "architecture_manifest_version must be a supported schema version: "
@@ -506,6 +516,9 @@ def _validate_training_parameters(parameters: Mapping[str, object]) -> None:
         raise ValueError(f"model must be one of {MODEL_ALIASES}.")
     if parameters["loss"] not in LOSS_CHOICES:
         raise ValueError(f"loss must be one of {LOSS_CHOICES}.")
+    saved_prediction_contract(
+        parameters, schema_version=parameters["architecture_manifest_version"], context="training_parameters.json"
+    )
     if parameters["finetuning_mode"] not in FINETUNING_MODES:
         raise ValueError(f"finetuning_mode must be one of {FINETUNING_MODES}.")
     if parameters["gaze_fusion"] not in GAZE_FUSIONS:
@@ -824,11 +837,7 @@ def _calculate_metrics(
         [float(row["valence"]), float(row["arousal"])]
         for row in rows
     ]
-    predictions = [
-        [float(row["pred_valence"]), float(row["pred_arousal"])]
-        for row in rows
-    ]
-    computed = calculate_va_metrics(labels, np.asarray(predictions, dtype=np.float64))
+    computed = calculate_va_metrics(labels, prediction_array_from_frame(pd.DataFrame(rows)))
     result: dict[str, float | int | None] = {}
     for name, value in computed.items():
         if name == "n_examples":
@@ -848,7 +857,7 @@ def _assert_metrics_match(
 ) -> None:
     """Require recorded metrics to match recomputation from packaged predictions."""
 
-    for name in METRIC_NAMES:
+    for name in computed:
         recorded_name = f"{prefix}{name}"
         if recorded_name not in recorded:
             raise ValueError(f"{label} is missing {recorded_name}.")
@@ -1178,10 +1187,16 @@ def _validate_result_contract(
             snapshots[prediction_label],
             prediction_label,
         )
-        if headers != PREDICTION_COLUMNS:
+        distribution = saved_prediction_contract(
+            parameters, schema_version=parameters["architecture_manifest_version"], context="training_parameters.json"
+        )
+        expected_columns = PREDICTION_COLUMNS + (
+            UNCERTAINTY_TABLE_COLUMNS if distribution["family"] == "diagonal_gaussian" else ()
+        )
+        if headers != expected_columns:
             raise ValueError(
-                f"{prediction_label} must contain exactly the eight prediction "
-                "columns in canonical order."
+                f"{prediction_label} must contain exactly the prediction columns in canonical order "
+                f"for {distribution['family']}."
             )
         if prediction_headers is None:
             prediction_headers = headers
@@ -1370,7 +1385,8 @@ def _validate_result_contract(
         snapshots[dataset_label],
         dataset_label,
     )
-    expected_dataset_columns = ("dataset_of_origin", *METRIC_NAMES)
+    metric_names = tuple(_calculate_metrics(oof_rows))
+    expected_dataset_columns = ("dataset_of_origin", *metric_names)
     if dataset_headers != expected_dataset_columns or not dataset_rows:
         raise ValueError(
             "metrics_by_dataset.tsv must contain exactly the canonical metric "
@@ -1419,7 +1435,7 @@ def _validate_result_contract(
     for row in dataset_rows:
         source = row["dataset_of_origin"]
         recorded_metrics: dict[str, object] = {}
-        for name in METRIC_NAMES:
+        for name in metric_names:
             raw_value = row[name]
             if name == "n_examples":
                 if re.fullmatch(r"[0-9]+", raw_value) is None:
@@ -1465,6 +1481,9 @@ def _archive_stem(parameters: Mapping[str, object]) -> str:
             parameters, parameters, label="training_parameters.json"
         ),
         readout=_saved_readout_contract(parameters, parameters, label="training_parameters.json"),
+        prediction_distribution=saved_prediction_contract(
+            parameters, schema_version=parameters["architecture_manifest_version"], context="training_parameters.json"
+        ),
         seed=seed,
         no_iemocap=_effective_no_iemocap(parameters),
         sentence_only=_sentence_only(parameters),
@@ -1492,6 +1511,10 @@ def _build_package_manifest(
         "condition": {
             "model": parameters["model"],
             "finetuning_mode": parameters["finetuning_mode"],
+            "loss": parameters["loss"],
+            "prediction_distribution": saved_prediction_contract(
+                parameters, schema_version=parameters["architecture_manifest_version"], context="training_parameters.json"
+            ),
             "gaze_fusion": parameters["gaze_fusion"],
             "gaze_features": parameters["gaze_features"],
             "gaze_redistribution": _saved_redistribution_contract(

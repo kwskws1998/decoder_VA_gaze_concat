@@ -26,6 +26,10 @@ from .gaze import (
     normalize_et2_feature_indices,
 )
 from .packing import PackedCausalInputs, append_readout_token, pack_prefix_gaze
+from .uncertainty import (
+    prediction_contract, validate_prediction_contract, saved_prediction_contract,
+    make_variance_head, log_variance_from_raw, validate_saved_variance_head,
+)
 from .readout import (
     readout_contract, validate_readout_contract, saved_readout_contract,
     readout_pooling_position, readout_concat_order,
@@ -52,7 +56,8 @@ GAZE_PREFIX_ORDER = "eye_start, compact_selected_gaze, eye_end, text"
 GAZE_PREFIX_POOLING = "last_valid_text_token_after_gaze_prefix"
 OUTPUT_ACTIVATION = "hard_sigmoid"
 ARCHITECTURE_MANIFEST_FILENAME = "decoder_va_architecture.json"
-ARCHITECTURE_MANIFEST_VERSION = 10
+ARCHITECTURE_MANIFEST_VERSION = 11
+PRE_UNCERTAINTY_MANIFEST_VERSION = 10
 PRE_READOUT_MANIFEST_VERSION = 9
 PRE_RELATION_MANIFEST_VERSION = 8
 PRE_PRECISION_MANIFEST_VERSION = 7
@@ -279,6 +284,7 @@ class DecoderVARegressor(nn.Module):
         gaze_redistribution: Mapping | None = None,
         gaze_relation: Mapping | None = None,
         readout: Mapping | None = None,
+        prediction_distribution: Mapping | None = None,
         gaze_projection_dim: int = DEFAULT_GAZE_PROJECTION_DIM,
         gaze_projection_dropout: tuple[
             float,
@@ -302,6 +308,9 @@ class DecoderVARegressor(nn.Module):
         self.config = copy.deepcopy(backbone_config)
         self.hidden_size = _hidden_size(self.config)
         self.output_dim = 2
+        self.prediction_distribution = validate_prediction_contract(
+            prediction_contract() if prediction_distribution is None else prediction_distribution
+        )
         self.gaze_fusion = _normalize_gaze_fusion(gaze_fusion)
         self.readout = validate_readout_contract(readout_contract() if readout is None else readout)
         self.gaze_alignment = (
@@ -393,6 +402,11 @@ class DecoderVARegressor(nn.Module):
             nn.init.normal_(self.readout_token, mean=0.0, std=0.02)
         else:
             self.register_parameter("readout_token", None)
+        self.variance_head = (
+            make_variance_head(self.hidden_size)
+            if self.prediction_distribution["family"] == "diagonal_gaussian" else None
+        )
+        self.config.prediction_distribution = copy.deepcopy(self.prediction_distribution)
         self.config.readout = copy.deepcopy(self.readout)
         self.config.num_labels = self.output_dim
         self.config.problem_type = "regression"
@@ -564,7 +578,7 @@ class DecoderVARegressor(nn.Module):
         labels: torch.Tensor | None = None,
         **kwargs,
     ) -> SequenceClassifierOutput:
-        """Return bounded valence and arousal predictions."""
+        """Return bounded VA means, optionally followed by two unbounded log variances."""
 
         del labels, kwargs
         if input_ids.ndim != 2 or attention_mask.ndim != 2:
@@ -604,6 +618,12 @@ class DecoderVARegressor(nn.Module):
         with torch.autocast(device_type=pooled.device.type, enabled=False):
             raw_logits = self.regression_head(pooled.float())
             logits = F.hardsigmoid(raw_logits)
+            if self.variance_head is not None:
+                if any(parameter.dtype != torch.float32 for parameter in self.variance_head.parameters()):
+                    raise ValueError("The variance head must remain FP32; use autocast for mixed precision.")
+                variance_features = self.regression_head[0](pooled.float())
+                log_variance = log_variance_from_raw(self.variance_head(variance_features))
+                logits = torch.cat((logits, log_variance), dim=-1)
         return SequenceClassifierOutput(logits=logits)
 
     def trainable_parameter_summary(self) -> dict[str, int | float]:
@@ -619,6 +639,9 @@ class DecoderVARegressor(nn.Module):
             "total_parameters": int(total),
             "trainable_parameters": int(trainable),
             "trainable_fraction": float(trainable / total) if total else 0.0,
+            "variance_head_trainable_parameters": sum(
+                parameter.numel() for parameter in self.variance_head.parameters()
+            ) if self.variance_head is not None else 0,
             "gaze_redistribution_trainable_parameters": sum(
                 parameter.numel()
                 for parameter in (
@@ -673,6 +696,7 @@ class DecoderVARegressor(nn.Module):
             "gaze_redistribution": copy.deepcopy(self.gaze_redistribution),
             "gaze_relation": copy.deepcopy(self.gaze_relation),
             "readout": copy.deepcopy(self.readout),
+            "prediction_distribution": copy.deepcopy(self.prediction_distribution),
             "gaze_relation_layers": copy.deepcopy(self.gaze_relation_layers),
             "gaze_features": list(active_names),
             "gaze_feature_indices": list(active_indices),
@@ -828,6 +852,7 @@ def build_qwen_va_model(
     gaze_redistribution: Mapping | None = None,
     gaze_relation: Mapping | None = None,
     readout: Mapping | None = None,
+    prediction_distribution: Mapping | None = None,
     et_repo_id: str = DEFAULT_ET2_REPO_ID,
     et_revision: str = DEFAULT_ET2_REVISION,
     et_filename: str = DEFAULT_ET2_FILENAME,
@@ -850,6 +875,9 @@ def build_qwen_va_model(
 
     normalized_fusion = _normalize_gaze_fusion(gaze_fusion)
     normalized_readout = validate_readout_contract(readout_contract() if readout is None else readout)
+    normalized_prediction = validate_prediction_contract(
+        prediction_contract() if prediction_distribution is None else prediction_distribution
+    )
     normalized_finetuning_mode = _normalize_finetuning_mode(finetuning_mode)
     active_feature_indices = (
         normalize_et2_feature_indices(gaze_feature_indices)
@@ -910,6 +938,7 @@ def build_qwen_va_model(
         gaze_relation=normalized_relation,
         readout=normalized_readout,
         gaze_projection_dim=gaze_projection_dim,
+        prediction_distribution=normalized_prediction,
         gaze_projection_dropout=gaze_projection_dropout,
         classifier_dropout=classifier_dropout,
     )
@@ -927,6 +956,7 @@ def build_qwen_va_model(
         "gaze_redistribution": copy.deepcopy(normalized_redistribution),
         "gaze_relation": copy.deepcopy(normalized_relation),
         "readout": copy.deepcopy(normalized_readout),
+        "prediction_distribution": copy.deepcopy(normalized_prediction),
         "et_repo_id": str(et_repo_id),
         "et_revision": str(et_revision),
         "et_filename": str(et_filename),
@@ -976,12 +1006,13 @@ def load_saved_decoder_va_model(
         manifest = json.load(input_file)
     manifest_version = manifest.get("schema_version")
     if type(manifest_version) is not int or manifest_version not in (
-        PRE_RELATION_MANIFEST_VERSION, PRE_READOUT_MANIFEST_VERSION, ARCHITECTURE_MANIFEST_VERSION,
+        PRE_RELATION_MANIFEST_VERSION, PRE_READOUT_MANIFEST_VERSION,
+        PRE_UNCERTAINTY_MANIFEST_VERSION, ARCHITECTURE_MANIFEST_VERSION,
     ):
         raise ValueError(
             "Unsupported decoder VA architecture manifest version: "
             f"{manifest_version!r}. Historical precision and gaze_alignment semantics "
-            "require the original code; start a new training run with version 10."
+            "require the original code; start a new training run with version 11."
         )
     validate_precision_contract(manifest.get("precision_contract"), context="Saved architecture")
     state_contract = manifest.get("state_dict")
@@ -1086,6 +1117,13 @@ def load_saved_decoder_va_model(
     if readouts[0] != readouts[1]:
         raise ValueError("Architecture readout disagrees with reconstruction metadata.")
     saved_readout = readouts[0]
+    prediction_configs = [
+        saved_prediction_contract(metadata, schema_version=manifest_version, context=f"Saved {owner}")
+        for owner, metadata in (("architecture", manifest), ("reconstruction", reconstruction))
+    ]
+    if prediction_configs[0] != prediction_configs[1]:
+        raise ValueError("Architecture prediction_distribution disagrees with reconstruction metadata.")
+    saved_prediction = prediction_configs[0]
     relation_configs = []
     for owner, metadata in (("architecture", manifest), ("reconstruction", reconstruction)):
         if manifest_version >= PRE_READOUT_MANIFEST_VERSION and "gaze_relation" not in metadata:
@@ -1229,6 +1267,7 @@ def load_saved_decoder_va_model(
         gaze_relation=saved_relation,
         readout=saved_readout,
         et_repo_id=str(reconstruction["et_repo_id"]),
+        prediction_distribution=saved_prediction,
         et_revision=str(reconstruction["et_revision"]),
         et_filename=str(reconstruction["et_filename"]),
         et_cache_size=effective_cache_size,
@@ -1250,6 +1289,7 @@ def load_saved_decoder_va_model(
     validate_saved_trainable_precision(model, weights_path)
     validate_saved_gaze_relation(model, weights_path)
     validate_saved_readout(model, weights_path)
+    validate_saved_variance_head(model, weights_path)
     load_model(model, weights_path, strict=True, device="cpu")
     model.eval()
     return model, tokenizer

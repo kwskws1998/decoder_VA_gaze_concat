@@ -21,7 +21,7 @@ GAZE_RELATION_PARAMETER_SUFFIX = "gaze_relative_rotation.alpha"
 
 
 class VARegressionTrainer(Trainer):
-    """Trainer that applies the selected two-output VA objective."""
+    """Trainer for VA mean objectives and optional heteroscedastic Gaussian predictions."""
 
     def __init__(
         self,

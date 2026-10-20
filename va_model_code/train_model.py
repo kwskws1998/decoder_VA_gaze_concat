@@ -43,6 +43,7 @@ from decoder_va.gaze import (
 from decoder_va.model import (
     ARCHITECTURE_MANIFEST_VERSION,
     PRE_READOUT_MANIFEST_VERSION,
+    PRE_UNCERTAINTY_MANIFEST_VERSION,
     DEFAULT_DECODER_MODEL_ID,
     DEFAULT_DECODER_REVISION,
     DEFAULT_ET2_REVISION,
@@ -65,6 +66,7 @@ from decoder_va.readout import (
     READOUT_MODES, readout_contract, saved_readout_contract,
     readout_pooling_position, readout_concat_order,
 )
+from decoder_va.uncertainty import prediction_contract, saved_prediction_contract, validate_saved_variance_head
 from decoder_va.gaze_relation import GAZE_RELATION_INPUTS, GAZE_RELATION_METHODS, gaze_relation_contract
 from decoder_va.gaze_attention import GAZE_RELATION_IMPLEMENTATION
 from decoder_va.gaze_relation_reporting import write_gaze_relation_report
@@ -537,6 +539,7 @@ def _resolve_output_dir(args: argparse.Namespace) -> Path:
             gaze_redistribution=_redistribution_config(args),
             gaze_relation=_gaze_relation_config(args),
             readout=readout_contract(args.readout),
+            prediction_distribution=prediction_contract(args.loss),
             seed=args.seed,
             no_iemocap=args.no_iemocap or args.no_ieomcap,
             sentence_only=args.sentence_only,
@@ -691,6 +694,7 @@ def _validate_resume_contract(
         "gaze_redistribution",
         "gaze_relation",
         "readout",
+        "prediction_distribution",
         "gaze_features",
         "gaze_feature_indices",
         "features_used",
@@ -731,7 +735,7 @@ def _validate_resume_contract(
     ):
         schema_version = manifest.get("architecture_manifest_version")
         supported_versions = (
-            (PRE_READOUT_MANIFEST_VERSION, ARCHITECTURE_MANIFEST_VERSION)
+            (PRE_READOUT_MANIFEST_VERSION, PRE_UNCERTAINTY_MANIFEST_VERSION, ARCHITECTURE_MANIFEST_VERSION)
             if label == "recorded" else (ARCHITECTURE_MANIFEST_VERSION,)
         )
         if type(schema_version) is not int or schema_version not in supported_versions:
@@ -777,6 +781,9 @@ def _validate_resume_contract(
         manifest["readout"] = saved_readout_contract(
             manifest, schema_version=schema_version, context=f"Resume {label} manifest",
         )
+        manifest["prediction_distribution"] = saved_prediction_contract(
+            manifest, schema_version=schema_version, context=f"Resume {label} manifest",
+        )
         if manifest.get("pooling_position") != readout_pooling_position(manifest["gaze_fusion"], manifest["readout"]):
             raise ValueError(f"Resume {label} pooling_position disagrees with readout.")
         if manifest.get("gaze_concat_order") != readout_concat_order(manifest["gaze_fusion"], manifest["readout"]):
@@ -798,6 +805,8 @@ def _validate_resume_contract(
                 f"Schema {PRE_READOUT_MANIFEST_VERSION} resume requires unchanged last-token "
                 "readout; learned-token readout requires a new training run."
             )
+        recorded_manifest["architecture_manifest_version"] = ARCHITECTURE_MANIFEST_VERSION
+    if recorded_schema == PRE_UNCERTAINTY_MANIFEST_VERSION:
         recorded_manifest["architecture_manifest_version"] = ARCHITECTURE_MANIFEST_VERSION
     if expected_manifest.get("finetuning_mode") == "lora":
         contract_fields += ("lora_rank", "lora_alpha", "lora_dropout")
@@ -1010,6 +1019,7 @@ def run(args: argparse.Namespace) -> Path | None:
         print(f"Gaze redistribution: {_redistribution_config(args)}")
         print(f"Gaze relation: {_gaze_relation_config(args)}")
         print(f"Readout: {readout_contract(args.readout)}")
+        print(f"Prediction distribution: {prediction_contract(args.loss)}")
         if args.gaze_redistribution == "asym-gaussian":
             print(
                 "Redistribution optimizer: "
@@ -1070,6 +1080,7 @@ def run(args: argparse.Namespace) -> Path | None:
         "gaze_redistribution": _redistribution_config(args),
         "gaze_relation": _gaze_relation_config(args),
         "readout": readout_contract(args.readout),
+        "prediction_distribution": prediction_contract(loss_name),
         "gaze_relation_implementation": (
             GAZE_RELATION_IMPLEMENTATION if args.gaze_relation != "none" else None
         ),
@@ -1125,6 +1136,7 @@ def run(args: argparse.Namespace) -> Path | None:
         },
     }
     print(f"Readout: {run_manifest['readout']}")
+    print(f"Prediction distribution: {run_manifest['prediction_distribution']}")
     if args.gaze_relation != "none":
         print(f"Gaze relation implementation: {GAZE_RELATION_IMPLEMENTATION} (FP32 anchor pairs; eager attention).")
     delta_dispatch = run_manifest["training_kernels"]["dispatch"]["torch_chunk_gated_delta_rule"]
@@ -1196,6 +1208,7 @@ def run(args: argparse.Namespace) -> Path | None:
             gaze_redistribution=run_manifest["gaze_redistribution"],
             gaze_relation=run_manifest["gaze_relation"],
             readout=run_manifest["readout"],
+            prediction_distribution=run_manifest["prediction_distribution"],
             et_repo_id=args.et_model_id,
             et_revision=args.et_revision,
             et_filename=args.et_filename,
@@ -1213,6 +1226,7 @@ def run(args: argparse.Namespace) -> Path | None:
             )
             validate_saved_gaze_relation(model, Path(args.resume_from_checkpoint) / "model.safetensors")
             validate_saved_readout(model, Path(args.resume_from_checkpoint) / "model.safetensors")
+            validate_saved_variance_head(model, Path(args.resume_from_checkpoint) / "model.safetensors")
         parameter_summary = model.trainable_parameter_summary()
         print(
             "Trainable parameters: "

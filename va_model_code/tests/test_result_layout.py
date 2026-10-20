@@ -156,6 +156,11 @@ def _write_completed_run(
         parameters["gaze_concat_order"] = readout_concat_order(gaze_fusion, parameters["readout"])
         parameters["pooling_position"] = readout_pooling_position(gaze_fusion, parameters["readout"])
     current_metadata = {}
+    if schema_version >= 11:
+        from va_model_code.decoder_va.uncertainty import prediction_contract
+
+        readout_metadata["prediction_distribution"] = prediction_contract()
+        parameters["prediction_distribution"] = prediction_contract()
     if schema_version >= 8:
         current_metadata = {
             "gaze_alignment": GAZE_ALIGNMENT_CONTRACT if gaze_features else None,
@@ -662,7 +667,7 @@ def test_results_only_package_rejects_extra_prediction_column(
         encoding="utf-8",
     )
 
-    with pytest.raises(ValueError, match="exactly the eight prediction columns"):
+    with pytest.raises(ValueError, match="exactly the prediction columns"):
         package_results(run_dir, results_root=tmp_path)
 
 

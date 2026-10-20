@@ -33,7 +33,7 @@ def validate_readout_contract(value: Mapping) -> dict:
 def saved_readout_contract(metadata: Mapping, *, schema_version: int, context: str) -> dict:
     """Preserve legacy pooling for schema 6–9 and require explicit schema-10 readout."""
 
-    if type(schema_version) is not int or schema_version not in (6, 7, 8, 9, 10):
+    if type(schema_version) is not int or schema_version not in (6, 7, 8, 9, 10, 11):
         raise ValueError(f"{context}: unsupported readout schema {schema_version!r}.")
     if "readout" not in metadata:
         if schema_version < 10:

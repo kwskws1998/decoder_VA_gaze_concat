@@ -29,7 +29,8 @@ import torch
 from torch.utils.data import Dataset
 
 from .downloads import sha256_file
-from .evaluation import calculate_va_metrics
+from .evaluation import calculate_va_metrics, prediction_array_from_frame
+from .uncertainty import saved_prediction_contract, UNCERTAINTY_TABLE_COLUMNS
 from .filters import (
     SENTENCE_ONLY_DATASET_NAMES,
     apply_training_text_overlap_policy,
@@ -46,6 +47,7 @@ from .model import (
     PRE_PRECISION_MANIFEST_VERSION,
     PRE_RELATION_MANIFEST_VERSION,
     PRE_READOUT_MANIFEST_VERSION,
+    PRE_UNCERTAINTY_MANIFEST_VERSION,
     PRE_REDISTRIBUTION_MANIFEST_VERSION,
     SAFE_WEIGHTS_FILENAME,
     validate_gaze_alignment_contract,
@@ -1708,7 +1710,7 @@ def _read_persisted_prediction_table(
         )
     except (OSError, pd.errors.ParserError, UnicodeDecodeError) as exc:
         raise ValueError(f"Cannot read {description}: {path}") from exc
-    if tuple(frame.columns) != PERSISTED_PREDICTION_COLUMNS:
+    if tuple(frame.columns) not in (PERSISTED_PREDICTION_COLUMNS, PERSISTED_PREDICTION_COLUMNS + UNCERTAINTY_TABLE_COLUMNS):
         raise ValueError(
             f"{description} must contain the canonical internal prediction columns."
         )
@@ -1722,6 +1724,7 @@ def _read_persisted_prediction_table(
             raise ValueError(
                 f"{description} contains non-finite or out-of-range {column} values."
             )
+    prediction_array_from_frame(frame)
     return frame
 
 
@@ -1729,9 +1732,7 @@ def _persisted_prediction_metrics(frame: pd.DataFrame) -> dict[str, float]:
     """Recompute one internal prediction table with production metric semantics."""
 
     labels = frame.loc[:, ["valence", "arousal"]].to_numpy(dtype=np.float64)
-    predictions = frame.loc[:, ["pred_valence", "pred_arousal"]].to_numpy(
-        dtype=np.float64
-    )
+    predictions = prediction_array_from_frame(frame)
     return calculate_va_metrics(labels, predictions)
 
 
@@ -1744,7 +1745,7 @@ def _require_recorded_metrics(
 ) -> None:
     """Require saved metrics to be a faithful recomputation of saved predictions."""
 
-    for name in PERSISTED_METRIC_NAMES:
+    for name in computed:
         key = f"{prefix}{name}"
         if key not in recorded:
             raise ValueError(f"{description} is missing {key}.")
@@ -1878,6 +1879,12 @@ def _validate_architecture_provenance(
         (architecture, "architecture"),
         (reconstruction, "architecture reconstruction"),
     ):
+        if saved_prediction_contract(
+            source, schema_version=parameters["architecture_manifest_version"], context=label,
+        ) != saved_prediction_contract(
+            parameters, schema_version=parameters["architecture_manifest_version"], context="training_parameters.json",
+        ):
+            raise ValueError(f"Held-out fold {held_out_fold} {label} disagrees with prediction_distribution.")
         if saved_readout_contract(
             source, schema_version=parameters["architecture_manifest_version"], context=label,
         ) != expected_readout:
@@ -2057,12 +2064,13 @@ def _validate_root_run_parameters(root: Path, parameters: Mapping[str, Any]) -> 
         )
     if type(parameters["architecture_manifest_version"]) is not int or parameters[
         "architecture_manifest_version"
-    ] not in {PRE_REDISTRIBUTION_MANIFEST_VERSION, PRE_PRECISION_MANIFEST_VERSION, PRE_RELATION_MANIFEST_VERSION, PRE_READOUT_MANIFEST_VERSION, ARCHITECTURE_MANIFEST_VERSION}:
+    ] not in {PRE_REDISTRIBUTION_MANIFEST_VERSION, PRE_PRECISION_MANIFEST_VERSION, PRE_RELATION_MANIFEST_VERSION, PRE_READOUT_MANIFEST_VERSION, PRE_UNCERTAINTY_MANIFEST_VERSION, ARCHITECTURE_MANIFEST_VERSION}:
         raise ValueError(
             "training_parameters.json uses an unsupported architecture manifest version."
         )
     if parameters["output_dim"] != 2 or parameters["output_activation"] != OUTPUT_ACTIVATION:
         raise ValueError("External evaluation requires a hard-sigmoid two-output VA run.")
+    saved_prediction_contract(parameters, schema_version=parameters["architecture_manifest_version"], context="training_parameters.json")
     if parameters["dtype"] not in {"bfloat16", "float16", "float32"}:
         raise ValueError(f"Unsupported saved dtype: {parameters['dtype']!r}.")
     if parameters["finetuning_mode"] not in {"full", "lora"}:
@@ -2146,13 +2154,13 @@ def _validate_root_internal_evidence(
     fold_records = Counter(
         tuple(row)
         for frame in fold_prediction_frames
-        for row in frame.loc[:, list(PERSISTED_PREDICTION_COLUMNS)].itertuples(
+        for row in frame.itertuples(
             index=False, name=None
         )
     )
     oof_records = Counter(
         tuple(row)
-        for row in oof_frame.loc[:, list(PERSISTED_PREDICTION_COLUMNS)].itertuples(
+        for row in oof_frame.itertuples(
             index=False, name=None
         )
     )
@@ -2185,7 +2193,8 @@ def _validate_root_internal_evidence(
         )
     except (OSError, pd.errors.ParserError, UnicodeDecodeError) as exc:
         raise ValueError("Cannot read metrics_by_dataset.tsv.") from exc
-    expected_dataset_columns = ("dataset_of_origin", *PERSISTED_METRIC_NAMES)
+    metric_names = tuple(_persisted_prediction_metrics(oof_frame))
+    expected_dataset_columns = ("dataset_of_origin", *metric_names)
     if tuple(dataset_metrics.columns) != expected_dataset_columns or dataset_metrics.empty:
         raise ValueError(
             "metrics_by_dataset.tsv does not contain the canonical completed metric table."
@@ -2199,7 +2208,7 @@ def _validate_root_internal_evidence(
         source_predictions = oof_frame.loc[oof_frame["dataset_of_origin"] == source]
         recorded = {
             name: None if row[name] == "" else float(row[name])
-            for name in PERSISTED_METRIC_NAMES
+            for name in metric_names
         }
         _require_recorded_metrics(
             recorded,
@@ -2258,6 +2267,13 @@ def discover_completed_run(
         architecture_path = model_dir / ARCHITECTURE_MANIFEST_FILENAME
         weights_path = model_dir / SAFE_WEIGHTS_FILENAME
         run_manifest = _read_json_object(run_manifest_path, "fold run manifest")
+        expected_distribution = saved_prediction_contract(
+            training_parameters, schema_version=training_parameters["architecture_manifest_version"], context="training_parameters.json",
+        )
+        if saved_prediction_contract(
+            run_manifest, schema_version=training_parameters["architecture_manifest_version"], context=str(run_manifest_path),
+        ) != expected_distribution:
+            raise ValueError(f"Fold manifest disagrees with prediction_distribution: {run_manifest_path}")
         if saved_readout_contract(
             run_manifest, schema_version=training_parameters["architecture_manifest_version"],
             context=str(run_manifest_path),
@@ -2368,6 +2384,11 @@ def discover_completed_run(
                 prediction_path,
                 description=f"held-out fold {held_out_fold} predictions",
             )
+            expected_columns = PERSISTED_PREDICTION_COLUMNS + (
+                UNCERTAINTY_TABLE_COLUMNS if expected_distribution["family"] == "diagonal_gaussian" else ()
+            )
+            if tuple(prediction_frame.columns) != expected_columns:
+                raise ValueError("Fold prediction columns disagree with prediction_distribution.")
             if len(prediction_frame) != run_manifest["evaluation_rows"]:
                 raise ValueError(
                     f"Held-out fold {held_out_fold} predictions do not match "
@@ -2444,6 +2465,8 @@ def discover_completed_run(
         contract_fields += CURRENT_RUN_CONTRACT_FIELDS
     if training_parameters["architecture_manifest_version"] > PRE_READOUT_MANIFEST_VERSION:
         contract_fields += ("readout",)
+    if training_parameters["architecture_manifest_version"] > PRE_UNCERTAINTY_MANIFEST_VERSION:
+        contract_fields += ("prediction_distribution",)
     for field in contract_fields:
         if first.run_manifest.get(field) != second.run_manifest.get(field):
             mismatches.append(
@@ -3095,6 +3118,7 @@ def _write_external_evaluation_payload(
         "context_policy": benchmark.context_policy,
         "normalization_policy": "documented fixed affine scale only; no observed benchmark statistics",
         "model_output_order": list(MODEL_OUTPUT_NAMES),
+        "prediction_interpretation": "conditional VA means only; external uncertainty calibration is not evaluated",
         "model_output_scale": {"valence": [0.0, 1.0], "arousal": [0.0, 1.0]},
         "native_scale": benchmark.native_scale,
         "model_to_native_scale": list(benchmark.model_to_native_scale),

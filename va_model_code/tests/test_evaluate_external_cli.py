@@ -21,6 +21,7 @@ if str(VA_MODEL_CODE) not in sys.path:
 evaluate_external = importlib.import_module("evaluate_external")
 from decoder_va.external_benchmarks import ExternalBenchmarkData
 from decoder_va.model import ARCHITECTURE_MANIFEST_VERSION, PRECISION_CONTRACT
+from decoder_va.readout import readout_contract
 from decoder_va.filters import TRAIN_EVAL_TEXT_OVERLAP_CONTRACT
 
 
@@ -639,6 +640,7 @@ def test_full_cpu_run_predicts_both_members_and_atomically_writes_results(
     )
     common_manifest = {
         "architecture_manifest_version": ARCHITECTURE_MANIFEST_VERSION,
+        "readout": readout_contract(),
         "gaze_redistribution": {"method": "none"},
         "gaze_relation": {"version": 1, "method": "none"},
         "gaze_feature_indices": [],
@@ -783,6 +785,7 @@ def test_full_semeval_run_audits_truncation_and_reports_official_score(
     )
     common_manifest = {
         "architecture_manifest_version": ARCHITECTURE_MANIFEST_VERSION,
+        "readout": readout_contract(),
         "gaze_redistribution": {"method": "none"},
         "gaze_relation": {"version": 1, "method": "none"},
         "gaze_feature_indices": [],
@@ -908,6 +911,7 @@ def test_full_idest_length_sensitivity_uses_override_and_marks_nonprimary(
     )
     common_manifest = {
         "architecture_manifest_version": ARCHITECTURE_MANIFEST_VERSION,
+        "readout": readout_contract(),
         "gaze_redistribution": {"method": "none"},
         "gaze_relation": {"version": 1, "method": "none"},
         "gaze_feature_indices": [],

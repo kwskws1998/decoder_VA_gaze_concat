@@ -1,4 +1,4 @@
-"""TRT-dependent relative rotations of mapped text attention queries and keys.
+"""TRT-dependent relative rotations of mapped text and optional readout queries/keys.
 
 The caller supplies queries and keys after the backbone's native position
 rotation. Each query head learns one zero-initialized scalar, shared across the
@@ -17,7 +17,7 @@ import torch
 from torch import nn
 
 
-GAZE_RELATION_METHODS = ("none", "trt-relative-rotation")
+GAZE_RELATION_METHODS = ("none", "trt-relative-rotation", "trt-readout-rotation")
 GAZE_RELATION_INPUTS = ("aligned", "shuffled")
 _ENABLED_METADATA = {
     "geometry": "native_rope_then_split_half",
@@ -70,11 +70,13 @@ def gaze_relation_contract(
         "scale": normalized_scale,
         **_ENABLED_METADATA,
     }
+    if method == "trt-readout-rotation":
+        contract.update(version=3, scope="mapped_text_pairs_and_readout", readout_reference_trt=0.0)
     if input_mode == "shuffled":
         from .gaze_relation_inputs import SHUFFLE_ALGORITHM
 
         contract.update({
-            "version": 2,
+            "version": 3 if method == "trt-readout-rotation" else 2,
             "input_mode": "shuffled",
             "shuffle_seed": shuffle_seed,
             "shuffle_algorithm": SHUFFLE_ALGORITHM,
@@ -91,36 +93,30 @@ def validate_gaze_relation_contract(contract: Mapping) -> dict:
     if method not in GAZE_RELATION_METHODS:
         raise ValueError(f"Unknown gaze relation method: {method!r}.")
     version = contract.get("version")
-    if type(version) is not int or version not in (1, 2):
-        raise ValueError("gaze relation version must be integer 1 or 2.")
+    if type(version) is not int or version not in (1, 2, 3):
+        raise ValueError("gaze relation version must be integer 1, 2 or 3.")
+    if (method == "trt-readout-rotation") != (version == 3):
+        raise ValueError("gaze relation version 3 requires trt-readout-rotation and vice versa.")
     if version == 2 and method == "none":
         raise ValueError("gaze relation version 2 requires trt-relative-rotation.")
-    expected_keys = {"version", "method"}
-    if method != "none":
-        expected_keys |= {"scale", *_ENABLED_METADATA}
-    if version == 2:
-        expected_keys |= {"input_mode", "shuffle_seed", "shuffle_algorithm"}
-    if set(contract) != expected_keys:
+    shuffled = version == 2 or "input_mode" in contract
+    expected = gaze_relation_contract(
+        method, scale=contract.get("scale", 1.0),
+        input_mode="shuffled" if shuffled else "aligned",
+        shuffle_seed=contract.get("shuffle_seed") if shuffled else None,
+    )
+    if set(contract) != set(expected):
         raise ValueError(
             "Invalid gaze relation contract fields: "
-            f"missing={sorted(expected_keys.difference(contract))}, "
-            f"extra={sorted(set(contract).difference(expected_keys), key=str)}."
+            f"missing={sorted(set(expected).difference(contract))}, "
+            f"extra={sorted(set(contract).difference(expected), key=str)}."
         )
-    if method == "none":
-        return gaze_relation_contract()
-    for name, expected in _ENABLED_METADATA.items():
-        if type(contract[name]) is not type(expected) or contract[name] != expected:
-            raise ValueError(f"Invalid gaze relation {name}: expected {expected!r}.")
-    if version == 2:
-        from .gaze_relation_inputs import SHUFFLE_ALGORITHM
-
-        if contract["input_mode"] != "shuffled" or contract["shuffle_algorithm"] != SHUFFLE_ALGORITHM:
-            raise ValueError("Version 2 requires shuffled input and the supported shuffle_algorithm.")
-        return gaze_relation_contract(
-            method, scale=contract["scale"], input_mode="shuffled",
-            shuffle_seed=contract["shuffle_seed"],
-        )
-    return gaze_relation_contract(method, scale=contract["scale"])
+    for name, expected_value in expected.items():
+        if name == "scale":
+            continue
+        if type(contract[name]) is not type(expected_value) or contract[name] != expected_value:
+            raise ValueError(f"Invalid gaze relation {name}: expected {expected_value!r}.")
+    return expected
 
 
 class TRTRelativeRotation(nn.Module):

@@ -222,7 +222,8 @@ def test_v7_checkpoint_roundtrip_restores_learned_sigmas_and_predictions(tmp_pat
         model.gaze_redistributor.kernel.log_sigma_left.fill_(-0.45)
         model.gaze_redistributor.kernel.log_sigma_right.fill_(0.85)
     _, manifest = _save(model, tmp_path)
-    assert manifest["schema_version"] == ARCHITECTURE_MANIFEST_VERSION == 9
+    assert manifest["schema_version"] == ARCHITECTURE_MANIFEST_VERSION == 10
+    assert manifest["readout"] == {"version": 1, "mode": "last-token"}
     assert manifest["gaze_redistribution"] == manifest["reconstruction"]["gaze_redistribution"]
     assert manifest["gaze_redistribution"]["init_sigma_left"] == 1.0
     assert manifest["gaze_redistribution_trainable_parameters"] == 2

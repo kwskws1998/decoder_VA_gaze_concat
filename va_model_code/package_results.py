@@ -33,6 +33,9 @@ if __package__:
     from .decoder_va.gaze import ET2_FEATURE_NAMES
     from .decoder_va.gaze_relation import gaze_relation_contract, validate_gaze_relation_contract
     from .decoder_va.gaze_relation_reporting import validate_gaze_relation_report
+    from .decoder_va.readout import (
+        saved_readout_contract, readout_pooling_position, readout_concat_order,
+    )
     from .decoder_va.model import (
         ARCHITECTURE_MANIFEST_VERSION,
         DEFAULT_CLASSIFIER_DROPOUT,
@@ -40,12 +43,11 @@ if __package__:
         DEFAULT_GAZE_PROJECTION_DROPOUT,
         FINETUNING_MODES,
         GAZE_FUSIONS,
-        GAZE_PREFIX_ORDER,
-        GAZE_PREFIX_POOLING,
         OUTPUT_ACTIVATION,
         PRE_REDISTRIBUTION_MANIFEST_VERSION,
         PRE_PRECISION_MANIFEST_VERSION,
         PRE_RELATION_MANIFEST_VERSION,
+        PRE_READOUT_MANIFEST_VERSION,
         validate_precision_contract,
         validate_gaze_alignment_contract,
         validate_gaze_relation_setup,
@@ -69,6 +71,9 @@ else:
     from decoder_va.gaze import ET2_FEATURE_NAMES
     from decoder_va.gaze_relation import gaze_relation_contract, validate_gaze_relation_contract
     from decoder_va.gaze_relation_reporting import validate_gaze_relation_report
+    from decoder_va.readout import (
+        saved_readout_contract, readout_pooling_position, readout_concat_order,
+    )
     from decoder_va.model import (
         ARCHITECTURE_MANIFEST_VERSION,
         DEFAULT_CLASSIFIER_DROPOUT,
@@ -76,12 +81,11 @@ else:
         DEFAULT_GAZE_PROJECTION_DROPOUT,
         FINETUNING_MODES,
         GAZE_FUSIONS,
-        GAZE_PREFIX_ORDER,
-        GAZE_PREFIX_POOLING,
         OUTPUT_ACTIVATION,
         PRE_REDISTRIBUTION_MANIFEST_VERSION,
         PRE_PRECISION_MANIFEST_VERSION,
         PRE_RELATION_MANIFEST_VERSION,
+        PRE_READOUT_MANIFEST_VERSION,
         validate_precision_contract,
         validate_gaze_alignment_contract,
         validate_gaze_relation_setup,
@@ -388,6 +392,7 @@ def _saved_relation_contract(
         raise ValueError(f"{label}: schema {version} cannot enable gaze_relation.")
     validate_gaze_relation_setup(
         contract,
+        readout=_saved_readout_contract(metadata, parameters, label=label),
         gaze_fusion=parameters["gaze_fusion"],
         feature_indices=parameters["gaze_feature_indices"],
         gaze_redistribution=_saved_redistribution_contract(metadata, parameters, label=label),
@@ -396,6 +401,19 @@ def _saved_relation_contract(
     if contract["method"] != "none" and parameters["attn_implementation"] != "eager":
         raise ValueError(f"{label}: enabled gaze_relation must record eager attention.")
     return contract
+
+
+def _saved_readout_contract(
+    metadata: Mapping[str, object],
+    parameters: Mapping[str, object],
+    *,
+    label: str,
+) -> dict[str, object]:
+    """Require explicit current pooling and preserve historical last-token reports."""
+
+    return saved_readout_contract(
+        metadata, schema_version=parameters["architecture_manifest_version"], context=label,
+    )
 
 
 def _saved_training_text_overlap_contract(
@@ -435,12 +453,12 @@ def _validate_training_parameters(parameters: Mapping[str, object]) -> None:
         _strict_int(parameters[field], label=field, positive=True)
     if parameters["architecture_manifest_version"] not in {
         PRE_REDISTRIBUTION_MANIFEST_VERSION, PRE_PRECISION_MANIFEST_VERSION,
-        PRE_RELATION_MANIFEST_VERSION, ARCHITECTURE_MANIFEST_VERSION
+        PRE_RELATION_MANIFEST_VERSION, PRE_READOUT_MANIFEST_VERSION, ARCHITECTURE_MANIFEST_VERSION
     }:
         raise ValueError(
             "architecture_manifest_version must be a supported schema version: "
             f"{PRE_REDISTRIBUTION_MANIFEST_VERSION}, {PRE_PRECISION_MANIFEST_VERSION}, "
-            f"{PRE_RELATION_MANIFEST_VERSION} "
+            f"{PRE_RELATION_MANIFEST_VERSION}, {PRE_READOUT_MANIFEST_VERSION} "
             f"or {ARCHITECTURE_MANIFEST_VERSION}."
         )
     if parameters["architecture_manifest_version"] > PRE_PRECISION_MANIFEST_VERSION:
@@ -560,16 +578,13 @@ def _validate_training_parameters(parameters: Mapping[str, object]) -> None:
         parameters, parameters, label="training_parameters.json"
     )
     _saved_relation_contract(parameters, parameters, label="training_parameters.json")
-    expected_order = GAZE_PREFIX_ORDER if gaze_fusion == "prefix-concat" else None
-    expected_pooling = (
-        GAZE_PREFIX_POOLING
-        if gaze_fusion == "prefix-concat"
-        else "last_valid_text_token"
-    )
+    readout = _saved_readout_contract(parameters, parameters, label="training_parameters.json")
+    expected_order = readout_concat_order(gaze_fusion, readout)
+    expected_pooling = readout_pooling_position(gaze_fusion, readout)
     if parameters["gaze_concat_order"] != expected_order:
-        raise ValueError("gaze_concat_order does not match gaze_fusion.")
+        raise ValueError("gaze_concat_order does not match gaze_fusion/readout.")
     if parameters["pooling_position"] != expected_pooling:
-        raise ValueError("pooling_position does not match gaze_fusion.")
+        raise ValueError("pooling_position does not match gaze_fusion/readout.")
 
     if parameters["finetuning_mode"] == "full":
         if any(
@@ -707,6 +722,13 @@ def _select_result_paths(
         relation_report = run_dir / fold_root / "gaze_relation_parameters.json"
         if relation_report.exists() or relation_report.is_symlink():
             relative_paths.append(relation_report.relative_to(run_dir))
+        elif (
+            parameters["architecture_manifest_version"] > PRE_READOUT_MANIFEST_VERSION
+            and _saved_relation_contract(parameters, parameters, label="training_parameters.json")["method"] != "none"
+        ):
+            raise FileNotFoundError(
+                f"Current rotation run is missing gaze_relation_parameters.json: {relation_report}"
+            )
         checkpoint_root = run_dir / fold_root / "checkpoints"
         if checkpoint_root.is_symlink() or not checkpoint_root.is_dir():
             raise FileNotFoundError(
@@ -929,10 +951,15 @@ def _validate_architecture(
     expected_relation = _saved_relation_contract(
         parameters, parameters, label="training_parameters.json"
     )
+    expected_readout = _saved_readout_contract(
+        parameters, parameters, label="training_parameters.json"
+    )
     for source, label in (
         (architecture, "architecture"),
         (reconstruction, "architecture reconstruction"),
     ):
+        if _saved_readout_contract(source, parameters, label=f"Fold {fold} {label}") != expected_readout:
+            raise ValueError(f"Fold {fold} {label} disagrees with readout.")
         if parameters["architecture_manifest_version"] > PRE_PRECISION_MANIFEST_VERSION:
             _validate_current_model_contracts(source, parameters, label=f"Fold {fold} {label}")
         if _saved_redistribution_contract(
@@ -1059,6 +1086,12 @@ def _validate_result_contract(
             raise ValueError(
                 f"Fold {fold} manifest disagrees with training parameters for gaze_relation."
             )
+        if _saved_readout_contract(
+            manifest, parameters, label=manifest_label
+        ) != _saved_readout_contract(
+            parameters, parameters, label="training_parameters.json"
+        ):
+            raise ValueError(f"Fold {fold} manifest disagrees with training parameters for readout.")
         held_out_fold = _strict_int(
             manifest.get("held_out_fold"),
             label=f"fold {fold} held_out_fold",
@@ -1431,6 +1464,7 @@ def _archive_stem(parameters: Mapping[str, object]) -> str:
         gaze_relation=_saved_relation_contract(
             parameters, parameters, label="training_parameters.json"
         ),
+        readout=_saved_readout_contract(parameters, parameters, label="training_parameters.json"),
         seed=seed,
         no_iemocap=_effective_no_iemocap(parameters),
         sentence_only=_sentence_only(parameters),
@@ -1464,6 +1498,9 @@ def _build_package_manifest(
                 parameters, parameters, label="training_parameters.json"
             ),
             "gaze_relation": _saved_relation_contract(
+                parameters, parameters, label="training_parameters.json"
+            ),
+            "readout": _saved_readout_contract(
                 parameters, parameters, label="training_parameters.json"
             ),
             "seed": parameters["seed"],

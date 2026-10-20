@@ -10,6 +10,7 @@ from typing import Mapping, Sequence
 from .gaze import et2_feature_indices_from_names
 from .redistribution import validate_redistribution_contract
 from .gaze_relation import gaze_relation_contract, validate_gaze_relation_contract
+from .readout import readout_contract, validate_readout_contract
 
 
 ACTIVE_CODE_ROOT = Path(__file__).resolve().parents[1]
@@ -52,6 +53,7 @@ def condition_slug(
     sentence_only: bool = False,
     gaze_redistribution: Mapping[str, object] | None = None,
     gaze_relation: Mapping[str, object] | None = None,
+    readout: Mapping[str, object] | None = None,
 ) -> str:
     """Build a condition-identifying slug from the actual training contract."""
 
@@ -85,6 +87,13 @@ def condition_slug(
     relation = validate_gaze_relation_contract(
         gaze_relation_contract() if gaze_relation is None else gaze_relation
     )
+    pooling = validate_readout_contract(readout_contract() if readout is None else readout)
+    if pooling["mode"] != "last-token":
+        condition += f"_readout_{pooling['mode']}"
+    if relation["method"] == "trt-readout-rotation" and pooling["mode"] != "learned-token":
+        raise ValueError("TRT readout rotation requires learned-token readout.")
+    if relation["method"] == "trt-relative-rotation" and pooling["mode"] != "last-token":
+        raise ValueError("Legacy TRT relative rotation requires last-token readout.")
     if relation["method"] != "none":
         if gaze_fusion != "prefix-concat" or "TRT" not in gaze_features:
             raise ValueError("A TRT relation condition requires a TRT gaze prefix.")
@@ -111,6 +120,7 @@ def default_run_name(
     timestamp: datetime | None = None,
     gaze_redistribution: Mapping[str, object] | None = None,
     gaze_relation: Mapping[str, object] | None = None,
+    readout: Mapping[str, object] | None = None,
 ) -> str:
     """Create a sortable, collision-resistant, condition-aware run name."""
 
@@ -126,6 +136,7 @@ def default_run_name(
         sentence_only=sentence_only,
         gaze_redistribution=gaze_redistribution,
         gaze_relation=gaze_relation,
+        readout=readout,
     )
     return f"{prefix}_{condition}"
 

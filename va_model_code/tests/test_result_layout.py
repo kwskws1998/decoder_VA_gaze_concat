@@ -23,6 +23,7 @@ from va_model_code.decoder_va.filters import (
 )
 from va_model_code.decoder_va.model import PRECISION_CONTRACT
 from va_model_code.decoder_va.gaze_relation import gaze_relation_contract
+from va_model_code.decoder_va.readout import readout_contract, readout_concat_order, readout_pooling_position
 
 from va_model_code.decoder_va.redistribution import redistribution_contract
 from va_model_code.decoder_va.paths import (
@@ -72,6 +73,7 @@ def _write_completed_run(
     schema_version: int = 6,
     gaze_redistribution: dict | None = None,
     gaze_relation: dict | None = None,
+    readout: dict | None = None,
     dataset_sources: tuple[str, str, str, str] = ("fake", "fake", "fake", "fake"),
 ) -> None:
     """Create the smallest complete two-fold artifact tree used by packaging tests."""
@@ -147,6 +149,12 @@ def _write_completed_run(
         parameters.update(relation_metadata)
         if parameters["gaze_relation"]["method"] != "none":
             parameters["attn_implementation"] = "eager"
+    readout_metadata = {}
+    if schema_version >= 10 or readout is not None:
+        readout_metadata = {"readout": readout_contract() if readout is None else readout}
+        parameters.update(readout_metadata)
+        parameters["gaze_concat_order"] = readout_concat_order(gaze_fusion, parameters["readout"])
+        parameters["pooling_position"] = readout_pooling_position(gaze_fusion, parameters["readout"])
     current_metadata = {}
     if schema_version >= 8:
         current_metadata = {
@@ -250,6 +258,7 @@ def _write_completed_run(
                     "schema_version": schema_version,
                     **redistribution_metadata,
                     **relation_metadata,
+                    **readout_metadata,
                     **current_metadata,
                     "decoder_model_id": parameters["model_id"],
                     "decoder_commit": parameters["model_revision"],
@@ -277,6 +286,7 @@ def _write_completed_run(
                     "reconstruction": {
                         **redistribution_metadata,
                         **relation_metadata,
+                        **readout_metadata,
                         **current_metadata,
                         "decoder_model_id": parameters["model_id"],
                         "decoder_revision": parameters["model_revision"],

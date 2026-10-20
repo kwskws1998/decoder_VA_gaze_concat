@@ -1,0 +1,64 @@
+{
+  "cases": [
+    {
+      "layer_types": [
+        "full_attention"
+      ],
+      "anchors": [
+        1
+      ],
+      "all_token_change": 0.0,
+      "pooled_last_token_change": 0.0,
+      "alpha_grad_norms": [
+        0.0
+      ]
+    },
+    {
+      "layer_types": [
+        "full_attention"
+      ],
+      "anchors": [
+        1,
+        3
+      ],
+      "all_token_change": 0.050611793994903564,
+      "pooled_last_token_change": 0.0,
+      "alpha_grad_norms": [
+        0.0
+      ]
+    },
+    {
+      "layer_types": [
+        "full_attention",
+        "full_attention"
+      ],
+      "anchors": [
+        1,
+        3
+      ],
+      "all_token_change": 0.1563490778207779,
+      "pooled_last_token_change": 0.008226603269577026,
+      "alpha_grad_norms": [
+        0.5834224820137024,
+        0.0
+      ]
+    },
+    {
+      "layer_types": [
+        "full_attention"
+      ],
+      "anchors": [
+        1,
+        5
+      ],
+      "all_token_change": 0.0672866702079773,
+      "pooled_last_token_change": 0.0672866702079773,
+      "alpha_grad_norms": [
+        1.2025903463363647
+      ]
+    }
+  ],
+  "offset": {
+    "max_difference_after_common_offset10": 0.0
+  }
+}

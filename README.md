@@ -144,6 +144,13 @@ the actual TRT prefix is retained. Compare raw/eager, aligned rotation, and
 shuffled rotation with otherwise identical settings. Learned per-layer/head
 alpha values are exported to each fold's `gaze_relation_parameters.json`.
 
+The new `--readout learned-token --gaze-relation trt-readout-rotation` condition
+connects the final prediction token directly to mapped TRT keys, including
+single-word inputs with positive TRT. Its matched control uses the same learned
+readout with `--gaze-relation none`. Existing rotation checkpoints retain their
+original semantics. [Readout experiment commands and paired checkpoint diagnostics](READOUT_EXPERIMENTS.md)
+describe the new schema and validation; real-data improvement remains untested.
+
 ## Optional gaze redistribution
 
 For the matched raw/fixed/learned sigma diagnosis suite, environment setup,

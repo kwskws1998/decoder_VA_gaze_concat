@@ -42,6 +42,7 @@ from decoder_va.gaze import (
 )
 from decoder_va.model import (
     ARCHITECTURE_MANIFEST_VERSION,
+    PRE_READOUT_MANIFEST_VERSION,
     DEFAULT_DECODER_MODEL_ID,
     DEFAULT_DECODER_REVISION,
     DEFAULT_ET2_REVISION,
@@ -49,8 +50,6 @@ from decoder_va.model import (
     DEFAULT_LORA_DROPOUT,
     DEFAULT_LORA_RANK,
     FINETUNING_MODES,
-    GAZE_PREFIX_ORDER,
-    GAZE_PREFIX_POOLING,
     OUTPUT_ACTIVATION,
     PRECISION_CONTRACT,
     backbone_parameter_dtype,
@@ -60,6 +59,11 @@ from decoder_va.model import (
     validate_gaze_alignment_contract,
     validate_gaze_relation_setup,
     validate_saved_gaze_relation,
+    validate_saved_readout,
+)
+from decoder_va.readout import (
+    READOUT_MODES, readout_contract, saved_readout_contract,
+    readout_pooling_position, readout_concat_order,
 )
 from decoder_va.gaze_relation import GAZE_RELATION_INPUTS, GAZE_RELATION_METHODS, gaze_relation_contract
 from decoder_va.gaze_attention import GAZE_RELATION_IMPLEMENTATION
@@ -127,6 +131,10 @@ def _build_parser() -> argparse.ArgumentParser:
         default="prefix-concat",
     )
     parser.add_argument(
+        "--readout", choices=READOUT_MODES, default="last-token",
+        help="Pool the final text token or append a learned causal prediction token.",
+    )
+    parser.add_argument(
         "--gaze-features",
         nargs="+",
         choices=ET2_FEATURE_NAMES,
@@ -150,7 +158,7 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--redistribution-sigma-left", type=float, default=1.0)
     parser.add_argument(
         "--gaze-relation", choices=GAZE_RELATION_METHODS, default="none",
-        help="Optional raw-TRT rotation of mapped text-pair attention scores; requires eager attention.",
+        help="Optional raw-TRT rotation of text pairs or learned readout-to-word pairs; requires eager attention.",
     )
     parser.add_argument("--gaze-relation-scale", type=float, default=1.0)
     parser.add_argument(
@@ -344,13 +352,14 @@ def _validate_args(args: argparse.Namespace) -> None:
     _redistribution_config(args)
     relation = validate_gaze_relation_setup(
         _gaze_relation_config(args),
+        readout=readout_contract(args.readout),
         gaze_fusion=args.gaze_fusion, feature_indices=args.gaze_feature_indices,
         gaze_redistribution=_redistribution_config(args),
         attn_implementation=args.attn_implementation,
     )
     if relation["method"] == "none":
         if args.gaze_relation_learning_rate is not None:
-            raise ValueError("--gaze-relation-learning-rate requires --gaze-relation trt-relative-rotation.")
+            raise ValueError("--gaze-relation-learning-rate requires an enabled --gaze-relation method.")
         args.gaze_relation_weight_decay = None
     else:
         args.attn_implementation = "eager"
@@ -527,6 +536,7 @@ def _resolve_output_dir(args: argparse.Namespace) -> Path:
             gaze_features=args.gaze_features,
             gaze_redistribution=_redistribution_config(args),
             gaze_relation=_gaze_relation_config(args),
+            readout=readout_contract(args.readout),
             seed=args.seed,
             no_iemocap=args.no_iemocap or args.no_ieomcap,
             sentence_only=args.sentence_only,
@@ -623,8 +633,8 @@ def _validate_resume_contract(
     args: argparse.Namespace,
     fold_output: Path,
     expected_manifest: dict[str, object],
-) -> None:
-    """Reject checkpoints whose recorded architecture or training contract differs."""
+) -> int | None:
+    """Validate resume identity and return its original schema without changing source files."""
 
     if not args.resume_from_checkpoint:
         return
@@ -680,6 +690,7 @@ def _validate_resume_contract(
         "gaze_alignment",
         "gaze_redistribution",
         "gaze_relation",
+        "readout",
         "gaze_features",
         "gaze_feature_indices",
         "features_used",
@@ -713,16 +724,23 @@ def _validate_resume_contract(
         "sentence_only",
     )
     expected_manifest = dict(expected_manifest)
+    recorded_schema = recorded_manifest.get("architecture_manifest_version")
     for label, manifest in (
         ("recorded", recorded_manifest),
         ("expected", expected_manifest),
     ):
         schema_version = manifest.get("architecture_manifest_version")
-        if type(schema_version) is not int or schema_version != ARCHITECTURE_MANIFEST_VERSION:
+        supported_versions = (
+            (PRE_READOUT_MANIFEST_VERSION, ARCHITECTURE_MANIFEST_VERSION)
+            if label == "recorded" else (ARCHITECTURE_MANIFEST_VERSION,)
+        )
+        if type(schema_version) is not int or schema_version not in supported_versions:
             raise ValueError(
-                "Resume checkpoint contract mismatch; refusing historical "
-                "precision and gaze_alignment semantics: "
-                f"{label} architecture_manifest_version={schema_version!r}. Start a new run."
+                "Resume checkpoint contract mismatch: unsupported architecture schema "
+                f"{label} architecture_manifest_version={schema_version!r}. "
+                f"Only unchanged last-token schema {PRE_READOUT_MANIFEST_VERSION} and "
+                f"current schema {ARCHITECTURE_MANIFEST_VERSION} checkpoints are supported; "
+                "historical precision and gaze_alignment semantics require the original code."
             )
         validate_precision_contract(manifest.get("precision_contract"), context=f"Resume {label} manifest")
         overlap_contract = validate_training_text_overlap_contract(
@@ -756,8 +774,16 @@ def _validate_resume_contract(
             raise ValueError(f"Resume {label} manifest is missing gaze_relation.")
         if not isinstance(manifest["gaze_relation"], dict):
             raise ValueError(f"Resume {label} gaze_relation must be a mapping.")
+        manifest["readout"] = saved_readout_contract(
+            manifest, schema_version=schema_version, context=f"Resume {label} manifest",
+        )
+        if manifest.get("pooling_position") != readout_pooling_position(manifest["gaze_fusion"], manifest["readout"]):
+            raise ValueError(f"Resume {label} pooling_position disagrees with readout.")
+        if manifest.get("gaze_concat_order") != readout_concat_order(manifest["gaze_fusion"], manifest["readout"]):
+            raise ValueError(f"Resume {label} gaze_concat_order disagrees with readout.")
         manifest["gaze_relation"] = validate_gaze_relation_setup(
             manifest["gaze_relation"], gaze_fusion=manifest["gaze_fusion"],
+            readout=manifest["readout"],
             feature_indices=manifest["gaze_feature_indices"],
             gaze_redistribution=manifest["gaze_redistribution"],
             attn_implementation=manifest["attn_implementation"],
@@ -766,6 +792,13 @@ def _validate_resume_contract(
             raise ValueError(f"Resume {label} gaze_relation requires explicit eager attention.")
         if "sentence_only" not in manifest:
             manifest["sentence_only"] = False
+    if recorded_schema == PRE_READOUT_MANIFEST_VERSION:
+        if expected_manifest["readout"]["mode"] != "last-token":
+            raise ValueError(
+                f"Schema {PRE_READOUT_MANIFEST_VERSION} resume requires unchanged last-token "
+                "readout; learned-token readout requires a new training run."
+            )
+        recorded_manifest["architecture_manifest_version"] = ARCHITECTURE_MANIFEST_VERSION
     if expected_manifest.get("finetuning_mode") == "lora":
         contract_fields += ("lora_rank", "lora_alpha", "lora_dropout")
     if expected_manifest["gaze_redistribution"]["method"] != "none":
@@ -794,6 +827,7 @@ def _validate_resume_contract(
         )
     if expected_manifest["gaze_redistribution"]["method"] != "none":
         _validate_redistribution_checkpoint(checkpoint_path)
+    return recorded_schema
 
 
 def _print_dataset_counts(title: str, counts: dict[str, int]) -> None:
@@ -975,6 +1009,7 @@ def run(args: argparse.Namespace) -> Path | None:
         )
         print(f"Gaze redistribution: {_redistribution_config(args)}")
         print(f"Gaze relation: {_gaze_relation_config(args)}")
+        print(f"Readout: {readout_contract(args.readout)}")
         if args.gaze_redistribution == "asym-gaussian":
             print(
                 "Redistribution optimizer: "
@@ -1034,6 +1069,7 @@ def run(args: argparse.Namespace) -> Path | None:
         **vars(args),
         "gaze_redistribution": _redistribution_config(args),
         "gaze_relation": _gaze_relation_config(args),
+        "readout": readout_contract(args.readout),
         "gaze_relation_implementation": (
             GAZE_RELATION_IMPLEMENTATION if args.gaze_relation != "none" else None
         ),
@@ -1075,16 +1111,8 @@ def run(args: argparse.Namespace) -> Path | None:
         "gaze_features": active_feature_names,
         "gaze_feature_indices": active_feature_indices,
         "features_used": features_used,
-        "gaze_concat_order": (
-            GAZE_PREFIX_ORDER
-            if args.gaze_fusion == "prefix-concat"
-            else None
-        ),
-        "pooling_position": (
-            GAZE_PREFIX_POOLING
-            if args.gaze_fusion == "prefix-concat"
-            else "last_valid_text_token"
-        ),
+        "gaze_concat_order": readout_concat_order(args.gaze_fusion, readout_contract(args.readout)),
+        "pooling_position": readout_pooling_position(args.gaze_fusion, readout_contract(args.readout)),
         "output_activation": OUTPUT_ACTIVATION,
         "paired_ablation_seed_policy": {
             "purpose": "pair baseline and gaze initialization within each held-out fold",
@@ -1096,6 +1124,7 @@ def run(args: argparse.Namespace) -> Path | None:
             "scope": "per-fold current and peak CUDA allocated/reserved memory",
         },
     }
+    print(f"Readout: {run_manifest['readout']}")
     if args.gaze_relation != "none":
         print(f"Gaze relation implementation: {GAZE_RELATION_IMPLEMENTATION} (FP32 anchor pairs; eager attention).")
     delta_dispatch = run_manifest["training_kernels"]["dispatch"]["torch_chunk_gated_delta_rule"]
@@ -1120,7 +1149,7 @@ def run(args: argparse.Namespace) -> Path | None:
             "evaluation_rows": len(eval_frame),
             "training_text_overlap": overlap_audit,
         }
-        _validate_resume_contract(args, fold_output, expected_fold_manifest)
+        resume_source_schema = _validate_resume_contract(args, fold_output, expected_fold_manifest)
         training_arguments = _training_arguments(
             args,
             fold_output,
@@ -1166,6 +1195,7 @@ def run(args: argparse.Namespace) -> Path | None:
             gaze_fusion=args.gaze_fusion,
             gaze_redistribution=run_manifest["gaze_redistribution"],
             gaze_relation=run_manifest["gaze_relation"],
+            readout=run_manifest["readout"],
             et_repo_id=args.et_model_id,
             et_revision=args.et_revision,
             et_filename=args.et_filename,
@@ -1182,6 +1212,7 @@ def run(args: argparse.Namespace) -> Path | None:
                 model, Path(args.resume_from_checkpoint) / "model.safetensors"
             )
             validate_saved_gaze_relation(model, Path(args.resume_from_checkpoint) / "model.safetensors")
+            validate_saved_readout(model, Path(args.resume_from_checkpoint) / "model.safetensors")
         parameter_summary = model.trainable_parameter_summary()
         print(
             "Trainable parameters: "
@@ -1193,6 +1224,8 @@ def run(args: argparse.Namespace) -> Path | None:
             **expected_fold_manifest,
             **parameter_summary,
         }
+        if resume_source_schema is not None:
+            fold_manifest["resume_source_architecture_manifest_version"] = resume_source_schema
         with open(fold_output / "run_manifest.json", "w", encoding="utf-8") as output_file:
             json.dump(_json_ready(fold_manifest), output_file, indent=2, sort_keys=True)
             output_file.write("\n")

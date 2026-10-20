@@ -12,7 +12,7 @@ class PackedCausalInputs:
     """Hold a right-padded causal batch and optional compact text-anchor layout.
 
     Relation indices have shape (batch, maximum mapped anchors), refer to packed
-    text positions, and use zero for inactive slots. The corresponding boolean
+    text or readout positions, and use zero for inactive slots. The corresponding boolean
     anchor mask is right-padded and distinguishes those slots from actual indices.
     """
 
@@ -196,4 +196,56 @@ def pack_prefix_gaze(
         text_gaze_mask=packed_gaze_mask,
         text_gaze_indices=text_gaze_indices,
         text_gaze_anchor_mask=text_gaze_anchor_mask,
+    )
+
+
+def append_readout_token(
+    packed: PackedCausalInputs,
+    readout_embedding: torch.Tensor,
+    *,
+    relation_reference: bool = False,
+) -> PackedCausalInputs:
+    """Insert one learned token before each row's padding, with optional zero-TRT reference.
+
+    The reference is eligible alongside mapped text anchors, but the gaze prefix
+    and padding remain ineligible. The appended token is causal: no preceding
+    text token can attend to it. Position IDs and pooling follow each row's length.
+    """
+
+    batch_size, width, hidden_size = packed.inputs_embeds.shape
+    if readout_embedding.shape != (hidden_size,):
+        raise ValueError("readout_embedding must have shape [hidden_size].")
+    lengths = packed.attention_mask.long().sum(dim=1)
+    positions = torch.arange(width + 1, device=packed.inputs_embeds.device)[None, :]
+    reference_mask = positions == lengths[:, None]
+    active_mask = positions <= lengths[:, None]
+    extended = torch.cat((packed.inputs_embeds, packed.inputs_embeds.new_zeros(batch_size, 1, hidden_size)), dim=1)
+    readout = readout_embedding.to(device=extended.device, dtype=extended.dtype)[None, None, :]
+    embeddings = torch.where(reference_mask[:, :, None], readout, extended)
+    embeddings = torch.where(active_mask[:, :, None], embeddings, 0)
+    values, eligible, indices, anchors = (
+        packed.text_gaze_values, packed.text_gaze_mask,
+        packed.text_gaze_indices, packed.text_gaze_anchor_mask,
+    )
+    if relation_reference and any(value is None for value in (values, eligible, indices, anchors)):
+        raise ValueError("Readout rotation requires complete mapped-text relation metadata.")
+    if values is not None:
+        values = torch.cat((values, values.new_zeros(batch_size, 1)), dim=1)
+        eligible = torch.cat((eligible, eligible.new_zeros(batch_size, 1)), dim=1)
+        if relation_reference:
+            values = torch.where(reference_mask, 0.0, values)
+            eligible = eligible | reference_mask
+            counts = anchors.long().sum(dim=1)
+            indices = torch.cat((indices, indices.new_zeros(batch_size, 1)), dim=1)
+            indices = indices.scatter(1, counts[:, None], lengths[:, None])
+            anchors = torch.arange(indices.shape[1], device=indices.device)[None, :] <= counts[:, None]
+    return PackedCausalInputs(
+        inputs_embeds=embeddings,
+        attention_mask=active_mask.to(packed.attention_mask.dtype),
+        position_ids=torch.where(active_mask, positions, 0),
+        pooling_positions=lengths,
+        text_gaze_values=values,
+        text_gaze_mask=eligible,
+        text_gaze_indices=indices,
+        text_gaze_anchor_mask=anchors,
     )

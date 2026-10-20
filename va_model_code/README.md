@@ -120,11 +120,15 @@ Qwen adaptation uses trainable boundary parameters and compact selected gaze
 vectors anchored at the verified Qwen token positions rather than adding tokenizer
 vocabulary items or retaining every predictor position.
 
-The causal decoder is pooled at each sample's last valid text token. That token
+By default, the causal decoder is pooled at each sample's last valid text token. That token
 can attend to the complete gaze prefix and all preceding text, whereas the
 prefix-side `eye_end` cannot causally attend to later text. Explicit per-sample
 pooling indices avoid selecting physical right padding, and position IDs are
 rebuilt after packing.
+
+`--readout learned-token` instead appends one trainable prediction token after
+the valid text and pools that token. This mode is shared by the new readout
+rotation and its matched Raw control; see [readout experiments](../READOUT_EXPERIMENTS.md).
 
 The regression head emits exactly:
 
@@ -1022,6 +1026,53 @@ initialization and a held-out synthetic set. This is neither pretrained ET2+Qwen
 VA evidence nor a novelty demonstration. A real comparison still requires
 matched pretrained runs, several seeds, and an independent development split
 for checkpoint selection before final testing.
+
+### Readout-connected rotation
+
+The legacy `trt-relative-rotation` condition retains its original mapped-text
+pair scope and last-text-token pooling. It gives zero direct correction for
+zero/one-anchor inputs. Its final full-attention layer can directly alter the
+regression readout only when that last text token is itself an eligible anchor.
+
+Use `--readout learned-token --gaze-relation trt-readout-rotation` for the new
+condition. A learned embedding is appended after each sample's valid text,
+before padding. Its extra TRT phase is fixed at zero; this is an explicit
+reference position, not a predicted fixation duration. The original text
+anchors keep their raw ET2 TRT values. Existing text-to-text corrections remain,
+and the new readout query receives corrections against preceding mapped text
+keys. Prefix tokens, unmapped text, and padding stay outside the rotation mask.
+Native positional RoPE, causal attention, and the original raw TRT prefix remain.
+
+For readout query `r` and text key `j`, the extra phase difference is
+`alpha[h] * TRT[j] / scale`. Thus a single positive-TRT anchor can affect the
+pooled state and the final full-attention layer's alpha gradient. Zero anchors
+or all-zero TRT still give zero correction. This establishes an information
+path, not a guaranteed performance gain or a monotonic attention preference
+for larger TRT. The absolute TRT reference changes the mechanism: it is no
+longer invariant to adding a constant to all text TRT values.
+
+The matched Raw condition is `--readout learned-token --gaze-relation none`,
+also with eager attention. Both arms share the same seeded readout/head/projector
+initialization; alpha starts at zero, giving identical initial outputs. Changing
+only from the historical last-token Raw model would confound the readout change
+with the rotation change. A learned readout adds one packed position and
+`hidden_size` trainable parameters (1024 for the pinned 0.8B backbone) in both
+arms; the rotated arm additionally has its existing 48 head coefficients.
+
+Schema 10 records the readout contract in root/fold/architecture/reconstruction
+metadata. Package validation, resume, and model loading reject mixed contracts
+and missing, malformed, nonfinite, or non-FP32 learned-readout weights. Schema
+8/9 models continue to load with their original last-token pooling. They cannot
+be resumed as learned-readout models; train new conditions in fresh run folders.
+
+`evaluate_gaze_relation.py` evaluates a completed checkpoint with learned alpha,
+zero alpha, and deterministically shuffled relation-only TRT. It retains the raw
+prefix and uses identical ordered batches for every arm. Reports include source,
+sentence/word group, anchor count, original last-token eligibility, actual shuffle
+changes, and causal-pair phase statistics. Singleton TRT cannot be permuted
+within its sample, so the shuffle control is uninformative for those rows;
+zero-alpha remains useful for the new readout mechanism. See the complete
+[commands and interpretation](../READOUT_EXPERIMENTS.md).
 
 ## Frozen external generalization benchmarks
 

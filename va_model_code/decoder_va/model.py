@@ -25,7 +25,11 @@ from .gaze import (
     et2_features_used_from_indices,
     normalize_et2_feature_indices,
 )
-from .packing import pack_prefix_gaze
+from .packing import PackedCausalInputs, append_readout_token, pack_prefix_gaze
+from .readout import (
+    readout_contract, validate_readout_contract, saved_readout_contract,
+    readout_pooling_position, readout_concat_order,
+)
 from .gaze_relation import gaze_relation_contract, validate_gaze_relation_contract
 from .redistribution import (
     GazeRedistributor,
@@ -48,7 +52,8 @@ GAZE_PREFIX_ORDER = "eye_start, compact_selected_gaze, eye_end, text"
 GAZE_PREFIX_POOLING = "last_valid_text_token_after_gaze_prefix"
 OUTPUT_ACTIVATION = "hard_sigmoid"
 ARCHITECTURE_MANIFEST_FILENAME = "decoder_va_architecture.json"
-ARCHITECTURE_MANIFEST_VERSION = 9
+ARCHITECTURE_MANIFEST_VERSION = 10
+PRE_READOUT_MANIFEST_VERSION = 9
 PRE_RELATION_MANIFEST_VERSION = 8
 PRE_PRECISION_MANIFEST_VERSION = 7
 PRECISION_CONTRACT = {
@@ -170,6 +175,30 @@ def validate_saved_gaze_relation(model: nn.Module, weights_path: str | Path) -> 
                 raise ValueError(f"Saved gaze_relation parameter {name!r} must be finite.")
 
 
+def validate_saved_readout(model: nn.Module, weights_path: str | Path) -> None:
+    """Reject missing, extra, malformed, or nonfinite learned readout checkpoint values."""
+
+    from safetensors import safe_open
+
+    expected = {
+        name: parameter for name, parameter in model.named_parameters()
+        if name == "readout_token" or name.endswith(".readout_token")
+    }
+    with safe_open(weights_path, framework="pt", device="cpu") as saved:
+        available = {
+            name for name in saved.keys()
+            if name == "readout_token" or name.endswith(".readout_token")
+        }
+        if available != set(expected):
+            raise ValueError("Saved readout parameter keys disagree with the model contract.")
+        for name, parameter in expected.items():
+            value = saved.get_tensor(name)
+            if value.dtype != torch.float32 or value.shape != parameter.shape:
+                raise ValueError(f"Saved readout parameter {name!r} has incompatible shape or dtype.")
+            if not bool(torch.isfinite(value).all().item()):
+                raise ValueError(f"Saved readout parameter {name!r} must be finite.")
+
+
 def validate_precision_contract(value: Any, *, context: str) -> dict[str, Any]:
     """Reject saved semantics that predate FP32 weights and FP32 regression output."""
 
@@ -214,12 +243,18 @@ def validate_gaze_alignment_contract(
 def validate_gaze_relation_setup(
     value: Mapping | None, *, gaze_fusion: str, feature_indices: Sequence[int],
     gaze_redistribution: Mapping, attn_implementation: str | None = None,
+    readout: Mapping | None = None,
 ) -> dict[str, Any]:
     """Require raw TRT prefix input and eager attention for the relation experiment."""
 
     relation = validate_gaze_relation_contract(
         gaze_relation_contract() if value is None else value
     )
+    pooling = validate_readout_contract(readout_contract() if readout is None else readout)
+    if relation["method"] == "trt-readout-rotation" and pooling["mode"] != "learned-token":
+        raise ValueError("trt-readout-rotation requires learned-token readout.")
+    if relation["method"] == "trt-relative-rotation" and pooling["mode"] != "last-token":
+        raise ValueError("Legacy trt-relative-rotation requires last-token readout; use trt-readout-rotation.")
     if relation["method"] != "none":
         if gaze_fusion != "prefix-concat" or 3 not in feature_indices:
             raise ValueError("TRT gaze_relation requires prefix-concat with the TRT feature.")
@@ -231,7 +266,7 @@ def validate_gaze_relation_setup(
 
 
 class DecoderVARegressor(nn.Module):
-    """Pool a causal decoder at the final valid text token."""
+    """Pool a causal decoder at the final valid text token or an explicit learned readout."""
 
     supports_gradient_checkpointing = True
 
@@ -243,6 +278,7 @@ class DecoderVARegressor(nn.Module):
         gaze_fusion: str = "prefix-concat",
         gaze_redistribution: Mapping | None = None,
         gaze_relation: Mapping | None = None,
+        readout: Mapping | None = None,
         gaze_projection_dim: int = DEFAULT_GAZE_PROJECTION_DIM,
         gaze_projection_dropout: tuple[
             float,
@@ -267,6 +303,7 @@ class DecoderVARegressor(nn.Module):
         self.hidden_size = _hidden_size(self.config)
         self.output_dim = 2
         self.gaze_fusion = _normalize_gaze_fusion(gaze_fusion)
+        self.readout = validate_readout_contract(readout_contract() if readout is None else readout)
         self.gaze_alignment = (
             copy.deepcopy(GAZE_ALIGNMENT_CONTRACT)
             if self.gaze_fusion == "prefix-concat"
@@ -298,6 +335,7 @@ class DecoderVARegressor(nn.Module):
             gaze_relation, gaze_fusion=self.gaze_fusion,
             feature_indices=() if provider_indices is None else provider_indices,
             gaze_redistribution=self.gaze_redistribution,
+            readout=self.readout,
         )
         self.gaze_relation_layers = []
         if self.gaze_relation["method"] != "none":
@@ -350,6 +388,12 @@ class DecoderVARegressor(nn.Module):
             self.gaze_projector = None
             self.register_parameter("eye_start", None)
             self.register_parameter("eye_end", None)
+        if self.readout["mode"] == "learned-token":
+            self.readout_token = nn.Parameter(torch.empty(self.hidden_size, dtype=torch.float32))
+            nn.init.normal_(self.readout_token, mean=0.0, std=0.02)
+        else:
+            self.register_parameter("readout_token", None)
+        self.config.readout = copy.deepcopy(self.readout)
         self.config.num_labels = self.output_dim
         self.config.problem_type = "regression"
         self.config.gaze_fusion = self.gaze_fusion
@@ -357,14 +401,8 @@ class DecoderVARegressor(nn.Module):
         self.config.gaze_redistribution = copy.deepcopy(self.gaze_redistribution)
         self.config.gaze_relation = copy.deepcopy(self.gaze_relation)
         self.config.gaze_feature_count = self.gaze_feature_count
-        self.config.gaze_concat_order = (
-            GAZE_PREFIX_ORDER if self.gaze_fusion == "prefix-concat" else None
-        )
-        self.config.pooling_position = (
-            GAZE_PREFIX_POOLING
-            if self.gaze_fusion == "prefix-concat"
-            else "last_valid_text_token"
-        )
+        self.config.gaze_concat_order = readout_concat_order(self.gaze_fusion, self.readout)
+        self.config.pooling_position = readout_pooling_position(self.gaze_fusion, self.readout)
         self.config.decoder_va_architecture_version = ARCHITECTURE_MANIFEST_VERSION
         self.config.va_output_names = ["valence", "arousal"]
         self.config.va_output_activation = OUTPUT_ACTIVATION
@@ -449,6 +487,12 @@ class DecoderVARegressor(nn.Module):
             raise ValueError("attention_mask must use contiguous right padding.")
         positions = mask_bool.to(dtype=torch.long).cumsum(dim=1) - 1
         positions = positions.masked_fill(~mask_bool, 0)
+        if self.readout_token is not None:
+            packed = append_readout_token(
+                PackedCausalInputs(text_embeddings, attention_mask, positions, lengths - 1),
+                self.readout_token,
+            )
+            return packed.inputs_embeds, packed.attention_mask, packed.position_ids, packed.pooling_positions
         return text_embeddings, attention_mask, positions, lengths - 1
 
     def _gaze_inputs(
@@ -492,6 +536,11 @@ class DecoderVARegressor(nn.Module):
             eye_end=self.eye_end,
             text_gaze_values=relation_values,
         )
+        if self.readout_token is not None:
+            packed = append_readout_token(
+                packed, self.readout_token,
+                relation_reference=self.gaze_relation["method"] == "trt-readout-rotation",
+            )
         relation_kwargs = {}
         if self.gaze_relation["method"] != "none":
             relation_kwargs = {
@@ -579,6 +628,7 @@ class DecoderVARegressor(nn.Module):
                 )
                 if parameter.requires_grad
             ),
+            "readout_trainable_parameters": self.readout_token.numel() if self.readout_token is not None else 0,
             "gaze_relation_trainable_parameters": sum(
                 parameter.numel() for name, parameter in self.named_parameters()
                 if name.endswith("gaze_relative_rotation.alpha") and parameter.requires_grad
@@ -622,6 +672,7 @@ class DecoderVARegressor(nn.Module):
             "gaze_alignment": copy.deepcopy(self.gaze_alignment),
             "gaze_redistribution": copy.deepcopy(self.gaze_redistribution),
             "gaze_relation": copy.deepcopy(self.gaze_relation),
+            "readout": copy.deepcopy(self.readout),
             "gaze_relation_layers": copy.deepcopy(self.gaze_relation_layers),
             "gaze_features": list(active_names),
             "gaze_feature_indices": list(active_indices),
@@ -638,14 +689,8 @@ class DecoderVARegressor(nn.Module):
                 if self.gaze_provider is not None
                 else None
             ),
-            "gaze_concat_order": (
-                GAZE_PREFIX_ORDER if self.gaze_fusion == "prefix-concat" else None
-            ),
-            "pooling_position": (
-                GAZE_PREFIX_POOLING
-                if self.gaze_fusion == "prefix-concat"
-                else "last_valid_text_token"
-            ),
+            "gaze_concat_order": readout_concat_order(self.gaze_fusion, self.readout),
+            "pooling_position": readout_pooling_position(self.gaze_fusion, self.readout),
             "output_names": list(self.config.va_output_names),
             "output_activation": OUTPUT_ACTIVATION,
             "reconstruction": copy.deepcopy(self._reconstruction_config),
@@ -782,6 +827,7 @@ def build_qwen_va_model(
     gaze_fusion: str = "prefix-concat",
     gaze_redistribution: Mapping | None = None,
     gaze_relation: Mapping | None = None,
+    readout: Mapping | None = None,
     et_repo_id: str = DEFAULT_ET2_REPO_ID,
     et_revision: str = DEFAULT_ET2_REVISION,
     et_filename: str = DEFAULT_ET2_FILENAME,
@@ -803,6 +849,7 @@ def build_qwen_va_model(
     """Construct the selected Qwen VA model and optional pinned ET2 provider."""
 
     normalized_fusion = _normalize_gaze_fusion(gaze_fusion)
+    normalized_readout = validate_readout_contract(readout_contract() if readout is None else readout)
     normalized_finetuning_mode = _normalize_finetuning_mode(finetuning_mode)
     active_feature_indices = (
         normalize_et2_feature_indices(gaze_feature_indices)
@@ -819,6 +866,7 @@ def build_qwen_va_model(
         feature_indices=active_feature_indices,
         gaze_redistribution=normalized_redistribution,
         attn_implementation=attn_implementation,
+        readout=normalized_readout,
     )
     if normalized_relation["method"] != "none":
         attn_implementation = "eager"
@@ -860,6 +908,7 @@ def build_qwen_va_model(
         gaze_fusion=normalized_fusion,
         gaze_redistribution=normalized_redistribution,
         gaze_relation=normalized_relation,
+        readout=normalized_readout,
         gaze_projection_dim=gaze_projection_dim,
         gaze_projection_dropout=gaze_projection_dropout,
         classifier_dropout=classifier_dropout,
@@ -877,6 +926,7 @@ def build_qwen_va_model(
         "gaze_alignment": copy.deepcopy(model.gaze_alignment),
         "gaze_redistribution": copy.deepcopy(normalized_redistribution),
         "gaze_relation": copy.deepcopy(normalized_relation),
+        "readout": copy.deepcopy(normalized_readout),
         "et_repo_id": str(et_repo_id),
         "et_revision": str(et_revision),
         "et_filename": str(et_filename),
@@ -926,12 +976,12 @@ def load_saved_decoder_va_model(
         manifest = json.load(input_file)
     manifest_version = manifest.get("schema_version")
     if type(manifest_version) is not int or manifest_version not in (
-        PRE_RELATION_MANIFEST_VERSION, ARCHITECTURE_MANIFEST_VERSION,
+        PRE_RELATION_MANIFEST_VERSION, PRE_READOUT_MANIFEST_VERSION, ARCHITECTURE_MANIFEST_VERSION,
     ):
         raise ValueError(
             "Unsupported decoder VA architecture manifest version: "
             f"{manifest_version!r}. Historical precision and gaze_alignment semantics "
-            "require the original code; start a new training run with version 9."
+            "require the original code; start a new training run with version 10."
         )
     validate_precision_contract(manifest.get("precision_contract"), context="Saved architecture")
     state_contract = manifest.get("state_dict")
@@ -1029,9 +1079,16 @@ def load_saved_decoder_va_model(
     if redistribution_configs[0] != redistribution_configs[1]:
         raise ValueError("Architecture gaze_redistribution disagrees with reconstruction metadata.")
     saved_redistribution = redistribution_configs[0]
+    readouts = [
+        saved_readout_contract(metadata, schema_version=manifest_version, context=f"Saved {owner}")
+        for owner, metadata in (("architecture", manifest), ("reconstruction", reconstruction))
+    ]
+    if readouts[0] != readouts[1]:
+        raise ValueError("Architecture readout disagrees with reconstruction metadata.")
+    saved_readout = readouts[0]
     relation_configs = []
     for owner, metadata in (("architecture", manifest), ("reconstruction", reconstruction)):
-        if manifest_version == ARCHITECTURE_MANIFEST_VERSION and "gaze_relation" not in metadata:
+        if manifest_version >= PRE_READOUT_MANIFEST_VERSION and "gaze_relation" not in metadata:
             raise ValueError(f"Missing gaze_relation in {owner} metadata.")
         if "gaze_relation" in metadata and not isinstance(metadata["gaze_relation"], Mapping):
             raise ValueError(f"Saved {owner} gaze_relation must be a mapping.")
@@ -1040,6 +1097,7 @@ def load_saved_decoder_va_model(
             feature_indices=saved_feature_indices,
             gaze_redistribution=saved_redistribution,
             attn_implementation=reconstruction["attn_implementation"],
+            readout=saved_readout,
         )
         if manifest_version == PRE_RELATION_MANIFEST_VERSION and relation["method"] != "none":
             raise ValueError("Schema 8 cannot enable gaze_relation.")
@@ -1095,12 +1153,8 @@ def load_saved_decoder_va_model(
         raise ValueError(
             "Architecture manifest gaze_fusion disagrees with reconstruction metadata."
         )
-    expected_order = GAZE_PREFIX_ORDER if saved_fusion == "prefix-concat" else None
-    expected_pooling = (
-        GAZE_PREFIX_POOLING
-        if saved_fusion == "prefix-concat"
-        else "last_valid_text_token"
-    )
+    expected_order = readout_concat_order(saved_fusion, saved_readout)
+    expected_pooling = readout_pooling_position(saved_fusion, saved_readout)
     if manifest.get("gaze_concat_order") != expected_order:
         raise ValueError("Architecture manifest declares an incompatible gaze concat order.")
     if manifest.get("pooling_position") != expected_pooling:
@@ -1173,6 +1227,7 @@ def load_saved_decoder_va_model(
         gaze_fusion=str(reconstruction["gaze_fusion"]),
         gaze_redistribution=saved_redistribution,
         gaze_relation=saved_relation,
+        readout=saved_readout,
         et_repo_id=str(reconstruction["et_repo_id"]),
         et_revision=str(reconstruction["et_revision"]),
         et_filename=str(reconstruction["et_filename"]),
@@ -1194,6 +1249,7 @@ def load_saved_decoder_va_model(
 
     validate_saved_trainable_precision(model, weights_path)
     validate_saved_gaze_relation(model, weights_path)
+    validate_saved_readout(model, weights_path)
     load_model(model, weights_path, strict=True, device="cpu")
     model.eval()
     return model, tokenizer

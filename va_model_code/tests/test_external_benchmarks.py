@@ -61,6 +61,7 @@ from va_model_code.decoder_va.model import (
     SAFE_WEIGHTS_FILENAME,
 )
 from va_model_code.decoder_va.redistribution import redistribution_contract
+from va_model_code.decoder_va.readout import readout_contract, readout_concat_order, readout_pooling_position
 from va_model_code.decoder_va.preprocessing import FOLD_FILENAMES
 
 
@@ -353,11 +354,16 @@ def _write_completed_run(
     overlapping_text: bool = False,
     overlap_policy: str = "exclude",
     record_overlap_policy: bool = False,
+    readout: dict | None = None,
 ) -> None:
     root.mkdir(parents=True, exist_ok=True)
     parameters = _run_contract_fields(root)
     parameters["architecture_manifest_version"] = schema_version
     parameters["finetuning_mode"] = finetuning_mode
+    if schema_version >= 10 or readout is not None:
+        parameters["readout"] = readout_contract() if readout is None else readout
+        parameters["gaze_concat_order"] = readout_concat_order(parameters["gaze_fusion"], parameters["readout"])
+        parameters["pooling_position"] = readout_pooling_position(parameters["gaze_fusion"], parameters["readout"])
     parameters["training_text_overlap_contract"] = training_text_overlap_contract(overlap_policy)
     if record_overlap_policy:
         parameters["training_text_overlap_policy"] = overlap_policy
@@ -391,6 +397,7 @@ def _write_completed_run(
         {"gaze_relation": parameters["gaze_relation"]}
         if "gaze_relation" in parameters else {}
     )
+    readout_metadata = {"readout": parameters["readout"]} if "readout" in parameters else {}
     (root / "training_parameters.json").write_text(
         json.dumps(parameters), encoding="utf-8"
     )
@@ -449,6 +456,7 @@ def _write_completed_run(
             "schema_version": schema_version,
             **redistribution_metadata,
             **relation_metadata,
+            **readout_metadata,
             **current_metadata,
             "decoder_model_id": parameters["model_id"],
             "decoder_commit": parameters["model_revision"],
@@ -472,6 +480,7 @@ def _write_completed_run(
             "reconstruction": {
                 **redistribution_metadata,
                 **relation_metadata,
+                **readout_metadata,
                 **current_metadata,
                 "decoder_model_id": parameters["model_id"],
                 "decoder_revision": parameters["model_revision"],
@@ -1604,6 +1613,44 @@ def _edit_redistribution_metadata(root: Path, target: str, value, *, remove=Fals
     else:
         container["gaze_redistribution"] = value
     path.write_text(json.dumps(payload), encoding="utf-8")
+
+
+@pytest.mark.parametrize("method", ["none", "trt-readout-rotation"])
+def test_discovery_accepts_matched_learned_readout_conditions(tmp_path, method):
+    """Require the same explicit readout geometry for Raw and rotated saved models."""
+
+    contract = readout_contract("learned-token")
+    _write_completed_run(tmp_path, readout=contract, gaze_relation=gaze_relation_contract(method))
+    members = discover_completed_run(tmp_path)
+    assert len(members) == 2
+    assert all(member.architecture_manifest["readout"] == contract for member in members)
+
+
+@pytest.mark.parametrize("target", ["root", "fold1", "fold2", "architecture", "reconstruction"])
+@pytest.mark.parametrize("remove", [False, True])
+def test_discovery_rejects_missing_or_mixed_readout(tmp_path, target, remove):
+    """Reject readout changes even when all other architecture fields still agree."""
+
+    _write_completed_run(tmp_path, readout=readout_contract("learned-token"))
+    _edit_current_contract_metadata(tmp_path, target, "readout", readout_contract(), remove=remove)
+    with pytest.raises(ValueError, match="readout"):
+        discover_completed_run(tmp_path)
+
+
+def test_discovery_preserves_schema9_relative_rotation(tmp_path):
+    """Continue discovering the user's completed legacy relative-rotation run."""
+
+    _write_completed_run(tmp_path, schema_version=9, gaze_relation=gaze_relation_contract("trt-relative-rotation"))
+    members = discover_completed_run(tmp_path)
+    assert all("readout" not in member.run_manifest for member in members)
+
+
+def test_discovery_rejects_readout_semantics_under_schema9(tmp_path):
+    """Do not reinterpret a previous schema as a new readout architecture."""
+
+    _write_completed_run(tmp_path, schema_version=9, readout=readout_contract("learned-token"))
+    with pytest.raises(ValueError, match="readout|schema"):
+        discover_completed_run(tmp_path)
 
 
 @pytest.mark.parametrize("target", ["root", "fold1", "fold2", "architecture", "reconstruction"])

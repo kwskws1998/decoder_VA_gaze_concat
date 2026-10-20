@@ -45,6 +45,7 @@ from .model import (
     OUTPUT_ACTIVATION,
     PRE_PRECISION_MANIFEST_VERSION,
     PRE_RELATION_MANIFEST_VERSION,
+    PRE_READOUT_MANIFEST_VERSION,
     PRE_REDISTRIBUTION_MANIFEST_VERSION,
     SAFE_WEIGHTS_FILENAME,
     validate_gaze_alignment_contract,
@@ -53,6 +54,7 @@ from .model import (
 )
 from .preprocessing import FOLD_FILENAMES
 from .redistribution import validate_redistribution_contract
+from .readout import saved_readout_contract, readout_pooling_position, readout_concat_order
 
 
 EXTERNAL_EVALUATION_SCHEMA_VERSION = 1
@@ -1810,6 +1812,7 @@ def _saved_relation_contract(
             feature_indices=parameters["gaze_feature_indices"],
             gaze_redistribution=_saved_redistribution_contract(metadata, parameters, label=label),
             attn_implementation=parameters.get("attn_implementation"),
+            readout=saved_readout_contract(metadata, schema_version=version, context=label),
         )
     except ValueError as exc:
         raise ValueError(f"{label}: invalid gaze_relation: {exc}") from exc
@@ -1867,10 +1870,18 @@ def _validate_architecture_provenance(
     expected_relation = _saved_relation_contract(
         parameters, parameters, label="training_parameters.json"
     )
+    expected_readout = saved_readout_contract(
+        parameters, schema_version=parameters["architecture_manifest_version"],
+        context="training_parameters.json",
+    )
     for source, label in (
         (architecture, "architecture"),
         (reconstruction, "architecture reconstruction"),
     ):
+        if saved_readout_contract(
+            source, schema_version=parameters["architecture_manifest_version"], context=label,
+        ) != expected_readout:
+            raise ValueError(f"Held-out fold {held_out_fold} {label} disagrees with readout provenance.")
         if parameters["architecture_manifest_version"] >= PRE_RELATION_MANIFEST_VERSION:
             validate_precision_contract(source.get("precision_contract"), context=label)
             if "gaze_alignment" not in source:
@@ -2046,7 +2057,7 @@ def _validate_root_run_parameters(root: Path, parameters: Mapping[str, Any]) -> 
         )
     if type(parameters["architecture_manifest_version"]) is not int or parameters[
         "architecture_manifest_version"
-    ] not in {PRE_REDISTRIBUTION_MANIFEST_VERSION, PRE_PRECISION_MANIFEST_VERSION, PRE_RELATION_MANIFEST_VERSION, ARCHITECTURE_MANIFEST_VERSION}:
+    ] not in {PRE_REDISTRIBUTION_MANIFEST_VERSION, PRE_PRECISION_MANIFEST_VERSION, PRE_RELATION_MANIFEST_VERSION, PRE_READOUT_MANIFEST_VERSION, ARCHITECTURE_MANIFEST_VERSION}:
         raise ValueError(
             "training_parameters.json uses an unsupported architecture manifest version."
         )
@@ -2058,6 +2069,14 @@ def _validate_root_run_parameters(root: Path, parameters: Mapping[str, Any]) -> 
         raise ValueError("Saved finetuning_mode must be full or lora.")
     if parameters["gaze_fusion"] not in {"none", "prefix-concat"}:
         raise ValueError("Saved gaze_fusion must be none or prefix-concat.")
+    readout = saved_readout_contract(
+        parameters, schema_version=parameters["architecture_manifest_version"],
+        context="training_parameters.json",
+    )
+    if parameters["pooling_position"] != readout_pooling_position(parameters["gaze_fusion"], readout):
+        raise ValueError("Saved pooling_position disagrees with readout contract.")
+    if parameters["gaze_concat_order"] != readout_concat_order(parameters["gaze_fusion"], readout):
+        raise ValueError("Saved gaze_concat_order disagrees with readout contract.")
     if parameters["architecture_manifest_version"] >= PRE_RELATION_MANIFEST_VERSION:
         missing_current = sorted(set(CURRENT_RUN_CONTRACT_FIELDS).difference(parameters))
         if missing_current:
@@ -2239,6 +2258,14 @@ def discover_completed_run(
         architecture_path = model_dir / ARCHITECTURE_MANIFEST_FILENAME
         weights_path = model_dir / SAFE_WEIGHTS_FILENAME
         run_manifest = _read_json_object(run_manifest_path, "fold run manifest")
+        if saved_readout_contract(
+            run_manifest, schema_version=training_parameters["architecture_manifest_version"],
+            context=str(run_manifest_path),
+        ) != saved_readout_contract(
+            training_parameters, schema_version=training_parameters["architecture_manifest_version"],
+            context="training_parameters.json",
+        ):
+            raise ValueError(f"Fold manifest disagrees with training_parameters.json for readout: {run_manifest_path}")
         if training_parameters["architecture_manifest_version"] >= PRE_RELATION_MANIFEST_VERSION:
             validate_precision_contract(run_manifest.get("precision_contract"), context=str(run_manifest_path))
             validate_gaze_alignment_contract(
@@ -2415,6 +2442,8 @@ def discover_completed_run(
     contract_fields = RUN_CONTRACT_FIELDS
     if training_parameters["architecture_manifest_version"] >= PRE_RELATION_MANIFEST_VERSION:
         contract_fields += CURRENT_RUN_CONTRACT_FIELDS
+    if training_parameters["architecture_manifest_version"] > PRE_READOUT_MANIFEST_VERSION:
+        contract_fields += ("readout",)
     for field in contract_fields:
         if first.run_manifest.get(field) != second.run_manifest.get(field):
             mismatches.append(
@@ -3090,6 +3119,11 @@ def _write_external_evaluation_payload(
                 ),
                 "gaze_fusion": member.run_manifest.get("gaze_fusion"),
                 "gaze_features": member.run_manifest.get("gaze_features"),
+                "readout": saved_readout_contract(
+                    member.run_manifest,
+                    schema_version=member.run_manifest["architecture_manifest_version"],
+                    context=f"{member.name} run manifest",
+                ),
                 "gaze_redistribution": _saved_redistribution_contract(
                     member.run_manifest,
                     member.run_manifest,

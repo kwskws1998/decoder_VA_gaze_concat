@@ -9,7 +9,7 @@ import numpy as np
 
 from va_model_code.decoder_va.evaluation import calculate_va_metrics
 
-from .core import ExperienceIndex, InsightBook, parse_va, records, sample_rows, text_key
+from .core import ExperienceIndex, InsightBook, json_value, parse_va, records, sample_rows, text_key
 from .prompts import insight_messages, prediction_messages, retry_messages
 
 
@@ -122,16 +122,48 @@ def extract(backend, experiences, max_rules, chunk_size):
         messages = insight_messages(chunk, book.snapshot())
         if backend.token_count(messages) + 256 > backend.context_tokens:
             raise ValueError("Insight batch exceeds context budget; reduce --insight-batch-size.")
-        output = backend.generate(messages, max_new_tokens=256)
+        output = backend.generate(messages, max_new_tokens=192)
         before = book.snapshot()
+        repair_output = None
+        serialization = "model_operations"
+
+        def apply_checked(value):
+            payload = json_value(value)
+            if isinstance(payload, dict) and isinstance(payload.get("operations"), list):
+                for operation in payload["operations"]:
+                    if not isinstance(operation, dict):
+                        continue
+                    rule_text = operation.get("text", "")
+                    if isinstance(rule_text, str) and any(
+                        len(text_key(row["text"])) >= 20
+                        and text_key(row["text"]) in text_key(rule_text)
+                        for row in chunk
+                    ):
+                        raise ValueError("Copied training text is not a general insight.")
+            return book.apply(value)
+
         try:
-            operations = book.apply(output)
+            operations = apply_checked(output)
             error = None
         except (ValueError, TypeError):
-            operations, error = [], "invalid_operations_response"
+            serialization = "plain_rule_serialized_as_ADD"
+            repair_output = backend.generate(insight_messages(chunk, before, plain=True), max_new_tokens=96)
+            rule = repair_output.strip()
+            try:
+                if (
+                    not 25 <= len(rule) <= 350 or "\n" in rule
+                    or any(mark in rule for mark in ("{", "}", "```"))
+                    or not rule.endswith((".", "!", "?"))
+                ):
+                    raise ValueError("The fallback must contain one short prose rule.")
+                operations = apply_checked(json.dumps({"operations": [{"op": "ADD", "text": rule}]}))
+                error = None
+            except (ValueError, TypeError):
+                operations, error = [], "invalid_operations_and_plain_rule"
         log.append({
             "training_row_ids": [x["row_id"] for x in chunk],
             "before": before, "output": output, "operations": operations,
+            "repair_output": repair_output, "serialization": serialization,
             "error": error, "after": book.snapshot(),
         })
         print(f"Insights batch {len(log)}: {len(book.rules)} rules, valid={error is None}", flush=True)

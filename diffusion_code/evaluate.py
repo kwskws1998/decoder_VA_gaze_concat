@@ -39,7 +39,11 @@ def main(argv=None):
     if args.output_dir.exists() and any(args.output_dir.iterdir()):
         raise FileExistsError("Evaluation output must be empty.")
     dtype, bf16, fp16 = baseline._runtime_precision(args.use_cpu, args.precision)
-    model, tokenizer = load_diffusion_model(args.model_dir, dtype=dtype)
+    if contract.get("model_family") == "conditional_mean_guided_ddpm_va":
+        from diffusion_code.mean_guided import load_mean_guided_model
+        model, tokenizer = load_mean_guided_model(args.model_dir, dtype=dtype)
+    else:
+        model, tokenizer = load_diffusion_model(args.model_dir, dtype=dtype)
     device = torch.device("cpu" if args.use_cpu or not torch.cuda.is_available() else "cuda")
     model.to(device).eval()
     frame = read_fold(args.data_file)
@@ -57,6 +61,8 @@ def main(argv=None):
         "evaluation_kind": "saved_model_external_evaluation_not_oof",
         "model_dir": str(args.model_dir.resolve()), "diffusion": model.settings.to_dict(),
         "max_length": args.max_length, "precision": args.precision,
+        "model_family": contract.get("model_family"),
+        "mean_guidance": contract.get("mean_guidance"),
     })
     print(f"Saved-model evaluation: {args.output_dir.resolve()}")
 

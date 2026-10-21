@@ -1072,6 +1072,7 @@ def run(args: argparse.Namespace) -> Path | None:
         trainer.train(resume_from_checkpoint=args.resume_from_checkpoint)
         trainer.save_model(str(fold_output / "final_model"))
         model.save_architecture_manifest(fold_output / "final_model")
+        trainer.state.save_to_json(str(fold_output / "trainer_state.json"))
         prediction_output = trainer.predict(eval_dataset)
         gpu_memory = _cuda_memory_snapshot(args.use_cpu)
         with open(fold_output / "gpu_memory.json", "w", encoding="utf-8") as output_file:

@@ -888,6 +888,24 @@ def load_saved_decoder_va_model(
 
     with open(manifest_path, "r", encoding="utf-8") as input_file:
         manifest = json.load(input_file)
+    model, tokenizer = reconstruct_decoder_va_model(
+        manifest, tokenizer=tokenizer, tokenizer_dir=model_path, dtype=dtype, et_cache_size=et_cache_size,
+    )
+    from safetensors.torch import load_model
+
+    validate_saved_trainable_precision(model, weights_path)
+    reject_experimental_weights(weights_path)
+    load_model(model, weights_path, strict=True, device="cpu")
+    model.eval()
+    return model, tokenizer
+
+
+def reconstruct_decoder_va_model(
+    manifest: dict, *, tokenizer=None, tokenizer_dir: str | Path | None = None,
+    dtype: torch.dtype | str = "auto", et_cache_size: int | None = None,
+) -> tuple[DecoderVARegressor, Any]:
+    """Validate the full baseline blueprint and construct it before separately loading weights."""
+
     manifest_version = manifest.get("schema_version")
     if type(manifest_version) is not int or manifest_version not in (
         PRE_RELATION_MANIFEST_VERSION, PRE_READOUT_MANIFEST_VERSION,
@@ -1122,13 +1140,11 @@ def load_saved_decoder_va_model(
 
 
     if tokenizer is None:
+        if tokenizer_dir is None:
+            raise ValueError("Reconstruction needs a tokenizer or its saved directory.")
         from transformers import AutoTokenizer
-
         tokenizer = AutoTokenizer.from_pretrained(
-            model_path,
-            use_fast=True,
-            trust_remote_code=False,
-            local_files_only=True,
+            tokenizer_dir, use_fast=True, trust_remote_code=False, local_files_only=True,
         )
     tokenizer.padding_side = "right"
 
@@ -1166,10 +1182,4 @@ def load_saved_decoder_va_model(
         attn_implementation=reconstruction["attn_implementation"],
     )
 
-    from safetensors.torch import load_model
-
-    validate_saved_trainable_precision(model, weights_path)
-    reject_experimental_weights(weights_path)
-    load_model(model, weights_path, strict=True, device="cpu")
-    model.eval()
     return model, tokenizer

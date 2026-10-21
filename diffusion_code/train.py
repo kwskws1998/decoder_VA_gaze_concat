@@ -128,10 +128,12 @@ def validate_resume(path, fold_output, contract):
         raise ValueError("Resume contract changed; start a new run instead of reinterpreting weights.")
 
 
-def run(args):
+def run(args, *, mean_reference=None):
     """Run matched fold training and label-free DDPM evaluation; certify completion last."""
 
     baseline._validate_args(args)
+    if mean_reference is not None and (args.gradient_checkpointing or args.resume_from_checkpoint):
+        raise ValueError("Frozen-mean runs use no encoder checkpointing and currently require a fresh run.")
     settings = DiffusionConfig(
         timesteps=args.diffusion_steps, hidden_dim=args.diffusion_width,
         blocks=args.diffusion_blocks, conditioning=args.conditioning,
@@ -184,7 +186,9 @@ def run(args):
     if output.exists() and any(output.iterdir()) and not args.resume_from_checkpoint:
         raise FileExistsError(f"Run directory already contains files: {output}")
     output.mkdir(parents=True, exist_ok=True)
-    tokenizer = load_auto_tokenizer(args.model_id, revision=args.model_revision, use_fast=True, trust_remote_code=False)
+    tokenizer_source = (mean_reference.records[args.held_out_folds[0]]["final_model"]
+                        if mean_reference is not None else args.model_id)
+    tokenizer = load_auto_tokenizer(tokenizer_source, revision=args.model_revision, use_fast=True, trust_remote_code=False)
     tokenizer.padding_side = "right"
     collator = VABatchCollator(tokenizer, pad_to_multiple_of=8)
     public_args = {k: v for k, v in vars(args).items() if k not in ("resume_from_checkpoint", "loss")}
@@ -204,6 +208,11 @@ def run(args):
         "transformers": baseline._package_version("transformers"),
         "training_kernels": training_kernel_report(),
     })
+    if mean_reference is not None:
+        from diffusion_code.mean_guided import FAMILY, MEAN_CONTRACT
+        manifest.update({"model_family": FAMILY, "mean_guidance": MEAN_CONTRACT,
+                         "diffusion_role": "base_schedule_only_target_is_defined_by_mean_guidance",
+                         "mean_reference": mean_reference.provenance()})
     requested_folds = list(args.held_out_folds)
     if args.resume_from_checkpoint:
         original = json.loads((output / "training_parameters.json").read_text())
@@ -216,6 +225,8 @@ def run(args):
     print("Training loss: epsilon MSE. Evaluation loss / best checkpoint: generated-VA MSE.")
     print("Qwen runs once per batch; all DDPM steps reuse its features and projected keys/values.")
     print(f"Diffusion: {settings.to_dict()}")
+    if mean_reference is not None:
+        print("Mean guidance: frozen Raw TRT encoder/head; residual epsilon MSE; only denoiser trains.")
     dispatch = manifest["training_kernels"]["dispatch"]["torch_chunk_gated_delta_rule"]
     print(f"Qwen linear-attention implementation: {dispatch['selected'] or 'unresolved'}")
     if not args.use_cpu and not dispatch["is_fla"]:
@@ -234,16 +245,21 @@ def run(args):
         write_json(fold_output / "run_manifest.json", contract)
         set_seed(contract["fold_seed"])
         baseline._reset_cuda_peak_memory(args.use_cpu)
-        encoder = build_qwen_va_model(
-            tokenizer, model_id=args.model_id, model_revision=args.model_revision,
-            gaze_fusion=args.gaze_fusion, gaze_feature_indices=(3,),
-            et_repo_id=args.et_model_id, et_revision=args.et_revision,
-            et_filename=args.et_filename, et_cache_size=args.et_cache_size,
-            dtype=dtype, finetuning_mode=args.finetuning_mode,
-            lora_rank=args.lora_rank, lora_alpha=args.lora_alpha, lora_dropout=args.lora_dropout,
-            attn_implementation=args.attn_implementation,
-        )
-        model = DiffusionVA(encoder, settings)
+        if mean_reference is None:
+            encoder = build_qwen_va_model(
+                tokenizer, model_id=args.model_id, model_revision=args.model_revision,
+                gaze_fusion=args.gaze_fusion, gaze_feature_indices=(3,),
+                et_repo_id=args.et_model_id, et_revision=args.et_revision,
+                et_filename=args.et_filename, et_cache_size=args.et_cache_size,
+                dtype=dtype, finetuning_mode=args.finetuning_mode,
+                lora_rank=args.lora_rank, lora_alpha=args.lora_alpha, lora_dropout=args.lora_dropout,
+                attn_implementation=args.attn_implementation,
+            )
+            model = DiffusionVA(encoder, settings)
+        else:
+            from diffusion_code.mean_guided import MeanGuidedDiffusionVA
+            encoder, _ = mean_reference.load(held, dtype=dtype, et_cache_size=args.et_cache_size, tokenizer=tokenizer)
+            model = MeanGuidedDiffusionVA(encoder, settings, reference=mean_reference.records[held])
         counts = {
             "total": sum(p.numel() for p in model.parameters()),
             "trainable": sum(p.numel() for p in model.parameters() if p.requires_grad),
@@ -266,6 +282,9 @@ def run(args):
             processing_class=tokenizer, compute_metrics=trainer_compute_metrics,
             head_learning_rate=args.head_learning_rate, run_contract=contract,
         )
+        if mean_reference is not None:
+            from diffusion_code.mean_reports import evaluate_frozen_mean
+            evaluate_frozen_mean(trainer, eval_data, evaluation, held, fold_output, mean_reference)
         trainer.train(resume_from_checkpoint=args.resume_from_checkpoint)
         trainer.save_model(str(fold_output / "final_model"))
         trainer.state.save_to_json(str(fold_output / "trainer_state.json"))
@@ -279,6 +298,8 @@ def run(args):
             "best_model_checkpoint": trainer.state.best_model_checkpoint,
             "best_metric": trainer.state.best_metric,
             "predictions_sha256": sha256_file(fold_output / "predictions.tsv"),
+            **({"frozen_mean_predictions_sha256": sha256_file(fold_output / "frozen_mean/predictions.tsv")}
+               if mean_reference is not None else {}),
         })
         del trainer, model, encoder, train_data, eval_data
         gc.collect()
@@ -293,9 +314,15 @@ def run(args):
         for held in requested_folds
     ]
     write_oof_reports(frames, output, run_parameters=manifest)
+    if mean_reference is not None:
+        from diffusion_code.mean_reports import write_mean_comparison
+        write_mean_comparison(output, requested_folds)
     write_json(output / "COMPLETED.json", {
         "held_out_folds": requested_folds,
         "oof_sha256": sha256_file(output / "oof_predictions.tsv"),
+        **({"frozen_mean_oof_sha256": sha256_file(output / "frozen_mean_oof/oof_predictions.tsv"),
+            "mean_comparison_sha256": sha256_file(output / "mean_comparison.tsv")}
+           if mean_reference is not None else {}),
     })
     print(f"Completed. DDPM OOF reports: {output}")
     return output

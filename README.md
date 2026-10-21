@@ -129,3 +129,14 @@ The refactor tests compare initial weights, dropout RNG, FP32/BF16 predictions,
 gradients and optimizer updates against the frozen implementation, including a
 small native hybrid Qwen model with gradient checkpointing. These are local
 regression checks, not a new full-dataset GPU experiment.
+
+## Qwen 0.5B and 3B experiential prompting
+
+[expel_code/README.md](expel_code/README.md) provides a separate text-only
+experiment using one frozen Qwen2.5-Instruct model (0.5B or 3B) for VA generation,
+training-experience collection, and iterative insight extraction. It compares
+fixed demonstrations, retrieval, insights, and their combination with identical
+held-out examples. It includes the existing data download route and fold-level
+leakage checks, and does not alter the active Qwen/TRT regression model.
+The completed matched model-size pilot is documented in
+[expel_code/MODEL_SIZE_RESULTS.md](expel_code/MODEL_SIZE_RESULTS.md).

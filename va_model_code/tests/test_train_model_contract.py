@@ -380,6 +380,8 @@ def test_training_records_and_passes_canonical_redistribution(tmp_path, monkeypa
 
     class FakeTrainer:
         def __init__(self, **kwargs):
+            from transformers import TrainerState
+            self.state = TrainerState()
             self.model = kwargs["model"]
             trainer_redistribution_lrs.append(
                 kwargs.get("redistribution_learning_rate")

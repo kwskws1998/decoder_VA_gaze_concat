@@ -18,6 +18,7 @@ import pandas as pd
 from va_model_code.decoder_va.evaluation import metrics_from_prediction_frame
 from va_model_code.decoder_va.paths import resolve_run_directory
 from diffusion_code.config import DiffusionConfig
+from diffusion_code.mean_guided import FAMILY as MEAN_FAMILY, MEAN_CONTRACT
 
 
 def verify_metrics(frame, recorded, prefix=""):
@@ -60,16 +61,23 @@ def package_results(run_dir):
         return json.loads(read(relative))
 
     manifest = read_json("training_parameters.json")
-    if manifest.get("model_family") != "conditional_ddpm_va" or manifest.get("schema_version") != 1:
-        raise ValueError("Use this packager only for version-1 DDPM results.")
+    family = manifest.get("model_family")
+    if family not in ("conditional_ddpm_va", MEAN_FAMILY) or manifest.get("schema_version") != 1:
+        raise ValueError("Use this packager only for supported version-1 DDPM results.")
+    mean_guided = family == MEAN_FAMILY
+    if mean_guided and (manifest.get("mean_guidance") != MEAN_CONTRACT
+                        or manifest.get("diffusion_role") != "base_schedule_only_target_is_defined_by_mean_guidance"):
+        raise ValueError("Invalid mean-guided run semantics.")
     settings = DiffusionConfig.from_dict(manifest["diffusion"])
+    if mean_guided and not settings.clip_clean:
+        raise ValueError("Mean-guided results require clipping in original VA bounds.")
     completion = read_json("COMPLETED.json")
     folds = manifest["arguments"]["held_out_folds"]
     if not folds or len(set(folds)) != len(folds) or set(folds) - {1, 2}:
         raise ValueError("Invalid requested held-out folds.")
     if completion["held_out_folds"] != folds:
         raise ValueError("Not all requested folds completed.")
-    fold_frames = []
+    fold_frames, mean_frames, comparison_rows = [], [], []
     for fold in folds:
         directory = f"heldout_fold{fold}"
         completed = read_json(f"{directory}/COMPLETED.json")
@@ -87,10 +95,21 @@ def package_results(run_dir):
             raise ValueError("Best checkpoint identity mismatch.")
         if state["best_metric"] != completed["best_metric"] or state["best_metric"] is None:
             raise ValueError("Missing or inconsistent best-checkpoint metric.")
-        architecture = read_json(f"{directory}/final_model/diffusion_architecture.json")
-        if architecture["diffusion"] != settings.to_dict():
+        architecture_name = "mean_guided_architecture.json" if mean_guided else "diffusion_architecture.json"
+        architecture = read_json(f"{directory}/final_model/{architecture_name}")
+        if architecture["base_schedule" if mean_guided else "diffusion"] != settings.to_dict():
             raise ValueError("Final model DDPM settings disagree with training.")
-        read_json(f"{directory}/final_model/encoder_architecture.json")
+        if architecture["model_family"] != family or architecture["schema_version"] != 1:
+            raise ValueError("Final model family disagrees with training.")
+        encoder = read_json(f"{directory}/final_model/encoder_architecture.json")
+        if mean_guided:
+            expected_reference = manifest["mean_reference"]["folds"][str(fold)]
+            if architecture["mean_guidance"] != MEAN_CONTRACT or architecture["reference"] != expected_reference:
+                raise ValueError("Final mean predictor reference disagrees with training.")
+            if architecture["encoder_sha256"] != hashlib.sha256(content[f"{directory}/final_model/encoder_architecture.json"]).hexdigest():
+                raise ValueError("Mean predictor blueprint changed after saving.")
+            if encoder["role"] != "frozen_raw_mean_predictor_with_regression_head":
+                raise ValueError("Invalid frozen mean component.")
         if read_json(f"{directory}/final_model/diffusion_training_contract.json") != contract:
             raise ValueError("Saved final-model training contract disagrees with the fold.")
         read_json(f"{directory}/gpu_memory.json")
@@ -105,6 +124,18 @@ def package_results(run_dir):
             raise ValueError("Duplicate evaluation row IDs.")
         verify_metrics(frame, read_json(f"{directory}/metrics.json"), prefix="test_")
         fold_frames.append(frame)
+        if mean_guided:
+            raw_mean = read(f"{directory}/frozen_mean/predictions.tsv")
+            if hashlib.sha256(raw_mean).hexdigest() != completed["frozen_mean_predictions_sha256"]:
+                raise ValueError("Frozen mean predictions changed after completion.")
+            mean = pd.read_csv(io.BytesIO(raw_mean), sep="\t", keep_default_na=False)
+            identity = ["index", "held_out_fold", "text", "dataset_of_origin", "valence", "arousal"]
+            pd.testing.assert_frame_equal(mean[identity], frame[identity], check_dtype=False, rtol=1e-7, atol=1e-9)
+            verify_metrics(mean, read_json(f"{directory}/frozen_mean/metrics.json"))
+            read_json(f"{directory}/frozen_mean/reproduction.json")
+            mean_frames.append(mean)
+            for name, values in [("frozen_raw_mean", mean), ("mean_guided_ddpm", frame)]:
+                comparison_rows.append({"held_out_fold": str(fold), "condition": name, **metrics_from_prediction_frame(values)})
     raw = read("oof_predictions.tsv")
     if hashlib.sha256(raw).hexdigest() != completion["oof_sha256"]:
         raise ValueError("OOF predictions changed after completion.")
@@ -119,14 +150,32 @@ def package_results(run_dir):
         raise ValueError("Duplicate dataset metric rows.")
     for name, frame in oof.groupby("dataset_of_origin"):
         verify_metrics(frame, by_dataset.loc[by_dataset.dataset_of_origin.eq(name)].iloc[0].to_dict())
+    if mean_guided:
+        raw_mean = read("frozen_mean_oof/oof_predictions.tsv")
+        if hashlib.sha256(raw_mean).hexdigest() != completion["frozen_mean_oof_sha256"]:
+            raise ValueError("Frozen mean OOF predictions changed after completion.")
+        means = pd.read_csv(io.BytesIO(raw_mean), sep="\t", keep_default_na=False)
+        expected = pd.concat(mean_frames).sort_values(["index", "held_out_fold"], kind="stable").reset_index(drop=True)
+        pd.testing.assert_frame_equal(means, expected, check_dtype=False, rtol=1e-7, atol=1e-9)
+        verify_metrics(means, read_json("frozen_mean_oof/oof_metrics.json"))
+        read_json("frozen_mean_oof/training_parameters.json")
+        read("frozen_mean_oof/metrics_by_dataset.tsv")
+        for name, frame in [("frozen_raw_mean", means), ("mean_guided_ddpm", oof)]:
+            comparison_rows.append({"held_out_fold": "oof", "condition": name, **metrics_from_prediction_frame(frame)})
+        raw_comparison = read("mean_comparison.tsv")
+        if hashlib.sha256(raw_comparison).hexdigest() != completion["mean_comparison_sha256"]:
+            raise ValueError("Mean comparison changed after completion.")
+        saved = pd.read_csv(io.BytesIO(raw_comparison), sep="\t", dtype={"held_out_fold": str})
+        pd.testing.assert_frame_equal(saved, pd.DataFrame(comparison_rows), check_dtype=False, rtol=1e-6, atol=1e-9)
     package_manifest = {
-        "model_family": "conditional_ddpm_va", "held_out_folds": folds,
+        "model_family": family, "held_out_folds": folds,
         "weights_included": False,
         "sha256": {name: hashlib.sha256(raw).hexdigest() for name, raw in content.items()},
     }
     content["PACKAGE_MANIFEST.json"] = json.dumps(package_manifest, indent=2).encode()
     stamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
-    archive = run_dir / f"ddpm_completed_results_only_{stamp}.zip"
+    prefix = "mean_guided_ddpm" if mean_guided else "ddpm"
+    archive = run_dir / f"{prefix}_completed_results_only_{stamp}.zip"
     created = False
     try:
         with zipfile.ZipFile(archive, "x", compression=zipfile.ZIP_DEFLATED) as output:

@@ -1,5 +1,10 @@
 # Conditional DDPM for VA with TRT
 
+Completed-run diagnostics, a current-code Raw TRT control, and the separate
+frozen-mean residual DDPM experiment are documented in
+[FOLLOWUP_EXPERIMENTS.md](FOLLOWUP_EXPERIMENTS.md). The original DDPM below
+retains its version-1 training and sampling semantics.
+
 This is a new experiment, isolated from `va_model_code/train_model.py` and the
 frozen `legacy_code/` experiments. The baseline still uses its original raw TRT
 prefix and last-valid-text-token regression head. This experiment reuses that

@@ -10,6 +10,7 @@ from types import SimpleNamespace
 import numpy as np
 import pandas as pd
 import pytest
+from transformers import TrainerState
 
 from va_model_code.decoder_va.filters import TRAIN_EVAL_TEXT_OVERLAP_CONTRACT
 
@@ -61,6 +62,7 @@ def offline_overlap_run(tmp_path, monkeypatch):
 
     class RecordingTrainer:
         def __init__(self, **kwargs):
+            self.state = TrainerState()
             self.train_dataset = kwargs["train_dataset"]
             self.eval_dataset = kwargs["eval_dataset"]
             self.args = kwargs["args"]

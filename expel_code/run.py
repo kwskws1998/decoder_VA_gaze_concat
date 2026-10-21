@@ -1,4 +1,4 @@
-"""Run a Qwen2.5-0.5B-only ExPeL-inspired VA experiment without a server or weight updates."""
+"""Run a single-Qwen ExPeL-inspired VA experiment without a server or weight updates."""
 
 from __future__ import annotations
 
@@ -7,6 +7,7 @@ import importlib.metadata
 import json
 from pathlib import Path
 import re
+import shutil
 import sys
 
 if __package__ in (None, ""):
@@ -15,7 +16,7 @@ if __package__ in (None, ""):
 from va_model_code.decoder_va.downloads import sha256_file
 from va_model_code.decoder_va.filters import load_filtered_folds
 from va_model_code.prepare_english_data import main as prepare_data
-from expel_code.backend import QwenBackend
+from expel_code.backend import MODEL_SPECS, QwenBackend
 from expel_code.core import isolate_train
 from expel_code.experiment import run_fold, save_json, score_predictions
 
@@ -31,6 +32,7 @@ def parser():
     result.add_argument("--data-dir", type=Path, default=ROOT / "va_model_code/data/paper7_seed42")
     result.add_argument("--download-data", action="store_true")
     result.add_argument("--model-path", default=None)
+    result.add_argument("--model-size", choices=tuple(MODEL_SPECS), default="0.5b")
     result.add_argument("--device", choices=("auto", "cpu", "cuda", "mps"), default="auto")
     result.add_argument("--held-out-folds", nargs="+", type=int, choices=(1, 2), default=[1, 2])
     result.add_argument("--sentence-only", action="store_true")
@@ -103,6 +105,7 @@ def main(argv=None):
     if args.model_path:
         model_dir = Path(args.model_path)
         model_files = sorted(model_dir.glob("*.safetensors")) + sorted(model_dir.glob("*.json"))
+        model_files += [path for path in (model_dir / "merges.txt",) if path.is_file()]
         if not any(path.suffix == ".safetensors" for path in model_files):
             raise ValueError("model-path must contain local safetensors weights.")
         manifest["local_model_sha256"] = {p.name: sha256_file(p) for p in model_files}
@@ -119,9 +122,14 @@ def main(argv=None):
     else:
         output.mkdir(parents=True)
         save_json(manifest_path, manifest)
+    for path in source_paths:
+        saved_source = output / "source" / path.relative_to(ROOT)
+        saved_source.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(path, saved_source)
     backend = QwenBackend(
         output / "cache", model_path=args.model_path, device=args.device,
         context_tokens=args.context_tokens, threads=args.threads,
+        model_size=args.model_size,
     )
     if "local_model_sha256" in manifest:
         backend.identity["local_model_sha256"] = manifest["local_model_sha256"]

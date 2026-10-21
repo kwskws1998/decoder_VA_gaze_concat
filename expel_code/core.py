@@ -33,8 +33,19 @@ def json_value(text: str):
 
     value = text.strip()
     if value.startswith("```") and value.endswith("```"):
+        if "\n" not in value:
+            raise ValueError("A JSON fence must contain a newline.")
         value = value.split("\n", 1)[1].rsplit("```", 1)[0].strip()
-    return json.loads(value)
+
+    def unique_pairs(pairs):
+        result = {}
+        for key, entry in pairs:
+            if key in result:
+                raise ValueError("Duplicate JSON keys are ambiguous.")
+            result[key] = entry
+        return result
+
+    return json.loads(value, object_pairs_hook=unique_pairs)
 
 
 def parse_va(text: str) -> tuple[float, float]:
@@ -61,8 +72,8 @@ def validated_frame(frame: pd.DataFrame) -> pd.DataFrame:
     if not required.issubset(frame.columns):
         raise ValueError(f"Missing data columns: {sorted(required - set(frame.columns))}")
     frame = frame.copy()
-    if frame.empty or not frame["text"].map(lambda x: isinstance(x, str) and bool(x.strip())).all():
-        raise ValueError("Each split needs nonempty text rows.")
+    if frame.empty or not frame["text"].map(lambda x: isinstance(x, str)).all():
+        raise ValueError("Each split needs rows whose texts are strings.")
     scores = frame[["valence", "arousal"]].to_numpy(dtype=float)
     if not np.isfinite(scores).all() or not ((scores >= 0) & (scores <= 1)).all():
         raise ValueError("Labels must be finite and normalized to [0, 1].")

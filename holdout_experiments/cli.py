@@ -22,7 +22,7 @@ def parser():
         command.add_argument("--epochs", type=int, default=10, help="Lock before training; default 10 for every fit.")
         command.add_argument("--seed", type=int, default=42)
         command.add_argument("--split-seed", type=int, default=42)
-        command.add_argument("--conditions", nargs=4, choices=CONDITIONS, default=CONDITIONS)
+        command.add_argument("--conditions", nargs="+", choices=CONDITIONS, default=CONDITIONS)
     command = commands.add_parser("train", help="Train one declared arm using train and validation only")
     command.add_argument("--run", type=Path, required=True)
     command.add_argument("--arm", choices=ARMS, required=True)

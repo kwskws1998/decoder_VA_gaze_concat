@@ -13,7 +13,7 @@ from trt_pipeline.config import DATA_DIR, DATA_HASHES, ROOT
 from trt_pipeline.core.filters import load_filtered_folds
 from trt_pipeline.data import contract_sha256, frame_sha256, source_counts, text_groups
 
-from .config import ARMS, CONDITIONS, EXPOSURE_NOTE, Settings, updates_per_epoch
+from .config import CONDITIONS, EXPOSURE_NOTE, Settings, conditions_from_lock, training_arms, updates_per_epoch, validate_conditions
 
 
 PARTITIONS = ("train", "val", "test")
@@ -121,10 +121,11 @@ def validate_partitions(frames):
             raise ValueError(f"Data leakage between {PARTITIONS[first]} and {PARTITIONS[second]}.")
 
 
-def prepare(output, data_dir=DATA_DIR, settings=None):
+def prepare(output, data_dir=DATA_DIR, settings=None, conditions=CONDITIONS):
     """Create an exclusive run with locked data, sources and all training settings."""
 
     settings = Settings() if settings is None else settings
+    conditions = validate_conditions(conditions)
     data_dir, output = Path(data_dir).resolve(), Path(output).resolve()
     if output.exists():
         raise FileExistsError(f"Run directory already exists: {output}")
@@ -154,14 +155,14 @@ def prepare(output, data_dir=DATA_DIR, settings=None):
         }
     lock = {
         "schema": 1, "created_utc": utc_now(), "settings": settings.as_dict(),
-        "conditions": list(CONDITIONS), "training_arms": list(ARMS),
+        "conditions": list(conditions), "training_arms": list(training_arms(conditions)),
         "original_sha256": original, "combined_rows": len(frame), "partitions": partitions,
         "split_algorithm": "source_count_greedy_normalized_text_groups_v1",
         "group_normalization": "NFKC+casefold+whitespace-collapse",
         "blank_text_policy": "retain_as_one_group_and_use_shared_tokenizer_EOS_fallback",
         "labels_used_for_splitting": False, "iemocap": "excluded",
         "checkpoint_selection": "minimum_validation_mean_MSE_first_tie_wins",
-        "test_policy": "evaluate_once_after_all_three_selection_receipts_are_sealed",
+        "test_policy": "evaluate_once_after_all_selected_training_receipts_are_sealed",
         "sample_order": "uniform_seeded_permutation_same_across_arms_each_epoch",
         "updates_per_epoch": updates_per_epoch(len(frames["train"]), settings),
         "total_updates_per_fit": updates_per_epoch(len(frames["train"]), settings) * settings.epochs,
@@ -189,6 +190,7 @@ def load_lock(run):
     body = {key: value for key, value in lock.items() if key != "protocol_sha256"}
     if contract_sha256(body) != lock.get("protocol_sha256"):
         raise ValueError("Protocol lock has changed.")
+    conditions_from_lock(lock)
     settings = Settings(**lock["settings"])
     if lock["source_sha256"] != source_manifest():
         raise ValueError("Source changed since prepare; create a new run before training.")

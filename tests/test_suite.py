@@ -5,23 +5,24 @@ import json
 import pytest
 
 import environment_runtime
-from holdout_experiments.config import CONDITIONS, Settings
+from holdout_experiments.config import CONDITIONS, REMAINING_CONDITIONS, Settings
 from holdout_experiments import execution
 from holdout_experiments.suite import condition_event
 
 
-def mocked_suite(tmp_path, monkeypatch, *, fail_on=None):
+def mocked_suite(tmp_path, monkeypatch, *, fail_on=None, conditions=CONDITIONS):
     """Exercise real orchestration and status files with no GPU fits or test predictions."""
 
     from holdout_experiments import engine, reporting
     output = tmp_path / "run"
     calls = []
 
-    def prepare(run, data_dir, settings):
+    def prepare(run, data_dir, settings, **kwargs):
         """Create only the temporary run directory for the orchestrator fixture."""
 
         run.mkdir(exist_ok=False)
-        return {"protocol_sha256": "fixture_protocol"}
+        assert tuple(kwargs["conditions"]) == conditions
+        return {"protocol_sha256": "fixture_protocol", "conditions": list(conditions)}
 
     def train(run, condition):
         """Record three required fits and raise deterministically when requested."""
@@ -39,17 +40,17 @@ def mocked_suite(tmp_path, monkeypatch, *, fail_on=None):
     def evaluate(run):
         """Mark four ordered test results without loading test rows in this fixture."""
 
-        calls.append(("evaluate", CONDITIONS))
-        for condition in CONDITIONS:
+        calls.append(("evaluate", conditions))
+        for condition in conditions:
             condition_event(run, condition, "test_evaluation", "running")
             condition_event(run, condition, "test_evaluation", "completed")
-        return {"conditions": list(CONDITIONS), "condition_count": 4}
+        return {"conditions": list(conditions), "condition_count": len(conditions)}
 
     def verify(run):
         """Complete verification only after the four test events."""
 
-        calls.append(("verify", 4))
-        return {"status": "passed", "arms": 4}
+        calls.append(("verify", len(conditions)))
+        return {"status": "passed", "arms": len(conditions)}
 
     monkeypatch.setattr(environment_runtime, "require_active_conda", lambda: {})
     monkeypatch.setattr(execution, "prepare", prepare)
@@ -96,3 +97,23 @@ def test_full_run_cannot_silently_omit_a_condition(tmp_path):
     with pytest.raises(ValueError, match="four conditions"):
         execution.execute(output=tmp_path / "run", conditions=("baseline", "companion", "redistribution"))
     assert not (tmp_path / "run").exists()
+
+
+def test_remaining_three_runs_two_fits_then_all_three_test_outputs(tmp_path, monkeypatch):
+    output, calls = mocked_suite(tmp_path, monkeypatch, conditions=REMAINING_CONDITIONS)
+    result = execution.execute(output=output, stage="run", settings=Settings(), conditions=REMAINING_CONDITIONS)
+    assert calls == [("train", "baseline"), ("train", "companion"), ("prepare", "prediction_mixture"),
+                     ("evaluate", REMAINING_CONDITIONS), ("verify", 3)]
+    assert result["condition_count"] == 3
+    state = json.loads((output / "suite_status.json").read_text())
+    assert state["status"] == "completed"
+    assert state["condition_order"] == list(REMAINING_CONDITIONS)
+    assert "redistribution" not in state["conditions"]
+
+
+def test_remaining_three_failure_does_not_reach_test(tmp_path, monkeypatch):
+    output, calls = mocked_suite(tmp_path, monkeypatch, conditions=REMAINING_CONDITIONS, fail_on="companion")
+    with pytest.raises(RuntimeError, match="fixture failure"):
+        execution.execute(output=output, stage="run", settings=Settings(), conditions=REMAINING_CONDITIONS)
+    assert calls == [("train", "baseline"), ("train", "companion")]
+    assert not (output / "evaluation_started.json").exists()

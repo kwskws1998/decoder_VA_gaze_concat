@@ -67,6 +67,8 @@ python run_experiments.py --stage check-runtime --gpu 0
 
 `suite_status.json`은 네 조건의 진행·완료·실패를 구분한다. 한 조건이 실패하면 다음 조건과 test로 넘어가지 않고 오류를 보존한다. **네 결과와 최종 검증이 모두 완료돼야 전체 suite가 completed가 된다.**
 
+이미 redistribution을 완료했다면 기존 명령에 `--conditions baseline companion prediction_mixture`를 지정한다. 이 경우 baseline과 companion 두 모델만 학습하고, 두 validation 선택이 모두 확정된 뒤 세 조건의 test 평가·고정 혼합·CPU 검증까지 자동 실행한다. Redistribution 모델이나 결과는 요구하거나 새로 생성하지 않는다. 선택한 세 조건은 준비 시 protocol lock과 상태·보고서에 기록된다. 기본값은 기존 네 조건이다. 코드가 바뀌기 전에 만든 protocol lock을 재사용하지 말고 새로운 output 경로를 사용한다.
+
 ## Python 실험 파일과 상세 인자
 
 **직접 실행할 파일은 루트 `run_experiments.py`다.** 파일 상단에 `OUTPUT`, `INPUT_DATA`, `STAGE`, `TRAIN_ARM`, `GPU`, `EXPERIMENT_SETTINGS = Settings(...)`가 있으며 split 비율, seed, epochs, batch, LR, WD, warmup, clip, Gaussian 폭과 LR, 고정 혼합 계수, noise, pinned model IDs/revisions를 모두 명시했다. 실행 전에 Python 파일에서 값을 적어도 되고, 아래처럼 상세 인자를 주어도 된다. import만 하면 실행되지 않는다.
@@ -151,7 +153,7 @@ results/holdout_seed42/
   test_results/
     {baseline,companion,redistribution,prediction_mixture}.npz
     report.json                각 모델 지표와 baseline 대비 차이, 시간, 선택 증거
-    metrics.tsv                V/A 각각 Pearson, RMSE, MAE
+    metrics.tsv                V/A Pearson, RMSE, MAE, MSE, CCC와 기록된 평균·행 수
     verification.json          CPU에서 행/label/SHA/혼합/지표 재계산
   complete.json                최종 결과 SHA
 ```

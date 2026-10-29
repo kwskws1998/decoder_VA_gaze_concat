@@ -174,3 +174,15 @@ def test_changed_compute_settings_do_not_claim_a_calibrated_eta():
     assert not estimate["calibration_matches_compute_settings"]
     assert estimate["estimated_hours_without_extra_buffer"] is None
     assert estimate["planning_hours_with_25pct_buffer"] is None
+
+
+def test_three_condition_estimate_counts_only_two_fits():
+    from holdout_experiments.config import REMAINING_CONDITIONS
+    from holdout_experiments.estimate import estimate_runtime
+    lock = {"conditions": list(REMAINING_CONDITIONS), "training_arms": ["baseline", "companion"],
+            "partitions": {name: {"rows": rows} for name, rows in
+                           (("train", 43034), ("val", 5377), ("test", 5380))},
+            "total_updates_per_fit": 26900, "settings": Settings().as_dict()}
+    estimate = estimate_runtime(lock)
+    assert estimate["training_runs"] == 2
+    assert set(estimate["per_arm_nominal_hours"]) == {"baseline", "companion"}

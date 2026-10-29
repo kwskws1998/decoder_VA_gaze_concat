@@ -5,7 +5,7 @@ from pathlib import Path
 
 from trt_pipeline.config import DATA_DIR
 
-from .config import ARMS, CONDITIONS, Settings
+from .config import ARMS, CONDITIONS, Settings, conditions_from_lock, training_arms, validate_conditions
 from .estimate import estimate_runtime
 from .protocol import load_lock, prepare, write_json
 
@@ -20,15 +20,14 @@ def execute(*, output, data_dir=DATA_DIR, settings=None, stage="run", arm="basel
         raise ValueError(f"Unknown stage: {stage}")
     if arm not in ARMS:
         raise ValueError(f"Unknown arm: {arm}")
-    if tuple(conditions) != CONDITIONS:
-        raise ValueError(f"The full suite requires these four conditions in order: {CONDITIONS}")
+    conditions = validate_conditions(conditions)
     output = Path(output).resolve()
     if stage in ("prepare", "run"):
         settings = Settings() if settings is None else settings
         if stage == "run":
             from environment_runtime import require_active_conda
             require_active_conda()
-        lock = prepare(output, data_dir, settings)
+        lock = prepare(output, data_dir, settings, conditions=conditions)
         estimate = estimate_runtime(lock)
         write_json(output / "runtime_estimate.json", estimate)
         print(json.dumps({"settings": settings.as_dict(), "runtime_estimate": estimate}, indent=2), flush=True)
@@ -37,11 +36,11 @@ def execute(*, output, data_dir=DATA_DIR, settings=None, stage="run", arm="basel
         from .engine import train
         from .reporting import evaluate, prepare_prediction_mixture, verify_results
         from .suite import condition_event, finish_suite, start_suite
-        start_suite(output, lock["protocol_sha256"])
+        start_suite(output, lock["protocol_sha256"], conditions=conditions)
         current = None
         phase = "preparation"
         try:
-            for condition in CONDITIONS:
+            for condition in conditions:
                 current = condition
                 phase = "mixture_preparation" if condition == "prediction_mixture" else "training"
                 condition_event(output, condition, phase, "running")
@@ -64,11 +63,14 @@ def execute(*, output, data_dir=DATA_DIR, settings=None, stage="run", arm="basel
                          "type": type(error).__name__, "message": str(error)})
             raise
     lock, locked = load_lock(output)
+    selected = conditions_from_lock(lock)
     if settings is not None and settings != locked:
         raise ValueError("Settings differ from the locked run. Declare changes in a new run before training.")
     if stage == "estimate":
         return estimate_runtime(lock)
     if stage == "train":
+        if arm not in training_arms(selected):
+            raise ValueError(f"Training arm {arm} was not declared in this run.")
         from .engine import train
         return train(output, arm)
     from .reporting import evaluate, seal_selection, verify_results

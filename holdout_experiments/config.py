@@ -8,6 +8,7 @@ from trt_pipeline.config import PREDICTION_ALPHA
 
 ARMS = ("baseline", "companion", "redistribution")
 CONDITIONS = ("baseline", "companion", "prediction_mixture", "redistribution")
+REMAINING_CONDITIONS = ("baseline", "companion", "prediction_mixture")
 METRICS = tuple(f"{metric}_{axis}" for metric in ("pearson_corr", "rmse", "mae")
                 for axis in ("valence", "arousal"))
 EXPOSURE_NOTE = (
@@ -16,6 +17,30 @@ EXPOSURE_NOTE = (
     "train/validation/test separation internally; its test is not a historically "
     "untouched dataset. No coefficient or hyperparameter search is performed."
 )
+
+
+def validate_conditions(conditions):
+    """Accept the original four conditions or the explicitly requested remaining three."""
+
+    selected = tuple(conditions)
+    if selected not in (CONDITIONS, REMAINING_CONDITIONS):
+        raise ValueError(f"Use the four conditions {CONDITIONS} or remaining three {REMAINING_CONDITIONS}, in that order.")
+    return selected
+
+
+def training_arms(conditions):
+    """Derive the actual fits, excluding the prediction mixture with no optimizer updates."""
+
+    return tuple(name for name in validate_conditions(conditions) if name in ARMS)
+
+
+def conditions_from_lock(lock):
+    """Validate explicit condition ownership, with compatibility for original four-condition locks."""
+
+    selected = validate_conditions(lock.get("conditions", CONDITIONS))
+    if tuple(lock.get("training_arms", training_arms(selected))) != training_arms(selected):
+        raise ValueError("Locked training arms differ from the declared conditions.")
+    return selected
 
 
 @dataclass(frozen=True)

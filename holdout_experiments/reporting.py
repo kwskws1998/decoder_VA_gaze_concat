@@ -1,4 +1,4 @@
-"""Seal validation selections before one final test evaluation of four declared outputs."""
+"""Seal validation selections before one final test evaluation of the declared outputs."""
 
 import gc
 import json
@@ -12,7 +12,7 @@ from trt_pipeline.core.evaluation import calculate_va_metrics
 from trt_pipeline.data import contract_sha256
 from trt_pipeline.mixing import mix_predictions
 
-from .config import ARMS, CONDITIONS, EXPOSURE_NOTE, METRICS
+from .config import CONDITIONS, EXPOSURE_NOTE, METRICS, conditions_from_lock, training_arms
 from .engine import data_loader, finite_metrics, predict, runtime_check, seed_everything
 from .model import load_saved
 from .protocol import digest, load_lock, read_partition, utc_now, write_json
@@ -23,7 +23,7 @@ def completion_receipts(run, lock):
     """Require all fixed budgets, the first validation minimum and strict reload evidence."""
 
     receipts = {}
-    for arm in ARMS:
+    for arm in training_arms(conditions_from_lock(lock)):
         folder = Path(run) / arm
         receipt = json.loads((folder / "train_complete.json").read_text())
         history = json.loads((folder / "validation_history.json").read_text())
@@ -69,10 +69,11 @@ def completion_receipts(run, lock):
 
 
 def seal_selection(run):
-    """Freeze all three validation-selected weights and alpha before opening test rows."""
+    """Freeze all declared validation-selected weights and alpha before opening test rows."""
 
     run = Path(run)
     lock, settings = load_lock(run)
+    conditions = conditions_from_lock(lock)
     receipts = completion_receipts(run, lock)
     path = run / "selection_lock.json"
     if path.exists():
@@ -80,13 +81,15 @@ def seal_selection(run):
         body = {key: value for key, value in saved.items() if key != "selection_sha256"}
         if (saved.get("protocol_sha256") != lock["protocol_sha256"] or saved.get("models") != receipts
                 or saved.get("prediction_alpha") != settings.prediction_alpha
+                or saved.get("conditions", list(CONDITIONS)) != list(conditions)
                 or contract_sha256(body) != saved.get("selection_sha256")):
             raise ValueError("Sealed selection has changed.")
         return saved
     if (run / "evaluation_started.json").exists():
         raise RuntimeError("Test evaluation was started without a valid selection lock.")
     selection = {"utc": utc_now(), "protocol_sha256": lock["protocol_sha256"],
-                 "models": receipts, "prediction_alpha": settings.prediction_alpha}
+                 "models": receipts, "prediction_alpha": settings.prediction_alpha,
+                 "conditions": list(conditions)}
     selection["selection_sha256"] = contract_sha256(selection)
     write_json(path, selection, exclusive=True)
     return selection
@@ -106,10 +109,12 @@ def prediction_table(path, frame, predictions, *, protocol_sha256, selection_sha
 
 
 def prepare_prediction_mixture(run):
-    """Declare the fourth output from two selected weights and fixed alpha without fitting or test access."""
+    """Declare the fixed mixture from two selected weights without fitting or test access."""
 
     run = Path(run).resolve()
     lock, settings = load_lock(run)
+    if "prediction_mixture" not in conditions_from_lock(lock):
+        raise ValueError("Prediction mixture was not declared in this run.")
     dependencies = {}
     for arm in ("baseline", "companion"):
         path = run / arm
@@ -149,6 +154,8 @@ def evaluate(run):
 
     run = Path(run).resolve()
     lock, settings = load_lock(run)
+    conditions = conditions_from_lock(lock)
+    arms = training_arms(conditions)
     selection = seal_selection(run)
     mixture_plan = prepare_prediction_mixture(run)
     if (run / "evaluation_started.json").exists():
@@ -164,7 +171,7 @@ def evaluate(run):
         frame = read_partition(run / "splits/test.tsv")
         gold = frame[["valence", "arousal"]].to_numpy(dtype=float)
         predictions, metrics, timings, condition_results = {}, {}, {}, {}
-        for condition in CONDITIONS:
+        for condition in conditions:
             current = condition
             condition_event(run, condition, "test_evaluation", "running")
             condition_started = time.perf_counter()
@@ -198,11 +205,11 @@ def evaluate(run):
             condition_event(run, condition, "test_evaluation", "completed", metrics=metrics[condition])
         deltas = {arm: {key: (None if metrics[arm][key] is None or metrics["baseline"][key] is None
                              else metrics[arm][key] - metrics["baseline"][key]) for key in METRICS}
-                  for arm in CONDITIONS}
-        training = {arm: json.loads((run / arm / "train_complete.json").read_text()) for arm in ARMS}
+                  for arm in conditions}
+        training = {arm: json.loads((run / arm / "train_complete.json").read_text()) for arm in arms}
         report = {
             "status": "completed", "utc": utc_now(), "partition": "test", "n_test": len(frame),
-            "conditions": list(CONDITIONS), "condition_count": 4, "fit_count": 3,
+            "conditions": list(conditions), "condition_count": len(conditions), "fit_count": len(arms),
             "condition_results": condition_results,
             "mixture_preparation": mixture_plan,
             "protocol_sha256": lock["protocol_sha256"], "selection": selection,
@@ -215,14 +222,15 @@ def evaluate(run):
             "historical_exposure": EXPOSURE_NOTE,
         }
         write_json(output / "report.json", report, exclusive=True)
-        lines = ["arm\t" + "\t".join(METRICS)]
-        for arm in CONDITIONS:
-            lines.append(arm + "\t" + "\t".join(str(metrics[arm][key]) for key in METRICS))
+        metric_names = tuple(metrics[conditions[0]])
+        lines = ["arm\t" + "\t".join(metric_names)]
+        for arm in conditions:
+            lines.append(arm + "\t" + "\t".join(str(metrics[arm][key]) for key in metric_names))
         (output / "metrics.tsv").write_text("\n".join(lines) + "\n")
         write_json(run / "complete.json", {"status": "completed", "utc": utc_now(),
                    "report_sha256": digest(output / "report.json"),
                    "prediction_sha256": {path.name: digest(path) for path in sorted(output.glob("*.npz"))},
-                   "condition_receipt_sha256": {name: digest(run / name / "condition_complete.json") for name in CONDITIONS},
+                   "condition_receipt_sha256": {name: digest(run / name / "condition_complete.json") for name in conditions},
                    "mixture_preparation_sha256": digest(run / "prediction_mixture/preparation.json"),
                    "selection_sha256": selection["selection_sha256"]}, exclusive=True)
     except BaseException as error:
@@ -239,6 +247,8 @@ def verify_results(run):
 
     run = Path(run).resolve()
     lock, settings = load_lock(run)
+    conditions = conditions_from_lock(lock)
+    arms = training_arms(conditions)
     complete = json.loads((run / "complete.json").read_text())
     selection = seal_selection(run)
     output = run / "test_results"
@@ -247,9 +257,10 @@ def verify_results(run):
             or digest(output / "report.json") != complete.get("report_sha256")
             or complete.get("selection_sha256") != selection["selection_sha256"]
             or report.get("selection") != selection
-            or report.get("conditions") != list(CONDITIONS)
-            or report.get("condition_count") != 4 or report.get("fit_count") != 3
-            or set(report.get("condition_results", {})) != set(CONDITIONS)
+            or report.get("conditions") != list(conditions)
+            or report.get("condition_count") != len(conditions) or report.get("fit_count") != len(arms)
+            or set(report.get("condition_results", {})) != set(conditions)
+            or set(report.get("training", {})) != set(arms)
             or digest(run / "prediction_mixture/preparation.json") != complete.get("mixture_preparation_sha256")
             or report.get("mixture_preparation") != json.loads((run / "prediction_mixture/preparation.json").read_text())
             or report.get("protocol_sha256") != lock["protocol_sha256"]):
@@ -257,7 +268,7 @@ def verify_results(run):
     frame = read_partition(run / "splits/test.tsv")
     gold = frame[["valence", "arousal"]].to_numpy(float)
     arrays = {}
-    for arm in CONDITIONS:
+    for arm in conditions:
         receipt_path = run / arm / "condition_complete.json"
         if digest(receipt_path) != complete["condition_receipt_sha256"].get(arm):
             raise ValueError(f"Condition receipt SHA drift: {arm}")
@@ -292,8 +303,8 @@ def verify_results(run):
     expected = mix_predictions(arrays["baseline"], arrays["companion"], settings.prediction_alpha)
     if not np.array_equal(expected, arrays["prediction_mixture"]):
         raise ValueError("Fixed prediction mixture differs from the declared formula.")
-    result = {"status": "passed", "utc": utc_now(), "rows_per_arm": len(frame), "arms": 4,
-              "verified_prediction_rows": 4 * len(frame), "protocol_sha256": lock["protocol_sha256"],
+    result = {"status": "passed", "utc": utc_now(), "rows_per_arm": len(frame), "arms": len(conditions),
+              "verified_prediction_rows": len(conditions) * len(frame), "protocol_sha256": lock["protocol_sha256"],
               "selection_sha256": selection["selection_sha256"],
               "scope": "CPU NPZ identity/gold/hash/metric/mixing recomputation; weights checked by SHA"}
     write_json(output / "verification.json", result)

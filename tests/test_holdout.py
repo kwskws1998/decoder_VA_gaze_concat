@@ -14,7 +14,7 @@ import pytest
 import torch
 from torch import nn
 
-from holdout_experiments.config import ARMS, Settings
+from holdout_experiments.config import ARMS, CONDITIONS, REMAINING_CONDITIONS, Settings, training_arms
 from holdout_experiments.engine import (
     ValidationSelection, _fit, epoch_order, learning_rate_factor,
     loss_for_arm, optimizer_for, predict,
@@ -45,7 +45,7 @@ def synthetic_frame(rows=90):
     })
 
 
-def synthetic_run(tmp_path, *, epochs=2):
+def synthetic_run(tmp_path, *, epochs=2, conditions=CONDITIONS):
     """Build the real lock schema around small tables without requiring private data."""
 
     settings = Settings(epochs=epochs, batch_size=8, eval_batch_size=8)
@@ -58,6 +58,7 @@ def synthetic_run(tmp_path, *, epochs=2):
         frame.to_csv(path, sep="\t", index=False, quoting=3, escapechar="\\")
         partitions[name] = {"rows": len(frame), "sha256": digest(path)}
     lock = {"settings": settings.as_dict(), "partitions": partitions,
+            "conditions": list(conditions), "training_arms": list(training_arms(conditions)),
             "source_sha256": source_manifest(), "updates_per_epoch": (len(frames["train"]) + 7) // 8,
             "total_updates_per_fit": ((len(frames["train"]) + 7) // 8) * epochs}
     lock["protocol_sha256"] = contract_sha256(lock)
@@ -179,11 +180,14 @@ def test_protocol_lock_and_code_change_rejected(tmp_path, monkeypatch):
         load_lock(run)
 
 
-def test_real_data_split_counts_and_budget(tmp_path):
+@pytest.mark.parametrize("conditions", [CONDITIONS, REMAINING_CONDITIONS])
+def test_real_data_split_counts_and_budget(tmp_path, conditions):
     if not (ROOT / "data/paper7_seed42/full_dataset_fold1.csv").exists():
         pytest.skip("Private canonical data not present in this clone")
     run = tmp_path / "real"
-    lock = prepare(run)
+    lock = prepare(run, conditions=conditions)
+    assert lock["conditions"] == list(conditions)
+    assert lock["training_arms"] == list(training_arms(conditions))
     assert [lock["partitions"][name]["rows"] for name in ("train", "val", "test")] == [43034, 5377, 5380]
     assert lock["total_updates_per_fit"] == 26900
     assert lock["labels_used_for_splitting"] is False
@@ -192,6 +196,22 @@ def test_real_data_split_counts_and_budget(tmp_path):
     assert sum(len(p) for p in parts.values()) == 53791
     with pytest.raises(FileExistsError):
         prepare(run)
+
+
+def test_three_condition_cli_and_undeclared_training_guard(tmp_path):
+    from run_experiments import build_parser
+    from holdout_experiments.cli import parser
+    from holdout_experiments import execution
+
+    direct = build_parser().parse_args(["--stage", "run", "--output", str(tmp_path / "new"),
+        "--conditions", *REMAINING_CONDITIONS, "--epochs", "10"])
+    module = parser().parse_args(["run", "--output", str(tmp_path / "new"),
+        "--conditions", *REMAINING_CONDITIONS])
+    assert tuple(direct.conditions) == tuple(module.conditions) == REMAINING_CONDITIONS
+    run, _, _, _ = synthetic_run(tmp_path, conditions=REMAINING_CONDITIONS)
+    with pytest.raises(ValueError, match="was not declared"):
+        execution.execute(output=run, stage="train", arm="redistribution")
+    assert not (run / "redistribution").exists()
 
 
 def test_schedule_and_common_epoch_order():
@@ -311,8 +331,10 @@ def test_safetensors_full_state_dtype_roundtrip_and_hash_guard(tmp_path, arm, mo
         restore_weights(model, tmp_path, expected_sha256=digest(weights_path))
 
 
-def test_tiny_three_fit_control_flow_test_gate_final_mix_and_cpu_verifier(tmp_path, monkeypatch):
-    run, lock, settings, _ = synthetic_run(tmp_path)
+@pytest.mark.parametrize("conditions", [CONDITIONS, REMAINING_CONDITIONS])
+def test_tiny_three_fit_control_flow_test_gate_final_mix_and_cpu_verifier(tmp_path, monkeypatch, conditions):
+    run, lock, settings, _ = synthetic_run(tmp_path, conditions=conditions)
+    arms = training_arms(conditions)
     from holdout_experiments import engine
     real_read = engine.read_partition
     accesses = []
@@ -326,7 +348,7 @@ def test_tiny_three_fit_control_flow_test_gate_final_mix_and_cpu_verifier(tmp_pa
 
     monkeypatch.setattr(engine, "read_partition", train_only_reader)
     monkeypatch.setattr(engine, "build_model", tiny_model)
-    for arm in ARMS:
+    for arm in arms:
         if arm == "redistribution":
             from holdout_experiments.reporting import prepare_prediction_mixture
             prepared = prepare_prediction_mixture(run)
@@ -341,9 +363,9 @@ def test_tiny_three_fit_control_flow_test_gate_final_mix_and_cpu_verifier(tmp_pa
         assert result["actual_optimizer_updates"] == lock["total_updates_per_fit"]
         assert result["test_evaluations_during_training"] == 0
         assert result["training_device"] == "cpu"
-    assert accesses == ["train.tsv", "val.tsv"] * 3
+    assert accesses == ["train.tsv", "val.tsv"] * len(arms)
     receipts = completion_receipts(run, lock)
-    assert set(receipts) == set(ARMS)
+    assert set(receipts) == set(arms)
     sealed = seal_selection(run)
     assert sealed == seal_selection(run)
     assert not (run / "evaluation_started.json").exists()
@@ -372,12 +394,15 @@ def test_tiny_three_fit_control_flow_test_gate_final_mix_and_cpu_verifier(tmp_pa
     monkeypatch.setattr(reporting, "load_saved", cpu_fixture_load)
     monkeypatch.setattr(reporting, "predict", cpu_fixture_predict)
     report = reporting.evaluate(run)
-    assert set(report["metrics"]) == {*ARMS, "prediction_mixture"}
-    assert report["conditions"] == ["baseline", "companion", "prediction_mixture", "redistribution"]
-    assert report["condition_count"] == 4 and report["fit_count"] == 3
+    assert set(report["metrics"]) == set(conditions)
+    assert report["conditions"] == list(conditions)
+    assert report["condition_count"] == len(conditions) and report["fit_count"] == len(arms)
+    assert set(report["training"]) == set(arms)
+    if conditions == REMAINING_CONDITIONS:
+        assert not (run / "redistribution").exists()
     assert report["condition_results"]["prediction_mixture"]["actual_optimizer_updates"] == 0
     verified = reporting.verify_results(run)
-    assert verified["status"] == "passed" and verified["verified_prediction_rows"] == report["n_test"] * 4
+    assert verified["status"] == "passed" and verified["verified_prediction_rows"] == report["n_test"] * len(conditions)
     with pytest.raises(FileExistsError, match="already started"):
         reporting.evaluate(run)
     with (run / "test_results/baseline.npz").open("ab") as stream:

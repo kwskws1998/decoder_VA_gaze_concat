@@ -53,8 +53,8 @@ def build_parser():
     parser.add_argument("--data-dir", type=Path, default=INPUT_DATA)
     parser.add_argument("--output", type=Path, default=OUTPUT)
     parser.add_argument("--arm", choices=ARMS, default=TRAIN_ARM, help="Used only by --stage train.")
-    parser.add_argument("--conditions", nargs=4, choices=CONDITIONS, default=CONDITIONS,
-                        help="Full run order: baseline companion prediction_mixture redistribution.")
+    parser.add_argument("--conditions", nargs="+", choices=CONDITIONS, default=CONDITIONS,
+                        help="Use all four conditions or baseline companion prediction_mixture, in that order.")
     parser.add_argument("--gpu", type=int, default=GPU, help="Set CUDA_VISIBLE_DEVICES before importing Torch; otherwise preserve it.")
     for name in ("epochs", "seed", "split_seed", "batch_size", "eval_batch_size", "max_length"):
         options = ["--" + name.replace("_", "-")]

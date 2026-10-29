@@ -1,0 +1,10 @@
+{
+  "commit": "e0bd3d7d5550ca3e789b4f077760e9400fb85165",
+  "files": {
+    "model.py": "9b36665cbd480c588d9f5ab164007e77ac1a76c354b4ed837ed7822688c15919",
+    "gaze.py": "903bb8ad83284613c49f13911824d3313467f21fb48adf22feaa31ee7a22e098",
+    "alignment.py": "95dda7a84723f5a26ea88b3ce0381dc2fc7ae59a59b4c9d6ae6f178656f3ad36",
+    "packing.py": "d0137097ef18997d7400801924c936f745071dc7ff5dc84e3e2615051bf3f33a"
+  },
+  "scope": "Recovered schema-6-compatible source; original ZIP did not record a code commit."
+}

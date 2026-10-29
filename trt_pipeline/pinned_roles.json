@@ -1,0 +1,46 @@
+{
+  "1": {
+    "A": [
+      21517,
+      "034817ff8b8d0d1b6804a7f617ae44bee99a5d6561b921bdd4d8b2bd2ebd2e63"
+    ],
+    "B": [
+      5381,
+      "a88906fb3d9eee68866d47a14c937ed715dc429d11febf0d1e134edbed5c5597"
+    ],
+    "B_fit": [
+      4305,
+      "d53e3fd9b5ecd08569124bb4797032a67fdd6a1e35a37c7c2c707d11e02027b8"
+    ],
+    "B_validation": [
+      1076,
+      "1460a998c80f9f0b2b8f3e133fbc8ef848e959097959427936f1aa2089b78bb6"
+    ],
+    "outer_fold1": [
+      26893,
+      "d576f417aaa61b9932b926cc0a3d88f152fc8fe6648f93fa2ef5f6e3b574c60a"
+    ]
+  },
+  "2": {
+    "A": [
+      21514,
+      "45f59064be8f5d4fb4043c73b7e70a6b2c2530162c5f5a9056e60a1d8313b541"
+    ],
+    "B": [
+      5379,
+      "b20e4fb23563d591d89489ba85bb68bcf4ef3ae27af733c8bcf52a5b802b70cc"
+    ],
+    "B_fit": [
+      4302,
+      "e4f4c0ad5951c413f6a880db4b5b9a6ffbf11b9dac7d7f0cc4678e15442570d4"
+    ],
+    "B_validation": [
+      1077,
+      "f11af03d90415c049fbba9b909cd666a76d14508ae0022d8b3dad89ac5d91012"
+    ],
+    "outer_fold2": [
+      26898,
+      "cc756e89d839160e4ccbfebc896bc0043cda59d1a1618594568f2b75428119a4"
+    ]
+  }
+}

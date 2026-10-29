@@ -5,14 +5,11 @@ from __future__ import annotations
 import json
 import os
 from pathlib import Path
-import re
 import subprocess
 import sys
-import xml.etree.ElementTree as ET
 
 
 PROJECT_ROOT = Path(__file__).resolve().parent
-DEFAULT_ENVIRONMENT = PROJECT_ROOT / ".venv"
 GPU_PROBE_CODE = """
 import json
 import torch
@@ -20,7 +17,9 @@ if not torch.cuda.is_available():
     raise RuntimeError('CUDA is unavailable in this Python environment.')
 device = torch.cuda.current_device()
 bf16 = torch.cuda.is_bf16_supported()
-dtype = torch.bfloat16 if bf16 else torch.float32
+if not bf16:
+    raise RuntimeError('The experiments require CUDA BF16 support.')
+dtype = torch.bfloat16
 value = torch.randn(64, 64, device='cuda', dtype=dtype, requires_grad=True)
 (value @ value.T).float().square().mean().backward()
 torch.cuda.synchronize()
@@ -58,57 +57,24 @@ def run(command, *, environment=None, capture=False):
     )
 
 
-def environment_python(directory):
-    """Resolve the interpreter inside a standard Python virtual environment."""
+def require_active_conda():
+    """Require CONDA_PREFIX, conda metadata and this interpreter to identify one environment."""
 
-    directory = Path(directory).expanduser().resolve()
-    return directory / ("Scripts/python.exe" if os.name == "nt" else "bin/python")
-
-
-def select_python(explicit=None, environment_dir=DEFAULT_ENVIRONMENT):
-    """Use an explicit interpreter, the project virtual environment, or current Python."""
-
-    if explicit is not None:
-        selected = Path(os.path.abspath(Path(explicit).expanduser()))
-        if not selected.is_file():
-            raise FileNotFoundError(f"Python executable not found: {selected}")
-        return selected
-    selected = environment_python(environment_dir)
-    return selected if selected.is_file() else Path(sys.executable)
-
-
-def detect_nvidia_driver():
-    """Read driver CUDA capability and GPU names from NVIDIA's XML inventory."""
-
-    result = run(["nvidia-smi", "-q", "-x"], capture=True)
-    root = ET.fromstring(result.stdout)
-    cuda = root.findtext("cuda_version", default="")
-    match = re.fullmatch(r"(\d+)\.(\d+)", cuda.strip())
-    if match is None:
-        raise RuntimeError(f"Cannot read driver CUDA version from nvidia-smi: {cuda!r}")
-    return {
-        "driver_version": root.findtext("driver_version"),
-        "driver_cuda": [int(match[1]), int(match[2])],
-        "gpus": [gpu.findtext("product_name") for gpu in root.findall("gpu")],
-    }
-
-
-def choose_torch_index(driver_cuda):
-    """Select official pinned-version wheels by driver CUDA family, not GPU name."""
-
-    version = tuple(driver_cuda)
-    if version >= (13, 0):
-        return "cu130"
-    if version >= (12, 0):
-        return "cu126"
-    raise RuntimeError("The pinned PyTorch environment requires a CUDA 12.x or newer NVIDIA driver.")
+    declared = os.environ.get("CONDA_PREFIX")
+    prefix = Path(sys.prefix).resolve()
+    if (not declared or Path(declared).resolve() != prefix or not (prefix / "conda-meta").is_dir()
+            or (prefix / "pyvenv.cfg").exists()):
+        raise RuntimeError("Activate a conda environment and use its python; CONDA_PREFIX must equal sys.prefix.")
+    return {"prefix": str(prefix), "python": sys.executable,
+            "name": os.environ.get("CONDA_DEFAULT_ENV"), "python_version": list(sys.version_info[:3])}
 
 
 def check_gpu(python, *, gpu=None):
     """Validate CUDA execution and preserve child diagnostics on probe failure."""
 
     try:
-        result = run([python, "-c", GPU_PROBE_CODE], environment=child_environment(gpu), capture=True)
+        prefix = list(python) if isinstance(python, (list, tuple)) else [python]
+        result = run([*prefix, "-c", GPU_PROBE_CODE], environment=child_environment(gpu), capture=True)
     except subprocess.CalledProcessError as exc:
         details = [f"CUDA forward/backward check failed (exit status {exc.returncode})."]
         if exc.stdout:

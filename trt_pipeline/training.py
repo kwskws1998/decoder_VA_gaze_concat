@@ -1,0 +1,464 @@
+"""Train and evaluate Qwen decoder VA models with optional ET2 gaze concat."""
+from __future__ import annotations
+import argparse
+from importlib.metadata import PackageNotFoundError, version
+import inspect
+import json
+import math
+from pathlib import Path
+import platform
+import re
+from typing import Sequence
+import numpy as np
+import torch
+from transformers import TrainingArguments, set_seed
+from trt_pipeline.core.contracts import LOSS_CHOICES, MODEL_ALIASES
+from trt_pipeline.core.dataset import TokenizedVADataset, VABatchCollator, load_auto_tokenizer
+from trt_pipeline.io_utils import digest as sha256_file
+from trt_pipeline.core.evaluation import prediction_frame, trainer_compute_metrics, write_oof_reports
+from trt_pipeline.core.filters import TRAIN_EVAL_TEXT_OVERLAP_POLICIES, apply_training_text_overlap_policy, dataset_counts, load_filtered_folds, training_text_overlap_contract, validate_training_text_overlap_contract
+from trt_pipeline.core.alignment import GAZE_ALIGNMENT_CONTRACT
+from trt_pipeline.core.gaze import ET2_FEATURE_NAMES, et2_feature_indices_from_names, et2_feature_names_from_indices, et2_features_used_from_indices
+from trt_pipeline.core.model import ARCHITECTURE_MANIFEST_VERSION, PRE_READOUT_MANIFEST_VERSION, PRE_UNCERTAINTY_MANIFEST_VERSION, DEFAULT_DECODER_MODEL_ID, DEFAULT_DECODER_REVISION, DEFAULT_ET2_REVISION, DEFAULT_LORA_ALPHA, DEFAULT_LORA_DROPOUT, DEFAULT_LORA_RANK, FINETUNING_MODES, OUTPUT_ACTIVATION, PRECISION_CONTRACT, backbone_parameter_dtype, validate_precision_contract, validate_saved_trainable_precision, build_qwen_va_model, validate_gaze_alignment_contract, validate_gaze_relation_setup
+from trt_pipeline.core.baseline_contracts import readout_contract, saved_readout_contract, readout_pooling_position, readout_concat_order, prediction_contract, saved_prediction_contract, reject_experimental_weights, gaze_relation_contract, validate_redistribution_contract
+from trt_pipeline.core.paths import RESULTS_ROOT, default_run_name, resolve_run_directory, validate_run_name
+from trt_pipeline.core.trainer import VARegressionTrainer
+from trt_pipeline.core.training_kernels import training_kernel_report
+PRECISION_MODES = ('auto', 'bf16', 'fp16', 'fp32')
+
+def _build_parser() -> argparse.ArgumentParser:
+    """Define the decoder training command-line contract."""
+    parser = argparse.ArgumentParser(description='Two-fold out-of-fold VA regression with Qwen3.5-0.8B-Base and optional frozen ET2 gaze-feature prefix concat.', epilog='Supported workflows: python -m trt_pipeline --help')
+    parser.add_argument('model', nargs='?', default='qwen3.5-0.8b', choices=MODEL_ALIASES)
+    parser.add_argument('loss', nargs='?', default=None, choices=LOSS_CHOICES)
+    parser.add_argument('--model-id', default=DEFAULT_DECODER_MODEL_ID)
+    parser.add_argument('--model-revision', default=DEFAULT_DECODER_REVISION)
+    parser.add_argument('--finetuning-mode', choices=FINETUNING_MODES, default='lora', help="Train all Qwen text-backbone parameters with 'full' or use all-linear PEFT adapters with 'lora' (default: lora).")
+    parser.add_argument('--precision', choices=PRECISION_MODES, default='auto', help="Training precision. 'auto' selects BF16 on a supported CUDA GPU, otherwise FP16 on CUDA or FP32 without CUDA.")
+    parser.add_argument('--gaze-fusion', choices=('prefix-concat', 'none'), default='prefix-concat')
+    parser.add_argument('--gaze-features', nargs='+', choices=ET2_FEATURE_NAMES, default=('TRT',), metavar='FEATURE', help=f"Raw ET2 channels used by prefix-concat. Choose one or more from {', '.join(ET2_FEATURE_NAMES)}; default: TRT.")
+    parser.add_argument('--et-model-id', default='skboy/et_prediction_2')
+    parser.add_argument('--et-revision', default=DEFAULT_ET2_REVISION)
+    parser.add_argument('--et-filename', default='et_predictor2_seed123.safetensors')
+    parser.add_argument('--et-cache-size', type=int, default=70000)
+    parser.add_argument('--data-dir', default='data')
+    parser.add_argument('--run-name', help='One directory name created under the repository-root results/ directory. A condition-aware name is generated when omitted.')
+    parser.add_argument('--exclude-dataset', action='append', default=[])
+    parser.add_argument('--sentence-only', action='store_true', help='Keep only EmoTales sentences, Emobank, and fb in both folds.')
+    parser.add_argument('--no-iemocap', action='store_true')
+    parser.add_argument('--training-text-overlap', dest='training_text_overlap_policy', choices=TRAIN_EVAL_TEXT_OVERLAP_POLICIES, default='exclude', help='How to handle training texts also present in evaluation: exclude (default) or keep all original training rows. Evaluation is unchanged.')
+    parser.add_argument('--no-ieomcap', action='store_true', help='Typo-compatible alias for --no-iemocap.')
+    parser.add_argument('--list-datasets', action='store_true')
+    parser.add_argument('--dry-run', action='store_true')
+    parser.add_argument('--held-out-folds', nargs='+', type=int, choices=(1, 2), default=(1, 2))
+    parser.add_argument('--max-length', type=int, default=200)
+    parser.add_argument('--train-batch-size', type=int, default=4)
+    parser.add_argument('--eval-batch-size', type=int, default=8)
+    parser.add_argument('--gradient-accumulation-steps', type=int, default=4)
+    parser.add_argument('--epochs', type=float, default=10.0)
+    parser.add_argument('--max-steps', type=int, default=-1)
+    parser.add_argument('--learning-rate', type=float, default=None, help='Default: 1e-4 for LoRA and 6e-6 for full fine-tuning.')
+    parser.add_argument('--weight-decay', type=float, default=0.01)
+    parser.add_argument('--warmup-ratio', type=float, default=0.1)
+    parser.add_argument('--lora-rank', type=int, default=DEFAULT_LORA_RANK, help='LoRA-only adapter rank.')
+    parser.add_argument('--lora-alpha', type=int, default=DEFAULT_LORA_ALPHA, help='LoRA-only adapter scaling value.')
+    parser.add_argument('--lora-dropout', type=float, default=DEFAULT_LORA_DROPOUT, help='LoRA-only adapter dropout.')
+    parser.add_argument('--seed', type=int, default=42)
+    parser.add_argument('--logging-steps', type=int, default=50)
+    parser.add_argument('--save-total-limit', type=int, default=1)
+    parser.add_argument('--group-by-length', action=argparse.BooleanOptionalAction, default=True)
+    parser.add_argument('--gradient-checkpointing', action=argparse.BooleanOptionalAction, default=True)
+    parser.add_argument('--attn-implementation')
+    parser.add_argument('--resume-from-checkpoint')
+    parser.add_argument('--report-to', action='append', default=[])
+    parser.add_argument('--use-cpu', action='store_true')
+    parser.set_defaults(gaze_redistribution='none', gaze_relation='none', readout='last-token', redistribution_learning_rate=None, redistribution_weight_decay=None, gaze_relation_learning_rate=None, gaze_relation_weight_decay=None)
+    return parser
+
+def _redistribution_config(args: argparse.Namespace) -> dict[str, object]:
+    """Record the original raw-gaze identity for checkpoint compatibility."""
+    return {'method': 'none'}
+
+def _gaze_relation_config(args: argparse.Namespace) -> dict[str, object]:
+    """Record ordinary backbone attention for checkpoint compatibility."""
+    return gaze_relation_contract()
+
+def _validate_args(args: argparse.Namespace) -> None:
+    """Fail before downloading models when a run configuration is invalid."""
+    gaze_feature_indices = et2_feature_indices_from_names(args.gaze_features)
+    args.gaze_feature_indices = gaze_feature_indices
+    args.gaze_features = et2_feature_names_from_indices(gaze_feature_indices)
+    if args.run_name:
+        args.run_name = validate_run_name(args.run_name)
+        normalized_run_name = args.run_name.lower()
+        run_name_tokens = set(re.findall('[a-z0-9]+', normalized_run_name))
+        if 'baseline' in run_name_tokens and args.gaze_fusion != 'none':
+            raise ValueError('--run-name says baseline but --gaze-fusion enables gaze.')
+        if 'gaze' in run_name_tokens and args.gaze_fusion == 'none':
+            raise ValueError('--run-name says gaze but --gaze-fusion is none.')
+        if 'redistribution' in run_name_tokens and args.gaze_redistribution == 'none':
+            raise ValueError('--run-name says redistribution but --gaze-redistribution is none.')
+        if 'full' in run_name_tokens and args.finetuning_mode != 'full':
+            raise ValueError('--run-name says full but --finetuning-mode is not full.')
+        if 'lora' in run_name_tokens and args.finetuning_mode != 'lora':
+            raise ValueError('--run-name says lora but --finetuning-mode is not lora.')
+        named_precisions = run_name_tokens.intersection({'bf16', 'fp16', 'fp32'})
+        if named_precisions and named_precisions != {args.precision}:
+            raise ValueError(f'--run-name precision tag {sorted(named_precisions)} does not match --precision {args.precision}.')
+        effective_no_iemocap = args.no_iemocap or args.no_ieomcap or args.sentence_only
+        if 'no_iemocap' in normalized_run_name and (not effective_no_iemocap):
+            raise ValueError('--run-name says no_iemocap but the exclusion flag is absent.')
+        if re.search('(?:^|[_-])sentence[_-]only(?:$|[_-])', normalized_run_name) and (not args.sentence_only):
+            raise ValueError('--run-name says sentence_only but --sentence-only is absent.')
+        named_seeds = {int(value) for value in re.findall('(?:^|[_-])seed([0-9]+)(?:$|[_-])', normalized_run_name)}
+        if named_seeds and named_seeds != {int(args.seed)}:
+            raise ValueError(f'--run-name seed tag {sorted(named_seeds)} does not match --seed {args.seed}.')
+    if args.loss is None and (not (args.dry_run or args.list_datasets)):
+        raise ValueError('Training loss must be explicit; choose one of: ' + ', '.join(LOSS_CHOICES) + '.')
+    if args.learning_rate is None:
+        args.learning_rate = 6e-06 if args.finetuning_mode == 'full' else 0.0001
+    positive_integers = ('max_length', 'train_batch_size', 'eval_batch_size', 'gradient_accumulation_steps')
+    if args.finetuning_mode == 'lora':
+        positive_integers += ('lora_rank', 'lora_alpha')
+    for name in positive_integers:
+        if int(getattr(args, name)) <= 0:
+            raise ValueError(f"--{name.replace('_', '-')} must be positive.")
+    if args.epochs <= 0:
+        raise ValueError('--epochs must be positive.')
+    if args.max_steps == 0 or args.max_steps < -1:
+        raise ValueError('--max-steps must be -1 or a positive integer.')
+    if args.learning_rate <= 0:
+        raise ValueError('--learning-rate must be positive.')
+    if args.finetuning_mode == 'lora' and (not 0.0 <= args.lora_dropout < 1.0):
+        raise ValueError('--lora-dropout must be in the interval [0, 1).')
+    if args.finetuning_mode == 'full':
+        non_default_lora_options = []
+        if args.lora_rank not in {None, DEFAULT_LORA_RANK}:
+            non_default_lora_options.append('--lora-rank')
+        if args.lora_alpha not in {None, DEFAULT_LORA_ALPHA}:
+            non_default_lora_options.append('--lora-alpha')
+        if args.lora_dropout not in {None, DEFAULT_LORA_DROPOUT}:
+            non_default_lora_options.append('--lora-dropout')
+        if non_default_lora_options:
+            raise ValueError('LoRA-only option(s) cannot be changed with --finetuning-mode full: ' + ', '.join(non_default_lora_options))
+        args.lora_rank = None
+        args.lora_alpha = None
+        args.lora_dropout = None
+    if not 0.0 <= args.warmup_ratio < 1.0:
+        raise ValueError('--warmup-ratio must be in the interval [0, 1).')
+    if args.et_cache_size < 0:
+        raise ValueError('--et-cache-size cannot be negative.')
+    if len(set(args.held_out_folds)) != len(args.held_out_folds):
+        raise ValueError('--held-out-folds cannot contain duplicates.')
+    if len(args.held_out_folds) != 1 and args.resume_from_checkpoint:
+        raise ValueError('--resume-from-checkpoint is ambiguous for multiple fold directories; resume one --held-out-folds value at a time.')
+
+def _runtime_precision(use_cpu: bool, precision: str='auto') -> tuple[torch.dtype, bool, bool]:
+    """Resolve compute dtype and Trainer autocast flags, separately from weight storage."""
+    normalized = str(precision).strip().lower()
+    if normalized not in PRECISION_MODES:
+        raise ValueError(f'Unknown precision {precision!r}; choose one of {PRECISION_MODES}.')
+    cuda_available = torch.cuda.is_available() and (not use_cpu)
+    if not cuda_available:
+        if normalized not in {'auto', 'fp32'}:
+            raise ValueError(f'--precision {normalized} requires CUDA; use --precision fp32 for CPU execution.')
+        return (torch.float32, False, False)
+    if normalized == 'fp32':
+        return (torch.float32, False, False)
+    if normalized == 'bf16':
+        if not torch.cuda.is_bf16_supported():
+            raise ValueError('--precision bf16 requires a BF16-capable CUDA GPU.')
+        return (torch.bfloat16, True, False)
+    if normalized == 'fp16':
+        return (torch.float16, False, True)
+    if torch.cuda.is_bf16_supported():
+        return (torch.bfloat16, True, False)
+    return (torch.float16, False, True)
+
+def _resolve_output_dir(args: argparse.Namespace) -> Path:
+    """Resolve the only allowed run location under repository-root results."""
+    if not args.run_name:
+        args.run_name = default_run_name(model=args.model, finetuning_mode=args.finetuning_mode, gaze_fusion=args.gaze_fusion, gaze_features=args.gaze_features, gaze_redistribution=_redistribution_config(args), gaze_relation=_gaze_relation_config(args), readout=readout_contract(args.readout), prediction_distribution=prediction_contract(args.loss), seed=args.seed, no_iemocap=args.no_iemocap or args.no_ieomcap, sentence_only=args.sentence_only)
+    return resolve_run_directory(args.run_name)
+
+def _json_ready(value):
+    """Recursively convert argparse, NumPy, Torch, and path values to JSON types."""
+    if isinstance(value, Path):
+        return str(value)
+    if isinstance(value, torch.dtype):
+        return str(value).replace('torch.', '')
+    if isinstance(value, np.generic):
+        return value.item()
+    if isinstance(value, float) and (not math.isfinite(value)):
+        return None
+    if isinstance(value, dict):
+        return {str(key): _json_ready(item) for key, item in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_json_ready(item) for item in value]
+    return value
+
+def _reset_cuda_peak_memory(use_cpu: bool) -> bool:
+    """Reset per-fold CUDA peaks before model placement and training."""
+    if use_cpu or not torch.cuda.is_available():
+        return False
+    device_index = torch.cuda.current_device()
+    torch.cuda.empty_cache()
+    torch.cuda.reset_peak_memory_stats(device_index)
+    return True
+
+def _cuda_memory_snapshot(use_cpu: bool) -> dict[str, object]:
+    """Capture current and peak CUDA memory in bytes and GiB."""
+    if use_cpu or not torch.cuda.is_available():
+        return {'cuda_enabled': False}
+    device_index = torch.cuda.current_device()
+    byte_values = {'current_allocated_bytes': int(torch.cuda.memory_allocated(device_index)), 'current_reserved_bytes': int(torch.cuda.memory_reserved(device_index)), 'peak_allocated_bytes': int(torch.cuda.max_memory_allocated(device_index)), 'peak_reserved_bytes': int(torch.cuda.max_memory_reserved(device_index))}
+    gib = float(1024 ** 3)
+    return {'cuda_enabled': True, 'device_index': int(device_index), 'device_name': torch.cuda.get_device_name(device_index), **byte_values, **{name.replace('_bytes', '_gib'): round(value / gib, 4) for name, value in byte_values.items()}}
+
+def _validate_resume_contract(args: argparse.Namespace, fold_output: Path, expected_manifest: dict[str, object]) -> int | None:
+    """Validate resume identity and return its original schema without changing source files."""
+    if not args.resume_from_checkpoint:
+        return
+    checkpoint_path = Path(args.resume_from_checkpoint).expanduser().resolve()
+    if not checkpoint_path.is_dir():
+        raise FileNotFoundError(f'Resume checkpoint directory not found: {checkpoint_path}')
+    checkpoint_root = (fold_output / 'checkpoints').resolve()
+    try:
+        relative_checkpoint = checkpoint_path.relative_to(checkpoint_root)
+    except ValueError as exc:
+        raise ValueError(f'Resume checkpoint must belong to the selected held-out fold at {checkpoint_root}.') from exc
+    if relative_checkpoint == Path('.') or len(relative_checkpoint.parts) != 1 or (not relative_checkpoint.name.startswith('checkpoint-')):
+        raise ValueError(f'Resume checkpoint must be one direct Trainer checkpoint-* directory under {checkpoint_root}.')
+    manifest_path = fold_output / 'run_manifest.json'
+    if not manifest_path.is_file():
+        raise FileNotFoundError(f'Cannot safely resume without the original fold run manifest: {manifest_path}')
+    try:
+        with open(manifest_path, 'r', encoding='utf-8') as input_file:
+            recorded_manifest = json.load(input_file)
+    except (json.JSONDecodeError, OSError) as exc:
+        raise ValueError(f'Cannot read resume run manifest: {manifest_path}') from exc
+    if not isinstance(recorded_manifest, dict):
+        raise ValueError(f'Resume run manifest must contain a JSON object: {manifest_path}')
+    contract_fields = ('architecture_manifest_version', 'model', 'loss', 'output_dim', 'dtype', 'compute_dtype', 'backbone_parameter_dtype', 'trainable_parameter_dtype', 'precision_contract', 'model_id', 'model_revision', 'finetuning_mode', 'gaze_fusion', 'gaze_alignment', 'gaze_redistribution', 'gaze_relation', 'readout', 'prediction_distribution', 'gaze_features', 'gaze_feature_indices', 'features_used', 'gaze_concat_order', 'pooling_position', 'output_activation', 'paired_ablation_seed_policy', 'et_model_id', 'et_revision', 'et_filename', 'attn_implementation', 'group_by_length', 'gradient_checkpointing', 'max_length', 'train_batch_size', 'gradient_accumulation_steps', 'learning_rate', 'weight_decay', 'warmup_ratio', 'seed', 'fold_seed', 'held_out_fold', 'training_fold', 'fold_sha256', 'excluded_dataset_names', 'dataset_counts_after_filter', 'training_text_overlap_contract', 'training_text_overlap', 'training_rows', 'evaluation_rows', 'sentence_only')
+    expected_manifest = dict(expected_manifest)
+    recorded_schema = recorded_manifest.get('architecture_manifest_version')
+    for label, manifest in (('recorded', recorded_manifest), ('expected', expected_manifest)):
+        schema_version = manifest.get('architecture_manifest_version')
+        supported_versions = (PRE_READOUT_MANIFEST_VERSION, PRE_UNCERTAINTY_MANIFEST_VERSION, ARCHITECTURE_MANIFEST_VERSION) if label == 'recorded' else (ARCHITECTURE_MANIFEST_VERSION,)
+        if type(schema_version) is not int or schema_version not in supported_versions:
+            raise ValueError(f'Resume checkpoint contract mismatch: unsupported architecture schema {label} architecture_manifest_version={schema_version!r}. Only unchanged last-token schema {PRE_READOUT_MANIFEST_VERSION} and current schema {ARCHITECTURE_MANIFEST_VERSION} checkpoints are supported; historical precision and gaze_alignment semantics require the original code.')
+        validate_precision_contract(manifest.get('precision_contract'), context=f'Resume {label} manifest')
+        overlap_contract = validate_training_text_overlap_contract(manifest.get('training_text_overlap_contract'), context=f'Resume {label} manifest')
+        if 'training_text_overlap_policy' in manifest:
+            if training_text_overlap_contract(manifest['training_text_overlap_policy']) != overlap_contract:
+                raise ValueError(f'Resume {label} training_text_overlap_policy disagrees with its contract.')
+        overlap_audit = manifest.get('training_text_overlap')
+        if not isinstance(overlap_audit, dict):
+            raise ValueError(f'Resume {label} training_text_overlap must be an audit object.')
+        audit_contract = validate_training_text_overlap_contract(overlap_audit.get('contract'), context=f'Resume {label} training_text_overlap')
+        if audit_contract != overlap_contract:
+            raise ValueError(f'Resume {label} training_text_overlap disagrees with its contract.')
+        manifest['gaze_alignment'] = validate_gaze_alignment_contract(manifest.get('gaze_alignment'), gaze_fusion=manifest['gaze_fusion'], context=f'Resume {label} manifest')
+        if 'gaze_redistribution' not in manifest:
+            raise ValueError(f'Resume {label} manifest is missing gaze_redistribution.')
+        manifest['gaze_redistribution'] = validate_redistribution_contract(manifest['gaze_redistribution'], gaze_fusion=manifest['gaze_fusion'], feature_indices=manifest['gaze_feature_indices'])
+        if 'gaze_relation' not in manifest:
+            raise ValueError(f'Resume {label} manifest is missing gaze_relation.')
+        if not isinstance(manifest['gaze_relation'], dict):
+            raise ValueError(f'Resume {label} gaze_relation must be a mapping.')
+        manifest['readout'] = saved_readout_contract(manifest, schema_version=schema_version, context=f'Resume {label} manifest')
+        manifest['prediction_distribution'] = saved_prediction_contract(manifest, schema_version=schema_version, context=f'Resume {label} manifest')
+        if manifest.get('pooling_position') != readout_pooling_position(manifest['gaze_fusion'], manifest['readout']):
+            raise ValueError(f'Resume {label} pooling_position disagrees with readout.')
+        if manifest.get('gaze_concat_order') != readout_concat_order(manifest['gaze_fusion'], manifest['readout']):
+            raise ValueError(f'Resume {label} gaze_concat_order disagrees with readout.')
+        manifest['gaze_relation'] = validate_gaze_relation_setup(manifest['gaze_relation'], gaze_fusion=manifest['gaze_fusion'], readout=manifest['readout'], feature_indices=manifest['gaze_feature_indices'], gaze_redistribution=manifest['gaze_redistribution'], attn_implementation=manifest['attn_implementation'])
+        if manifest['gaze_relation']['method'] != 'none' and manifest['attn_implementation'] != 'eager':
+            raise ValueError(f'Resume {label} gaze_relation requires explicit eager attention.')
+        if 'sentence_only' not in manifest:
+            manifest['sentence_only'] = False
+    if recorded_schema == PRE_READOUT_MANIFEST_VERSION:
+        if expected_manifest['readout']['mode'] != 'last-token':
+            raise ValueError(f'Schema {PRE_READOUT_MANIFEST_VERSION} resume requires unchanged last-token readout; learned-token readout requires a new training run.')
+        recorded_manifest['architecture_manifest_version'] = ARCHITECTURE_MANIFEST_VERSION
+    if recorded_schema == PRE_UNCERTAINTY_MANIFEST_VERSION:
+        recorded_manifest['architecture_manifest_version'] = ARCHITECTURE_MANIFEST_VERSION
+    if expected_manifest.get('finetuning_mode') == 'lora':
+        contract_fields += ('lora_rank', 'lora_alpha', 'lora_dropout')
+    mismatches = []
+    for field in contract_fields:
+        expected_value = _json_ready(expected_manifest[field])
+        if field not in recorded_manifest:
+            mismatches.append(f'{field}: missing, expected {expected_value!r}')
+            continue
+        recorded_value = recorded_manifest[field]
+        if recorded_value != expected_value:
+            mismatches.append(f'{field}: recorded {recorded_value!r}, expected {expected_value!r}')
+    if mismatches:
+        raise ValueError('Resume checkpoint contract mismatch; refusing to reinterpret old or incompatible weights:\n- ' + '\n- '.join(mismatches))
+    return recorded_schema
+
+def _print_dataset_counts(title: str, counts: dict[str, int]) -> None:
+    """Print one stable dataset-of-origin count table."""
+    print(title)
+    print('dataset_of_origin\tnum_samples')
+    for name, count in counts.items():
+        print(f'{name}\t{count}')
+
+def _package_version(distribution: str) -> str | None:
+    """Read one installed package version without importing optional modules."""
+    try:
+        return version(distribution)
+    except PackageNotFoundError:
+        return None
+
+def _training_argument_names() -> frozenset[str]:
+    """Return the installed TrainingArguments constructor parameter names."""
+    try:
+        return frozenset(inspect.signature(TrainingArguments).parameters)
+    except (TypeError, ValueError) as exc:
+        raise RuntimeError('Cannot inspect the installed Transformers TrainingArguments API.') from exc
+
+def _fold_specifications(filtered_folds, held_out_folds: Sequence[int]):
+    """Yield train/evaluation frames for each requested held-out fold."""
+    frames = {1: filtered_folds.fold1, 2: filtered_folds.fold2}
+    for held_out_fold in held_out_folds:
+        training_fold = 2 if held_out_fold == 1 else 1
+        yield (held_out_fold, training_fold, frames[training_fold], frames[held_out_fold])
+
+def _training_arguments(args: argparse.Namespace, fold_output_dir: Path, *, bf16: bool, fp16: bool, fold_seed: int | None=None) -> TrainingArguments:
+    """Build version-stable Trainer arguments for one held-out fold."""
+    effective_seed = args.seed if fold_seed is None else int(fold_seed)
+    training_kwargs = {'output_dir': str(fold_output_dir / 'checkpoints'), 'do_train': True, 'do_eval': True, 'eval_strategy': 'epoch', 'save_strategy': 'epoch', 'logging_strategy': 'steps', 'logging_steps': args.logging_steps, 'per_device_train_batch_size': args.train_batch_size, 'per_device_eval_batch_size': args.eval_batch_size, 'gradient_accumulation_steps': args.gradient_accumulation_steps, 'learning_rate': args.learning_rate, 'weight_decay': args.weight_decay, 'num_train_epochs': args.epochs, 'max_steps': args.max_steps, 'seed': effective_seed, 'bf16': bf16, 'fp16': fp16, 'tf32': False if args.precision == 'fp32' else None, 'use_cpu': args.use_cpu, 'gradient_checkpointing': args.gradient_checkpointing, 'gradient_checkpointing_kwargs': {'use_reentrant': False}, 'remove_unused_columns': False, 'label_names': ['labels'], 'load_best_model_at_end': True, 'metric_for_best_model': 'mse_mean', 'greater_is_better': False, 'save_total_limit': args.save_total_limit, 'report_to': args.report_to or 'none', 'run_name': f'{args.model}-heldout-fold-{fold_output_dir.name}', 'dataloader_num_workers': 0, 'dataloader_pin_memory': torch.cuda.is_available() and (not args.use_cpu)}
+    training_argument_names = _training_argument_names()
+    if 'train_sampling_strategy' in training_argument_names:
+        training_kwargs['train_sampling_strategy'] = 'group_by_length' if args.group_by_length else 'random'
+    elif 'group_by_length' in training_argument_names:
+        training_kwargs['group_by_length'] = args.group_by_length
+    else:
+        raise RuntimeError('The installed Transformers TrainingArguments API exposes neither train_sampling_strategy nor group_by_length.')
+    transformers_version = _package_version('transformers')
+    try:
+        transformers_major = int(str(transformers_version).split('.', maxsplit=1)[0])
+    except ValueError as exc:
+        raise RuntimeError(f'Cannot parse installed transformers version: {transformers_version!r}') from exc
+    if transformers_major >= 5:
+        training_kwargs['warmup_steps'] = args.warmup_ratio
+    else:
+        training_kwargs['warmup_ratio'] = args.warmup_ratio
+    return TrainingArguments(**training_kwargs)
+
+def run(args: argparse.Namespace, *, model_profile=None) -> Path | None:
+    """Execute filtering, two-fold training, prediction, and dynamic reporting."""
+    _validate_args(args)
+    if model_profile is not None:
+        model_profile.validate_args(args)
+    loss_name = args.loss
+    filtered = load_filtered_folds(args.data_dir, exclude_dataset=args.exclude_dataset, no_iemocap=args.no_iemocap, no_ieomcap=args.no_ieomcap, sentence_only=args.sentence_only)
+    filtered_counts = dataset_counts(filtered.folds)
+    if args.list_datasets:
+        _print_dataset_counts('Datasets after requested exclusions:', filtered_counts)
+        return None
+    if any((frame.empty for frame in filtered.folds.values())):
+        raise ValueError('Dataset exclusions left at least one fold empty.')
+    training_folds = []
+    for held_out_fold, training_fold, train_frame, eval_frame in _fold_specifications(filtered, args.held_out_folds):
+        train_frame, overlap_audit = apply_training_text_overlap_policy(train_frame, eval_frame, policy=args.training_text_overlap_policy)
+        if train_frame.empty:
+            raise ValueError(f'Held-out fold {held_out_fold}: no training rows remain after excluding texts also present in the evaluation fold.')
+        training_folds.append((held_out_fold, training_fold, train_frame, eval_frame, overlap_audit))
+    if args.dry_run:
+        dtype, bf16, fp16 = _runtime_precision(args.use_cpu, args.precision)
+        dry_run_root = _resolve_output_dir(args)
+        for held_out_fold, _, train_frame, eval_frame, overlap_audit in training_folds:
+            fold_seed = int(args.seed) + int(held_out_fold) - 1
+            _training_arguments(args, dry_run_root / f'heldout_fold{held_out_fold}', bf16=bf16, fp16=fp16, fold_seed=fold_seed)
+            print(f"Held-out fold {held_out_fold}: {len(train_frame):,} training rows with training-text-overlap={args.training_text_overlap_policy} ({overlap_audit['excluded_train_rows']:,} rows excluded); {len(eval_frame):,} evaluation rows unchanged.")
+        _print_dataset_counts('Validated datasets:', filtered_counts)
+        print(f"Excluded: {', '.join(filtered.excluded_names) or '<none>'}")
+        print('Dataset scope: ' + ('EmoTales sentences, Emobank, fb' if args.sentence_only else 'all retained datasets'))
+        print(f"Fine-tuning mode: {args.finetuning_mode}; compute precision: {args.precision} -> {str(dtype).replace('torch.', '')}; backbone storage: {str(dtype if model_profile else backbone_parameter_dtype(dtype, args.finetuning_mode)).replace('torch.', '')}; learning rate: {args.learning_rate:g}")
+        print(f'Gaze redistribution: {_redistribution_config(args)}')
+        print(f'Gaze relation: {_gaze_relation_config(args)}')
+        print(f'Readout: {readout_contract(args.readout)}')
+        print(f'Prediction distribution: {prediction_contract(args.loss)}')
+        print('Dry run complete; Trainer arguments are compatible and no tokenizer or model was downloaded.')
+        print(f'Planned run directory: {dry_run_root}')
+        return None
+    assert loss_name is not None
+    output_dir = _resolve_output_dir(args)
+    if output_dir.exists() and any(output_dir.iterdir()) and (not args.resume_from_checkpoint):
+        raise FileExistsError(f'Output directory already exists and is not empty: {output_dir}')
+    output_dir.mkdir(parents=True, exist_ok=True)
+    tokenizer = load_auto_tokenizer(args.model_id, revision=args.model_revision, use_fast=True, trust_remote_code=False)
+    tokenizer.padding_side = 'right'
+    collator = VABatchCollator(tokenizer, pad_to_multiple_of=8)
+    dtype, bf16, fp16 = _runtime_precision(args.use_cpu, args.precision)
+    active_feature_indices = tuple(args.gaze_feature_indices) if args.gaze_fusion == 'prefix-concat' else ()
+    active_feature_names = et2_feature_names_from_indices(active_feature_indices) if active_feature_indices else ()
+    features_used = et2_features_used_from_indices(active_feature_indices) if active_feature_indices else (0,) * len(ET2_FEATURE_NAMES)
+    run_manifest = {**vars(args), 'gaze_redistribution': _redistribution_config(args), 'gaze_relation': _gaze_relation_config(args), 'readout': readout_contract(args.readout), 'prediction_distribution': prediction_contract(loss_name), 'gaze_relation_implementation': None, 'gaze_alignment': _json_ready(GAZE_ALIGNMENT_CONTRACT) if args.gaze_fusion == 'prefix-concat' else None, 'redistribution_weight_decay': args.redistribution_weight_decay, 'architecture_manifest_version': ARCHITECTURE_MANIFEST_VERSION, 'loss': loss_name, 'output_dim': 2, 'dtype': backbone_parameter_dtype(dtype, args.finetuning_mode), 'compute_dtype': dtype, 'backbone_parameter_dtype': backbone_parameter_dtype(dtype, args.finetuning_mode), 'trainable_parameter_dtype': 'float32', 'precision_contract': dict(PRECISION_CONTRACT), 'effective_output_dir': str(output_dir.resolve()), 'results_root': str(RESULTS_ROOT.resolve()), 'python_version': platform.python_version(), 'torch_version': torch.__version__, 'transformers_version': _package_version('transformers'), 'training_kernels': training_kernel_report(), 'peft_version': _package_version('peft'), 'cuda_runtime': torch.version.cuda, 'cuda_device': torch.cuda.get_device_name(0) if torch.cuda.is_available() and (not args.use_cpu) else None, 'fold_sha256': {filename: sha256_file(Path(args.data_dir) / filename) for filename in ('full_dataset_fold1.csv', 'full_dataset_fold2.csv')}, 'excluded_dataset_names': filtered.excluded_names, 'dataset_counts_after_filter': filtered_counts, 'training_text_overlap_contract': training_text_overlap_contract(args.training_text_overlap_policy), 'fold_protocol': 'two-fold out-of-fold; train the opposite fold and predict held-out', 'gaze_features': active_feature_names, 'gaze_feature_indices': active_feature_indices, 'features_used': features_used, 'gaze_concat_order': readout_concat_order(args.gaze_fusion, readout_contract(args.readout)), 'pooling_position': readout_pooling_position(args.gaze_fusion, readout_contract(args.readout)), 'output_activation': OUTPUT_ACTIVATION, 'paired_ablation_seed_policy': {'purpose': 'pair baseline and gaze initialization within each held-out fold', 'formula': 'base_seed + held_out_fold - 1', 'paper_protocol_requirement': False}, 'gpu_memory_measurement': {'filename': 'gpu_memory.json', 'scope': 'per-fold current and peak CUDA allocated/reserved memory'}}
+    if model_profile is not None:
+        run_manifest.update(model_profile.manifest_overrides())
+    print(f"Readout: {run_manifest['readout']}")
+    print(f"Prediction distribution: {run_manifest['prediction_distribution']}")
+    delta_dispatch = run_manifest['training_kernels']['dispatch']['torch_chunk_gated_delta_rule']
+    print(f"Qwen linear-attention implementation: {delta_dispatch['selected'] or 'unresolved'}")
+    if model_profile is None and (not args.use_cpu) and (not delta_dispatch['is_fla']):
+        print('Warning: Qwen linear attention is not using the FLA package kernel. The Torch fallback can be slow. From the repository root, run python setup_environment.py --current-env --kernels-only, then restart training.')
+    fold_predictions = []
+    for held_out_fold, training_fold, train_frame, eval_frame, overlap_audit in training_folds:
+        fold_output = output_dir / f'heldout_fold{held_out_fold}'
+        fold_seed = int(args.seed) + int(held_out_fold) - 1
+        expected_fold_manifest = {**run_manifest, 'fold_seed': fold_seed, 'held_out_fold': held_out_fold, 'training_fold': training_fold, 'training_rows': len(train_frame), 'evaluation_rows': len(eval_frame), 'training_text_overlap': overlap_audit}
+        resume_source_schema = _validate_resume_contract(args, fold_output, expected_fold_manifest)
+        training_arguments = _training_arguments(args, fold_output, bf16=bf16, fp16=fp16, fold_seed=fold_seed)
+        fold_output.mkdir(parents=True, exist_ok=True)
+        print(f'Training fold {training_fold} ({len(train_frame):,} rows); evaluating held-out fold {held_out_fold} ({len(eval_frame):,} rows); fine-tuning mode: {args.finetuning_mode}.')
+        if args.training_text_overlap_policy == 'keep':
+            print(f"Training text overlap: kept all {len(train_frame):,} training rows ({overlap_audit['shared_normalized_texts']:,} shared normalized texts); evaluation rows unchanged.")
+        else:
+            print(f"Training text overlap: excluded {overlap_audit['excluded_train_rows']:,} training rows matching held-out text; evaluation rows unchanged.")
+        train_dataset = TokenizedVADataset(train_frame, tokenizer, max_length=args.max_length)
+        eval_dataset = TokenizedVADataset(eval_frame, tokenizer, max_length=args.max_length)
+        set_seed(fold_seed)
+        _reset_cuda_peak_memory(args.use_cpu)
+        model_builder = build_qwen_va_model if model_profile is None else model_profile.build_model
+        model = model_builder(tokenizer, model_id=args.model_id, model_revision=args.model_revision, finetuning_mode=args.finetuning_mode, gaze_fusion=args.gaze_fusion, gaze_redistribution=run_manifest['gaze_redistribution'], gaze_relation=run_manifest['gaze_relation'], readout=run_manifest['readout'], prediction_distribution=run_manifest['prediction_distribution'], et_repo_id=args.et_model_id, et_revision=args.et_revision, et_filename=args.et_filename, et_cache_size=args.et_cache_size, gaze_feature_indices=active_feature_indices or None, dtype=dtype, lora_rank=args.lora_rank, lora_alpha=args.lora_alpha, lora_dropout=args.lora_dropout, attn_implementation=args.attn_implementation)
+        if args.resume_from_checkpoint:
+            validate_saved_trainable_precision(model, Path(args.resume_from_checkpoint) / 'model.safetensors')
+            reject_experimental_weights(Path(args.resume_from_checkpoint) / 'model.safetensors')
+        parameter_summary = model.trainable_parameter_summary()
+        if model_profile is not None:
+            print(f"Historical parameter elements by dtype: {parameter_summary['parameter_elements_by_dtype']}")
+        print(f"Trainable parameters: {parameter_summary['trainable_parameters']:,} / {parameter_summary['total_parameters']:,} ({parameter_summary['trainable_fraction']:.2%}).")
+        fold_manifest = {**expected_fold_manifest, **parameter_summary}
+        if resume_source_schema is not None:
+            fold_manifest['resume_source_architecture_manifest_version'] = resume_source_schema
+        with open(fold_output / 'run_manifest.json', 'w', encoding='utf-8') as output_file:
+            json.dump(_json_ready(fold_manifest), output_file, indent=2, sort_keys=True)
+            output_file.write('\n')
+        trainer = VARegressionTrainer(model=model, args=training_arguments, train_dataset=train_dataset, eval_dataset=eval_dataset, data_collator=collator, processing_class=tokenizer, compute_metrics=trainer_compute_metrics, loss_name=loss_name)
+        trainer.train(resume_from_checkpoint=args.resume_from_checkpoint)
+        trainer.save_model(str(fold_output / 'final_model'))
+        model.save_architecture_manifest(fold_output / 'final_model')
+        trainer.state.save_to_json(str(fold_output / 'trainer_state.json'))
+        prediction_output = trainer.predict(eval_dataset)
+        gpu_memory = _cuda_memory_snapshot(args.use_cpu)
+        with open(fold_output / 'gpu_memory.json', 'w', encoding='utf-8') as output_file:
+            json.dump(_json_ready(gpu_memory), output_file, indent=2, sort_keys=True)
+            output_file.write('\n')
+        if gpu_memory['cuda_enabled']:
+            print(f"CUDA peak memory: {gpu_memory['peak_allocated_gib']:.2f} GiB allocated, {gpu_memory['peak_reserved_gib']:.2f} GiB reserved.")
+        fold_frame = prediction_frame(eval_frame, prediction_output.label_ids, prediction_output.predictions, fold=held_out_fold)
+        fold_frame.to_csv(fold_output / 'predictions.tsv', sep='\t', index=False)
+        with open(fold_output / 'metrics.json', 'w', encoding='utf-8') as output_file:
+            json.dump(_json_ready(prediction_output.metrics), output_file, indent=2, sort_keys=True)
+            output_file.write('\n')
+        fold_predictions.append(fold_frame)
+        del trainer, model, train_dataset, eval_dataset
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+    write_oof_reports(fold_predictions, output_dir, run_parameters=_json_ready(run_manifest))
+    print(f'Completed. OOF reports: {output_dir.resolve()}')
+    return output_dir

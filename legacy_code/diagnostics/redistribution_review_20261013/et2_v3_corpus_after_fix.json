@@ -1,9 +1,0 @@
-{
-  "counts": {
-    "rows": 14352,
-    "words": 214877,
-    "max_et_tokens": 245,
-    "empty_rows": 2
-  },
-  "boundary_examples": []
-}

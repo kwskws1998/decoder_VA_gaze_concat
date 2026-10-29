@@ -147,3 +147,7 @@ logs/
 # Generated files from direct use of the frozen archive
 /legacy_code/results/
 /legacy_code/environment_setup.json
+
+# Verified server backup and preserved experiment artifacts
+/server_backup_20261028/
+/data/
